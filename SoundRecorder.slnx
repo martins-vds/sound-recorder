@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SoundRecorder.Core/SoundRecorder.Core.csproj" />
+    <Project Path="src/SoundRecorder.Desktop/SoundRecorder.Desktop.csproj" />
+    <Project Path="src/SoundRecorder.Infrastructure/SoundRecorder.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SoundRecorder.Core.Tests/SoundRecorder.Core.Tests.csproj" />
+  </Folder>
+</Solution>

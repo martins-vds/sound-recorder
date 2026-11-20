@@ -1,0 +1,18 @@
+{
+  "stryker-config": {
+    "project": "SoundRecorder.Core.csproj",
+    "configuration": "Release",
+    "mutation-level": "Complete",
+    "thresholds": {
+      "high": 99,
+      "low": 99,
+      "break": 99
+    },
+    "reporters": [
+      "progress",
+      "cleartext",
+      "html",
+      "json"
+    ]
+  }
+}
