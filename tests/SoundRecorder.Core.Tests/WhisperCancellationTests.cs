@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using NAudio.Wave;
@@ -10,6 +12,84 @@ namespace SoundRecorder.Core.Tests;
 
 public sealed class WhisperCancellationTests
 {
+    [LocalWhisperFact]
+    [Trait("type", "IntegrationTests")]
+    public async Task TranscribeAsync_ParentIsTerminated_TerminatesItsWorker()
+    {
+        var directory = Directory.CreateTempSubdirectory("sound-recorder-parent-test-");
+        Process? parent = null;
+        Process? worker = null;
+        try
+        {
+            var recording = CreateSilentRecording(directory.FullName);
+            var original = await File.ReadAllBytesAsync(recording.AudioPath);
+            var transcriptPath = Path.ChangeExtension(recording.AudioPath, ".txt");
+            await File.WriteAllTextAsync(transcriptPath, "Earlier transcript");
+            var marker = Path.Combine(directory.FullName, "ready.json");
+            var dotnet = Path.GetFullPath(Path.Combine(
+                RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", "..", "dotnet.exe"));
+            var startInfo = new ProcessStartInfo(dotnet)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList =
+                {
+                    typeof(ProcessTestHost.Program).Assembly.Location,
+                    Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_WORKER")!,
+                    Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_MODEL")!,
+                    recording.AudioPath,
+                    marker,
+                },
+            };
+            startInfo.Environment["TEMP"] = directory.FullName;
+            startInfo.Environment["TMP"] = directory.FullName;
+            parent = Process.Start(startInfo)!;
+            var output = parent.StandardOutput.ReadToEndAsync();
+            var errors = parent.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (!File.Exists(marker))
+            {
+                if (parent.HasExited)
+                {
+                    Assert.Fail($"Test parent exited before inference: {await errors}");
+                }
+
+                await Task.Delay(20, timeout.Token);
+            }
+
+            var ready = JsonSerializer.Deserialize<ProcessTestHost.Program.ReadyState>(
+                await File.ReadAllTextAsync(marker))!;
+            Assert.Equal(parent.Id, ready.ParentProcessId);
+            Assert.InRange(ready.WorkerProcessId, 1, int.MaxValue);
+            Assert.NotEqual(parent.Id, ready.WorkerProcessId);
+            Assert.NotEqual(Environment.ProcessId, ready.WorkerProcessId);
+            worker = Process.GetProcessById(ready.WorkerProcessId);
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            Assert.False(worker.HasExited);
+
+            // Kill only the parent: killing its tree would conceal the orphan-worker bug.
+            parent.Kill(entireProcessTree: false);
+            await parent.WaitForExitAsync();
+            var workerExit = worker.WaitForExitAsync();
+            await Task.WhenAny(workerExit, Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.True(worker.HasExited, "The transcription worker survived its terminated parent.");
+            await workerExit;
+            await Task.WhenAll(output, errors);
+            Assert.Equal(original, await File.ReadAllBytesAsync(recording.AudioPath));
+            Assert.Equal("Earlier transcript", await File.ReadAllTextAsync(transcriptPath));
+            Assert.False(File.Exists(Path.ChangeExtension(recording.AudioPath, ".srt")));
+        }
+        finally
+        {
+            await StopTestProcessAsync(parent);
+            await StopTestProcessAsync(worker);
+            directory.Delete(recursive: true);
+        }
+    }
+
     [LocalWhisperFact]
     [Trait("type", "IntegrationTests")]
     public async Task TranscribeAsync_CompletedWorker_ReturnsDocumentWithoutChangingAudio()
@@ -139,6 +219,28 @@ public sealed class WhisperCancellationTests
         await Task.WhenAny(started, queue.WaitForIdleAsync(CancellationToken.None)).WaitAsync(timeout);
         Assert.True(started.IsCompletedSuccessfully, queue.Jobs.Last().Error ?? "The worker did not start.");
         await started;
+    }
+
+    private static async Task StopTestProcessAsync(Process? process)
+    {
+        if (process is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException) when (process.HasExited)
+        {
+        }
+
+        await process.WaitForExitAsync();
+        process.Dispose();
     }
 
     private static SavedRecording CreateSilentRecording(string directory)

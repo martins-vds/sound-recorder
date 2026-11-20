@@ -105,6 +105,15 @@ internal static partial class InfrastructureLog
         Guid recordingId);
 
     [LoggerMessage(
+        EventId = 702,
+        Level = LogLevel.Information,
+        Message = "Local transcription worker {WorkerProcessId} started for recording {RecordingId}")]
+    public static partial void TranscriptionWorkerStarted(
+        ILogger logger,
+        int workerProcessId,
+        Guid recordingId);
+
+    [LoggerMessage(
         EventId = 800,
         Level = LogLevel.Information,
         Message = "Loaded {JobCount} persisted transcription jobs")]

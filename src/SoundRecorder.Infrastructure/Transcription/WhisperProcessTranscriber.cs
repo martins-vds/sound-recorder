@@ -28,6 +28,7 @@ public sealed class WhisperProcessTranscriber(
         Directory.CreateDirectory(directory);
         try
         {
+            using var lifetime = WindowsProcessJob.Create();
             using var process = new Process
             {
                 StartInfo = new ProcessStartInfo(executablePath)
@@ -46,9 +47,11 @@ public sealed class WhisperProcessTranscriber(
             }
 
             var diagnostics = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
-            using var registration = cancellationToken.Register(() => StopWorker(process));
             try
             {
+                lifetime.Assign(process);
+                InfrastructureLog.TranscriptionWorkerStarted(_logger, process.Id, recording.Id);
+                using var registration = cancellationToken.Register(() => StopWorker(process));
                 var request = new WorkerRequest(model, recording, Path.Combine(directory, "processing.wav"));
                 await process.StandardInput.WriteLineAsync(
                     JsonSerializer.Serialize(request).AsMemory(),
