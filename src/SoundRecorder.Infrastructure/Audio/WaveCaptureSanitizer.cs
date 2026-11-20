@@ -1,12 +1,22 @@
 using System.Buffers.Binary;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace SoundRecorder.Infrastructure.Audio;
 
 internal static class WaveCaptureSanitizer
 {
-    public static int Sanitize(Span<byte> bytes, WaveFormat format)
+    public static int Sanitize(
+        Span<byte> bytes,
+        WaveFormat format,
+        AudioClientBufferFlags flags = 0)
     {
+        if (flags.HasFlag(AudioClientBufferFlags.Silent))
+        {
+            bytes.Clear();
+            return 0;
+        }
+
         if (!IsIeeeFloat(format))
         {
             return 0;

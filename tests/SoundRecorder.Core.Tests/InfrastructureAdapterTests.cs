@@ -3,8 +3,10 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure.Audio;
 using SoundRecorder.Infrastructure.Models;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
@@ -208,6 +210,23 @@ public sealed class InfrastructureAdapterTests
         Assert.InRange(count, 47_000, 48_000);
         Assert.Contains(output[..24_000], sample => MathF.Abs(sample) > .01f);
         Assert.All(output[30_000..count], sample => Assert.InRange(sample, -.0001f, .0001f));
+    }
+
+    [Fact]
+    public void Sanitize_WasapiSilentPacket_ReplacesBufferContentsWithSilence()
+    {
+        var format = WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2);
+        var data = Enumerable.Repeat(byte.MaxValue, format.BlockAlign * 100)
+            .Select(value => value)
+            .ToArray();
+
+        var invalid = WaveCaptureSanitizer.Sanitize(
+            data,
+            format,
+            AudioClientBufferFlags.Silent);
+
+        Assert.Equal(0, invalid);
+        Assert.All(data, value => Assert.Equal(0, value));
     }
 
     [Fact]

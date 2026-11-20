@@ -10,7 +10,6 @@ using SoundRecorder.Infrastructure.Privacy;
 
 namespace SoundRecorder.Infrastructure.Audio;
 
-#pragma warning disable 0618
 public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 {
     private readonly string _stateDirectory;
@@ -78,7 +77,15 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             {
                 var device = enumerator.GetDevice(request.MicrophoneId!);
                 _microphone = CreateCaptureSource(
-                    new WasapiCapture(device, true, 100),
+                    new WasapiRecorderBuilder()
+                        .WithDevice(device)
+                        .WithFormat(
+                            WaveFormat.CreateIeeeFloatWaveFormat(
+                                RecordingFormat.SampleRate,
+                                1))
+                        .WithBufferLength(100)
+                        .WithMmcssThreadPriority("Audio")
+                        .Build(),
                     Path.Combine(_stateDirectory, $"{_recordingId:N}-microphone.wav"));
             }
 
@@ -86,7 +93,16 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             {
                 var device = enumerator.GetDevice(request.PlaybackDeviceId!);
                 _systemAudio = CreateCaptureSource(
-                    new WasapiLoopbackCapture(device),
+                    new WasapiRecorderBuilder()
+                        .WithDevice(device)
+                        .WithLoopbackCapture()
+                        .WithFormat(
+                            WaveFormat.CreateIeeeFloatWaveFormat(
+                                RecordingFormat.SampleRate,
+                                2))
+                        .WithBufferLength(100)
+                        .WithMmcssThreadPriority("Audio")
+                        .Build(),
                     Path.Combine(_stateDirectory, $"{_recordingId:N}-system.wav"));
             }
 
@@ -176,7 +192,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         DisposeSources();
     }
 
-    private CaptureSource CreateCaptureSource(WasapiCapture capture, string path)
+    private CaptureSource CreateCaptureSource(WasapiRecorder capture, string path)
     {
         var source = new CaptureSource(capture, path, IsPaused, HandleCaptureFailure);
         return source;
@@ -377,7 +393,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
     private sealed class CaptureSource : IDisposable
     {
-        private readonly WasapiCapture _capture;
+        private readonly WasapiRecorder _capture;
         private readonly WaveFileWriter _writer;
         private readonly Func<bool> _isPaused;
         private readonly Action<Exception> _failure;
@@ -386,7 +402,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public CaptureSource(
-            WasapiCapture capture,
+            WasapiRecorder capture,
             string path,
             Func<bool> isPaused,
             Action<Exception> failure)
@@ -445,7 +461,11 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _writer.Dispose();
         }
 
-        private void CaptureOnDataAvailable(object? sender, WaveInEventArgs args)
+        private void CaptureOnDataAvailable(
+            ReadOnlySpan<byte> buffer,
+            AudioClientBufferFlags flags,
+            long devicePosition,
+            long qpcPosition)
         {
             if (_isPaused())
             {
@@ -454,18 +474,23 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
             try
             {
+                var capturedBytes = buffer.ToArray();
                 var invalidSamples = WaveCaptureSanitizer.Sanitize(
-                    args.Buffer.AsSpan(0, args.BytesRecorded),
-                    _writer.WaveFormat);
+                    capturedBytes,
+                    _writer.WaveFormat,
+                    flags);
                 lock (_writer)
                 {
-                    _writer.Write(args.Buffer, 0, args.BytesRecorded);
+                    _writer.Write(capturedBytes, 0, capturedBytes.Length);
                 }
 
-                Level = CalculateLevel(args.Buffer, args.BytesRecorded, _writer.WaveFormat);
+                Level = CalculateLevel(
+                    capturedBytes,
+                    capturedBytes.Length,
+                    _writer.WaveFormat);
                 if (invalidSamples > Math.Max(
                         1,
-                        args.BytesRecorded / _writer.WaveFormat.BlockAlign / 100) &&
+                        capturedBytes.Length / _writer.WaveFormat.BlockAlign / 100) &&
                     Interlocked.Exchange(ref _failureReported, 1) == 0)
                 {
                     _failure(new InvalidDataException(
@@ -486,7 +511,8 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
         private void CaptureOnRecordingStopped(object? sender, StoppedEventArgs args)
         {
-            if (args.Exception is not null)
+            if (args.Exception is not null &&
+                Interlocked.Exchange(ref _failureReported, 1) == 0)
             {
                 _failure(args.Exception);
             }
