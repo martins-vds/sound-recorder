@@ -1,3 +1,4 @@
+using NAudio.Wave;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure;
 using Whisper.net;
@@ -10,13 +11,25 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
 {
     private readonly ITranscriptionModelStore _models;
     private readonly ILogger<WhisperLocalTranscriber> _logger;
+    private readonly Func<string, SavedRecording, Stream, CancellationToken,
+        Task<IReadOnlyList<TranscriptSegment>>> _processAudio;
 
     public WhisperLocalTranscriber(
         ITranscriptionModelStore models,
         ILogger<WhisperLocalTranscriber>? logger = null)
+        : this(models, logger, ProcessWithWhisperAsync)
+    {
+    }
+
+    internal WhisperLocalTranscriber(
+        ITranscriptionModelStore models,
+        ILogger<WhisperLocalTranscriber>? logger,
+        Func<string, SavedRecording, Stream, CancellationToken,
+            Task<IReadOnlyList<TranscriptSegment>>> processAudio)
     {
         _models = models;
         _logger = logger ?? NullLogger<WhisperLocalTranscriber>.Instance;
+        _processAudio = processAudio;
     }
 
     public async Task<TranscriptDocument> TranscribeAsync(
@@ -26,13 +39,69 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         var model = _models.GetModelPath(recording.Language)
             ?? throw new InvalidOperationException(
                 $"No compatible local transcription model is installed for {recording.Language}.");
+        var temporaryAudioPath = Path.Combine(
+            Path.GetTempPath(),
+            $"sound-recorder-whisper-{Guid.NewGuid():N}.wav");
+        try
+        {
+            ResampleForWhisper(
+                recording.AudioPath,
+                temporaryAudioPath,
+                cancellationToken);
+            await using var audio = File.OpenRead(temporaryAudioPath);
+            InfrastructureLog.TranscriptionStarted(_logger, recording.Id);
+            var segments = await _processAudio(
+                model,
+                recording,
+                audio,
+                cancellationToken);
+            InfrastructureLog.TranscriptionProducedSegments(
+                _logger,
+                segments.Count,
+                recording.Id);
+            return new TranscriptDocument(recording, recording.Language, segments);
+        }
+        finally
+        {
+            if (File.Exists(temporaryAudioPath))
+            {
+                File.Delete(temporaryAudioPath);
+            }
+        }
+    }
+
+    private static void ResampleForWhisper(
+        string sourcePath,
+        string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        using var reader = new WaveFileReader(sourcePath);
+        var targetFormat = new WaveFormat(16_000, 16, 1);
+        using var resampler = new MediaFoundationResampler(reader, targetFormat)
+        {
+            ResamplerQuality = 60,
+        };
+        using var writer = new WaveFileWriter(destinationPath, targetFormat);
+        var buffer = new byte[32 * 1024];
+        int bytesRead;
+        while ((bytesRead = resampler.Read(buffer)) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            writer.Write(buffer, 0, bytesRead);
+        }
+    }
+
+    private static async Task<IReadOnlyList<TranscriptSegment>> ProcessWithWhisperAsync(
+        string model,
+        SavedRecording recording,
+        Stream audio,
+        CancellationToken cancellationToken)
+    {
         using var factory = WhisperFactory.FromPath(model);
         using var processor = factory.CreateBuilder()
             .WithLanguage(ToWhisperLanguage(recording.Language))
             .Build();
-        await using var audio = File.OpenRead(recording.AudioPath);
         var segments = new List<TranscriptSegment>();
-        InfrastructureLog.TranscriptionStarted(_logger, recording.Id);
 
         await foreach (var segment in processor.ProcessAsync(audio, cancellationToken))
         {
@@ -50,11 +119,7 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
             }
         }
 
-        InfrastructureLog.TranscriptionProducedSegments(
-            _logger,
-            segments.Count,
-            recording.Id);
-        return new TranscriptDocument(recording, recording.Language, segments);
+        return segments;
     }
 
     private static string ToWhisperLanguage(string language)

@@ -178,6 +178,7 @@
                                 <GridViewColumn Header="Created" DisplayMemberBinding="{Binding CreatedAt}" Width="160"/>
                                 <GridViewColumn Header="Status" DisplayMemberBinding="{Binding Status}" Width="100"/>
                                 <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Recording.Language}" Width="130"/>
+                                <GridViewColumn Header="Error" DisplayMemberBinding="{Binding Error}" Width="280"/>
                                 <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding Recording.AudioPath}" Width="390"/>
                             </GridView>
                         </ListView.View>

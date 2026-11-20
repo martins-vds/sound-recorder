@@ -7,11 +7,56 @@ using NAudio.Wave;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Models;
 using SoundRecorder.Infrastructure.Recovery;
+using SoundRecorder.Infrastructure.Transcription;
 
 namespace SoundRecorder.Core.Tests;
 
 public sealed class InfrastructureAdapterTests
 {
+    [Fact]
+    public async Task TranscribeAsync_48KHzRecording_Processes16KHzMonoWave()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var audioPath = Path.Combine(directory, "recording.wav");
+        using (var writer = new WaveFileWriter(audioPath, new WaveFormat(48_000, 16, 2)))
+        {
+            writer.Write(new byte[48_000 * 2 * 2], 0, 48_000 * 2 * 2);
+        }
+
+        string? temporaryAudioPath = null;
+        var logger = new RecordingLogger<WhisperLocalTranscriber>();
+        var transcriber = new WhisperLocalTranscriber(
+            new TestModelStore(),
+            logger,
+            (modelPath, language, audio, cancellationToken) =>
+            {
+                temporaryAudioPath = Assert.IsType<FileStream>(audio).Name;
+                using var reader = new WaveFileReader(audio);
+                Assert.Equal(16_000, reader.WaveFormat.SampleRate);
+                Assert.Equal(16, reader.WaveFormat.BitsPerSample);
+                Assert.Equal(1, reader.WaveFormat.Channels);
+                Assert.True(reader.TotalTime >= TimeSpan.FromSeconds(.99));
+                return Task.FromResult<IReadOnlyList<TranscriptSegment>>([]);
+            });
+        var recording = new SavedRecording(
+            Guid.NewGuid(),
+            audioPath,
+            "English",
+            RecordingOutcome.Complete,
+            TimeSpan.FromSeconds(1));
+
+        var document = await transcriber.TranscribeAsync(
+            recording,
+            CancellationToken.None);
+
+        Assert.Empty(document.Segments);
+        Assert.NotNull(temporaryAudioPath);
+        Assert.False(File.Exists(temporaryAudioPath));
+        Assert.Contains(700, logger.EventIds);
+        Assert.Contains(701, logger.EventIds);
+    }
+
     [Fact]
     public async Task BundledModelPackageIsImportedOnFirstStartup()
     {
@@ -189,6 +234,13 @@ public sealed class InfrastructureAdapterTests
         }
 
         return -1;
+    }
+
+    private sealed class TestModelStore : ITranscriptionModelStore
+    {
+        public bool HasCompatibleModel(string language) => true;
+
+        public string? GetModelPath(string language) => "model.bin";
     }
 }
 
