@@ -114,6 +114,13 @@ public partial class MainWindow : Window
                 "Sound Recorder");
             LanguageCombo.SelectedIndex = 0;
             SourceCombo.SelectedIndex = 0;
+            var bundledModel = await _modelManager.ImportBundledAsync(
+                Path.Combine(AppContext.BaseDirectory, "models"),
+                CancellationToken.None);
+            if (bundledModel is not null)
+            {
+                ShowMessage($"Bundled model activated: {bundledModel.Id}");
+            }
             UpdateModelStatus();
             await RefreshHistoryAsync();
             await _queue.RestoreAsync(CancellationToken.None);

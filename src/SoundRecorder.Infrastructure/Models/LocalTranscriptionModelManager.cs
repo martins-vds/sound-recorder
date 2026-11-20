@@ -144,6 +144,42 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
         }
     }
 
+    public async Task<TranscriptionModelPackage?> ImportBundledAsync(
+        string bundledModelsDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (_currentPackage is not null &&
+            HasCompatibleModel("English") &&
+            HasCompatibleModel("Brazilian Portuguese"))
+        {
+            return null;
+        }
+
+        if (!Directory.Exists(bundledModelsDirectory))
+        {
+            return null;
+        }
+
+        var packages = Directory.EnumerateFiles(
+                bundledModelsDirectory,
+                "*.zip",
+                SearchOption.TopDirectoryOnly)
+            .Take(2)
+            .ToArray();
+        if (packages.Length != 1)
+        {
+            if (packages.Length > 1)
+            {
+                throw new InvalidDataException(
+                    "Multiple bundled model packages were found. Keep exactly one.");
+            }
+
+            return null;
+        }
+
+        return await ImportAsync(packages[0], cancellationToken);
+    }
+
     private void LoadCurrentPackage()
     {
         var marker = Path.Combine(_modelsDirectory, "current.json");

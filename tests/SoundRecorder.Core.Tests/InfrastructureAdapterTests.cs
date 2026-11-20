@@ -13,6 +13,50 @@ namespace SoundRecorder.Core.Tests;
 public sealed class InfrastructureAdapterTests
 {
     [Fact]
+    public async Task BundledModelPackageIsImportedOnFirstStartup()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var bundledDirectory = Path.Combine(directory, "publish", "models");
+        var activeDirectory = Path.Combine(directory, "local", "models");
+        Directory.CreateDirectory(bundledDirectory);
+        File.Move(CreatePackage(directory, "Whisper.net 1.9"), Path.Combine(bundledDirectory, "tiny.zip"));
+        var manager = new LocalTranscriptionModelManager(
+            activeDirectory,
+            new HttpClient());
+
+        var imported = await manager.ImportBundledAsync(
+            bundledDirectory,
+            CancellationToken.None);
+
+        Assert.NotNull(imported);
+        Assert.True(manager.HasCompatibleModel("English"));
+        Assert.True(manager.HasCompatibleModel("Brazilian Portuguese"));
+    }
+
+    [Fact]
+    public async Task ExistingLocalModelPreventsBundledModelReplacement()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var bundledDirectory = Path.Combine(directory, "publish", "models");
+        var activeDirectory = Path.Combine(directory, "local", "models");
+        Directory.CreateDirectory(bundledDirectory);
+        var existingPackage = CreatePackage(directory, "Whisper.net 1.9", "existing-model");
+        var bundledSource = Path.Combine(directory, "bundled");
+        Directory.CreateDirectory(bundledSource);
+        var bundledPackage = CreatePackage(bundledSource, "Whisper.net 1.9", "bundled-model");
+        File.Move(bundledPackage, Path.Combine(bundledDirectory, "tiny.zip"));
+        var manager = new LocalTranscriptionModelManager(activeDirectory, new HttpClient());
+        await manager.ImportAsync(existingPackage, CancellationToken.None);
+
+        var imported = await manager.ImportBundledAsync(
+            bundledDirectory,
+            CancellationToken.None);
+
+        Assert.Null(imported);
+        Assert.Equal("existing-model", manager.CurrentPackage?.Id);
+    }
+
+    [Fact]
     public void FinalizationReadsPartialCaptureOnlyAfterWriterIsClosed()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -107,13 +151,16 @@ public sealed class InfrastructureAdapterTests
         Assert.False(manager.HasCompatibleModel("English"));
     }
 
-    private static string CreatePackage(string directory, string engine)
+    private static string CreatePackage(
+        string directory,
+        string engine,
+        string id = "test-model")
     {
         var packagePath = Path.Combine(directory, "model.zip");
         var modelBytes = Encoding.UTF8.GetBytes("model");
         var package = new TranscriptionModelPackage(
             1,
-            "test-model",
+            id,
             engine,
             "model.bin",
             Convert.ToHexString(SHA256.HashData(modelBytes)),
