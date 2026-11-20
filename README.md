@@ -20,6 +20,14 @@ Publish a self-contained Windows x64 build:
 .\scripts\publish.ps1
 ```
 
+Optionally download an import-ready multilingual model package:
+
+```powershell
+.\scripts\publish.ps1 -DownloadModel base
+```
+
+Available values are `tiny`, `base`, `small`, `medium`, `large-v3-turbo`, and `large-v3`. The script downloads from the Whisper.net v5 model mirror, calculates SHA-256, and writes the package under `models\` in the publish output for explicit import through the app.
+
 Install as the current standard user:
 
 ```powershell
