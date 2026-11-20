@@ -32,8 +32,7 @@ internal static class WaveRecordingFinalizer
                 ? readers[0]
                 : new SampleToWaveProvider16(
                     new MixingSampleProvider(
-                        readers.Select(reader => new WaveToSampleProvider(reader))
-                            .Cast<ISampleProvider>()));
+                        readers.Select(ToSampleProvider)));
             using var finalWriter = new WaveFileWriter(outputPath, targetFormat);
             var buffer = new byte[32 * 1024];
             int bytesRead;
@@ -88,5 +87,20 @@ internal static class WaveRecordingFinalizer
                source.SampleRate == target.SampleRate &&
                source.BitsPerSample == target.BitsPerSample &&
                source.Channels == target.Channels;
+    }
+
+    private static ISampleProvider ToSampleProvider(IWaveProvider reader)
+    {
+        ISampleProvider provider = reader.WaveFormat.Encoding switch
+        {
+            WaveFormatEncoding.IeeeFloat => new WaveToSampleProvider(reader),
+            WaveFormatEncoding.Pcm when reader.WaveFormat.BitsPerSample == 16
+                => new Pcm16BitToSampleProvider(reader),
+            _ => throw new InvalidDataException(
+                $"Unsupported capture format '{reader.WaveFormat}'."),
+        };
+        return provider.WaveFormat.Channels == 1
+            ? new MonoToStereoSampleProvider(provider)
+            : provider;
     }
 }

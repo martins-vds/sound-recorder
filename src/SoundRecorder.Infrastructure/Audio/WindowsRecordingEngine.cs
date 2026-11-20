@@ -398,6 +398,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         private readonly Func<bool> _isPaused;
         private readonly Action<Exception> _failure;
         private int _failureReported;
+        private float _level;
         private readonly TaskCompletionSource _stopped = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -418,7 +419,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
         public string Path { get; }
 
-        public float Level { get; private set; }
+        public float Level => Volatile.Read(ref _level);
 
         public void Start()
         {
@@ -484,10 +485,12 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
                     _writer.Write(capturedBytes, 0, capturedBytes.Length);
                 }
 
-                Level = CalculateLevel(
-                    capturedBytes,
-                    capturedBytes.Length,
-                    _writer.WaveFormat);
+                Volatile.Write(
+                    ref _level,
+                    CalculateLevel(
+                        capturedBytes,
+                        capturedBytes.Length,
+                        _writer.WaveFormat));
                 if (invalidSamples > Math.Max(
                         1,
                         capturedBytes.Length / _writer.WaveFormat.BlockAlign / 100) &&

@@ -249,6 +249,47 @@ public sealed class InfrastructureAdapterTests
     }
 
     [Fact]
+    public void Finalization_CombinedPcmSources_MixesMonoMicrophoneAndStereoSystem()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var microphonePath = Path.Combine(directory, "microphone.wav");
+        var systemPath = Path.Combine(directory, "system.wav");
+        using (var writer = new WaveFileWriter(
+                   microphonePath,
+                   new WaveFormat(48_000, 16, 1)))
+        {
+            writer.WriteSamples(
+                Enumerable.Repeat(.1f, 48_000).ToArray(),
+                0,
+                48_000);
+        }
+
+        using (var writer = new WaveFileWriter(
+                   systemPath,
+                   new WaveFormat(48_000, 16, 2)))
+        {
+            writer.WriteSamples(
+                Enumerable.Repeat(.2f, 48_000 * 2).ToArray(),
+                0,
+                48_000 * 2);
+        }
+
+        var outputPath = Path.Combine(directory, "combined.wav");
+        WaveRecordingFinalizerAccessor.Finalize(
+            microphonePath,
+            systemPath,
+            AudioSource.MicrophoneAndSystemAudio,
+            outputPath);
+
+        using var output = new WaveFileReader(outputPath);
+        var samples = new float[48_000 * 2];
+        var count = output.ToSampleProvider().Read(samples);
+        Assert.Equal(samples.Length, count);
+        Assert.All(samples, sample => Assert.InRange(sample, .299f, .301f));
+    }
+
+    [Fact]
     public void Sanitize_WasapiSilentPacket_ReplacesBufferContentsWithSilence()
     {
         var format = WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2);
