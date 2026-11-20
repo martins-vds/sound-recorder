@@ -381,6 +381,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         private readonly WaveFileWriter _writer;
         private readonly Func<bool> _isPaused;
         private readonly Action<Exception> _failure;
+        private int _failureReported;
         private readonly TaskCompletionSource _stopped = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -453,17 +454,33 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
             try
             {
+                var invalidSamples = WaveCaptureSanitizer.Sanitize(
+                    args.Buffer.AsSpan(0, args.BytesRecorded),
+                    _writer.WaveFormat);
                 lock (_writer)
                 {
                     _writer.Write(args.Buffer, 0, args.BytesRecorded);
                 }
 
                 Level = CalculateLevel(args.Buffer, args.BytesRecorded, _writer.WaveFormat);
+                if (invalidSamples > Math.Max(
+                        1,
+                        args.BytesRecorded / _writer.WaveFormat.BlockAlign / 100) &&
+                    Interlocked.Exchange(ref _failureReported, 1) == 0)
+                {
+                    _failure(new InvalidDataException(
+                        "The audio device returned invalid samples. " +
+                        "The recording was stopped to prevent damaged audio."));
+                    _capture.StopRecording();
+                }
             }
             catch (Exception exception)
             {
-                _failure(exception);
-                _capture.StopRecording();
+                if (Interlocked.Exchange(ref _failureReported, 1) == 0)
+                {
+                    _failure(exception);
+                    _capture.StopRecording();
+                }
             }
         }
 

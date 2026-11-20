@@ -172,6 +172,45 @@ public sealed class InfrastructureAdapterTests
     }
 
     [Fact]
+    public void FinalizationReplacesInvalidFloatSamplesWithSilence()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var partialPath = Path.Combine(directory, "partial.wav");
+        using (var writer = new WaveFileWriter(
+                   partialPath,
+                   WaveFormat.CreateIeeeFloatWaveFormat(48_000, 1)))
+        {
+            var samples = new float[48_000];
+            for (var index = 0; index < samples.Length; index++)
+            {
+                samples[index] = index < 24_000
+                    ? .1f * MathF.Sin(index / 48_000f * MathF.PI * 440)
+                    : index % 2 == 0
+                        ? float.NaN
+                        : float.MaxValue;
+            }
+
+            writer.WriteSamples(samples, 0, samples.Length);
+        }
+
+        var outputPath = Path.Combine(directory, "final.wav");
+        WaveRecordingFinalizerAccessor.Finalize(
+            partialPath,
+            null,
+            AudioSource.MicrophoneOnly,
+            outputPath);
+
+        using var reader = new WaveFileReader(outputPath);
+        var samplesProvider = reader.ToSampleProvider();
+        var output = new float[48_000];
+        var count = samplesProvider.Read(output);
+        Assert.InRange(count, 47_000, 48_000);
+        Assert.Contains(output[..24_000], sample => MathF.Abs(sample) > .01f);
+        Assert.All(output[30_000..count], sample => Assert.InRange(sample, -.0001f, .0001f));
+    }
+
+    [Fact]
     public async Task RecoveryRepairsIeeeFloatWaveDataChunkBeforeFinalizing()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

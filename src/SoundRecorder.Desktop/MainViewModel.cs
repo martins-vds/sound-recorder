@@ -385,7 +385,10 @@ public sealed partial class MainViewModel : ObservableObject
         await _recorder.AcceptCompletedRecordingAsync(recording);
         PermissionConfirmed = false;
         await RefreshHistoryAsync();
-        Message = $"Recording saved at the four-hour limit: {recording.AudioPath}";
+        Message = recording.Outcome == RecordingOutcome.Interrupted
+            ? $"Recording was interrupted. Available audio was saved to {recording.AudioPath}. " +
+              $"{_recorder.LastError}"
+            : $"Recording saved at the four-hour limit: {recording.AudioPath}";
         RefreshState();
     }
 

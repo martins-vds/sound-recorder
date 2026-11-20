@@ -63,7 +63,8 @@ internal static class WaveRecordingFinalizer
         }
 
         var waveReader = new WaveFileReader(path);
-        var resampler = new MediaFoundationResampler(waveReader, targetFormat)
+        IWaveProvider sanitizedReader = new SanitizingWaveProvider(waveReader);
+        var resampler = new MediaFoundationResampler(sanitizedReader, targetFormat)
         {
             ResamplerQuality = 60,
         };

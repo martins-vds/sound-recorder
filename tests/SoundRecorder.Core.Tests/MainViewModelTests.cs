@@ -115,6 +115,27 @@ public sealed class MainViewModelTests
             viewModel.Transcript);
     }
 
+    [Fact]
+    public async Task AcceptCompletedRecordingAsync_InterruptedRecording_DoesNotClaimDurationLimit()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var job = new TranscriptionJob(
+            Guid.NewGuid(),
+            new SavedRecording(
+                Guid.NewGuid(),
+                Path.Combine(directory, "recording.wav"),
+                "English",
+                RecordingOutcome.Interrupted,
+                TimeSpan.FromSeconds(5)));
+        var viewModel = await CreateViewModelAsync(directory, job);
+
+        await viewModel.AcceptCompletedRecordingAsync(job.Recording);
+
+        Assert.Contains("interrupted", viewModel.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("four-hour", viewModel.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task<MainViewModel> CreateViewModelAsync(
         string directory,
         TranscriptionJob job)

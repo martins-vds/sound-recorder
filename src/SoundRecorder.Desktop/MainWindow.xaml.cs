@@ -256,7 +256,7 @@ public partial class MainWindow : Window
         await Dispatcher.InvokeAsync(async () =>
         {
             await _viewModel.AcceptCompletedRecordingAsync(recording);
-            ShowMessage($"Recording saved at the four-hour limit: {recording.AudioPath}");
+            ShowMessage(_viewModel.Message);
         });
     }
 
