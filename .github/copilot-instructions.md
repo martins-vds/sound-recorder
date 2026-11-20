@@ -27,7 +27,7 @@ This repository implements the version-one product contract in C#/.NET. Treat `G
 - `requirements\reliability.feature` owns failure honesty and recovery: prerequisites, interrupted/recovered states, storage failures, process/power interruption, minimization, and exit.
 - `requirements\acceptance.feature` defines measurable release evidence and reference-machine thresholds. Keep benchmark/model selection explicitly separate from claims that acceptance has already been met.
 
-`SoundRecorder.Core` owns public state machines and remains independent of WPF, NAudio, Whisper, JSON, and Windows APIs. `SoundRecorder.Infrastructure` supplies those adapters. `SoundRecorder.Desktop` coordinates UI and lifecycle. The test project links the original `requirements\*.feature` files through MSBuild.
+`SoundRecorder.Core` owns public state machines and remains independent of WPF, NAudio, Whisper, JSON, and Windows APIs. `SoundRecorder.Infrastructure` supplies those adapters. `SoundRecorder.Desktop` uses `MainViewModel` plus CommunityToolkit.Mvvm commands for asynchronous orchestration; code-behind is limited to dialogs, tray, and Windows lifecycle integration. The test project links the original `requirements\*.feature` files through MSBuild.
 
 Read the neighboring feature files when changing behavior: normal save/auto-queue connects capture, transcription, and reliability; model integrity and offline operation connect setup, transcription, and acceptance.
 

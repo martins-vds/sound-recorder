@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SoundRecorder.Core\SoundRecorder.Core.csproj" />
     <ProjectReference Include="..\..\src\SoundRecorder.Infrastructure\SoundRecorder.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj" />
   </ItemGroup>
 
 </Project>

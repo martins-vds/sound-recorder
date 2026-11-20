@@ -127,7 +127,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
             return;
         }
 
-        _worker = RunWorkerAsync();
+        _worker = Task.Run(RunWorkerAsync);
     }
 
     private async Task RunWorkerAsync()

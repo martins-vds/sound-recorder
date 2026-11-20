@@ -23,34 +23,43 @@
                         <Label Target="{Binding ElementName=SourceCombo}" Content="Audio source"/>
                         <ComboBox x:Name="SourceCombo"
                                   automation:AutomationProperties.Name="Audio source"
-                                  SelectionChanged="SourceCombo_SelectionChanged">
-                            <ComboBoxItem Content="Microphone only" Tag="MicrophoneOnly"/>
-                            <ComboBoxItem Content="System audio only" Tag="SystemAudioOnly"/>
-                            <ComboBoxItem Content="Microphone and system audio" Tag="MicrophoneAndSystemAudio"/>
-                        </ComboBox>
-                        <TextBlock x:Name="SystemAudioScopeText" TextWrapping="Wrap" Foreground="#555"/>
+                                  ItemsSource="{Binding AudioSources}"
+                                  DisplayMemberPath="DisplayName"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding AudioSource}"/>
+                        <TextBlock x:Name="SystemAudioScopeText"
+                                   Text="{Binding SystemAudioExplanation}"
+                                   TextWrapping="Wrap"
+                                   Foreground="#555"/>
                     </StackPanel>
                     <StackPanel Margin="4">
                         <Label Target="{Binding ElementName=MicrophoneCombo}" Content="Microphone"/>
                         <ComboBox x:Name="MicrophoneCombo"
                                   automation:AutomationProperties.Name="Microphone"
+                                  ItemsSource="{Binding Microphones}"
                                   DisplayMemberPath="Name"
-                                  SelectedValuePath="Id"/>
+                                  SelectedValuePath="Id"
+                                  SelectedValue="{Binding SelectedMicrophoneId}"
+                                  IsEnabled="{Binding UsesMicrophone}"/>
                         <Label Target="{Binding ElementName=PlaybackCombo}" Content="Playback device"/>
                         <ComboBox x:Name="PlaybackCombo"
                                   automation:AutomationProperties.Name="Playback device"
+                                  ItemsSource="{Binding PlaybackDevices}"
                                   DisplayMemberPath="Name"
-                                  SelectedValuePath="Id"/>
+                                  SelectedValuePath="Id"
+                                  SelectedValue="{Binding SelectedPlaybackDeviceId}"
+                                  IsEnabled="{Binding UsesPlayback}"/>
                     </StackPanel>
                     <StackPanel Margin="4">
                         <Label Target="{Binding ElementName=LanguageCombo}" Content="Spoken language"/>
                         <ComboBox x:Name="LanguageCombo"
-                                  automation:AutomationProperties.Name="Spoken language">
-                            <ComboBoxItem Content="English"/>
-                            <ComboBoxItem Content="Brazilian Portuguese"/>
-                        </ComboBox>
+                                  automation:AutomationProperties.Name="Spoken language"
+                                  ItemsSource="{Binding Languages}"
+                                  SelectedItem="{Binding Language}"/>
                         <Label Target="{Binding ElementName=TitleBox}" Content="Optional recording title"/>
-                        <TextBox x:Name="TitleBox" automation:AutomationProperties.Name="Optional recording title"/>
+                        <TextBox x:Name="TitleBox"
+                                 automation:AutomationProperties.Name="Optional recording title"
+                                 Text="{Binding Title}"/>
                     </StackPanel>
                 </UniformGrid>
                 <Grid Margin="4">
@@ -61,28 +70,35 @@
                     </Grid.ColumnDefinitions>
                     <Label Target="{Binding ElementName=DestinationBox}" Content="Local destination"/>
                     <TextBox Grid.Column="1" x:Name="DestinationBox"
-                             automation:AutomationProperties.Name="Local destination folder"/>
+                             automation:AutomationProperties.Name="Local destination folder"
+                             Text="{Binding DestinationFolder}"/>
                     <Button Grid.Column="2" Content="Choose..." Click="ChooseDestination_Click"/>
                 </Grid>
                 <CheckBox x:Name="PermissionCheckBox"
                           automation:AutomationProperties.Name="Permission to record confirmed"
                           Margin="4"
+                          IsChecked="{Binding PermissionConfirmed}"
+                          IsEnabled="{Binding IsIdle}"
                           Content="I have permission to record every person whose audio may be captured."/>
                 <TextBlock Margin="4,0"
                            Foreground="#666"
                            TextWrapping="Wrap"
                            Text="This confirmation is not a guarantee of legal compliance. When system audio is selected, all audio from the selected playback device may be captured, including calls, notifications, and other applications."/>
                 <WrapPanel Margin="0,8,0,0">
-                    <Button x:Name="StartButton" Content="Start recording" Click="Start_Click"/>
-                    <Button x:Name="PauseButton" Content="Pause" Click="Pause_Click"/>
-                    <Button x:Name="ResumeButton" Content="Resume" Click="Resume_Click"/>
-                    <Button x:Name="StopButton" Content="Stop" Click="Stop_Click"/>
+                    <Button x:Name="StartButton" Content="Start recording" Command="{Binding StartCommand}"/>
+                    <Button x:Name="PauseButton" Content="Pause" Command="{Binding PauseCommand}"/>
+                    <Button x:Name="ResumeButton" Content="Resume" Command="{Binding ResumeCommand}"/>
+                    <Button x:Name="StopButton" Content="Stop" Command="{Binding StopCommand}"/>
                     <TextBlock x:Name="StatusText"
                                Margin="12,0"
                                VerticalAlignment="Center"
                                automation:AutomationProperties.LiveSetting="Assertive"
+                               Text="{Binding Status}"
                                FontWeight="SemiBold"/>
-                    <TextBlock x:Name="DurationText" Margin="8,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="DurationText"
+                               Text="{Binding CapturedDuration}"
+                               Margin="8,0"
+                               VerticalAlignment="Center"/>
                 </WrapPanel>
                 <Grid Margin="4">
                     <Grid.ColumnDefinitions>
@@ -94,10 +110,12 @@
                     <TextBlock Text="Microphone level" VerticalAlignment="Center"/>
                     <ProgressBar x:Name="MicrophoneLevel" Grid.Column="1" Height="18" Margin="6"
                                  Minimum="0" Maximum="1"
+                                 Value="{Binding MicrophoneLevel}"
                                  automation:AutomationProperties.Name="Microphone audio level"/>
                     <TextBlock Grid.Column="2" Text="System level" VerticalAlignment="Center"/>
                     <ProgressBar x:Name="SystemLevel" Grid.Column="3" Height="18" Margin="6"
                                  Minimum="0" Maximum="1"
+                                 Value="{Binding SystemAudioLevel}"
                                  automation:AutomationProperties.Name="System audio level"/>
                 </Grid>
             </StackPanel>
@@ -107,11 +125,15 @@
             <StackPanel>
                 <TextBlock Text="Local transcription model" FontSize="16" FontWeight="SemiBold"/>
                 <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                    <TextBlock x:Name="ModelStatusText" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock x:Name="ModelStatusText"
+                               Text="{Binding ModelStatus}"
+                               VerticalAlignment="Center"
+                               Margin="0,0,12,0"/>
                     <Button Content="Import model package..." Click="ImportModel_Click"/>
                     <TextBox x:Name="ModelUrlBox" Width="360"
-                             automation:AutomationProperties.Name="Model package URL"/>
-                    <Button Content="Download selected package" Click="DownloadModel_Click"/>
+                             automation:AutomationProperties.Name="Model package URL"
+                             Text="{Binding ModelUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                    <Button Content="Download selected package" Command="{Binding DownloadModelCommand}"/>
                 </StackPanel>
             </StackPanel>
         </Border>
@@ -121,10 +143,12 @@
                 <DockPanel>
                     <WrapPanel DockPanel.Dock="Top">
                         <Button Content="Open output folder" Click="OpenOutputFolder_Click"/>
-                        <Button Content="Transcribe again" Click="RetryHistory_Click"/>
+                        <Button Content="Transcribe again" Command="{Binding RetryTranscriptionCommand}"/>
                     </WrapPanel>
                     <ListView x:Name="HistoryList"
                               automation:AutomationProperties.Name="Local recording history"
+                              ItemsSource="{Binding Recordings}"
+                              SelectedItem="{Binding SelectedRecording}"
                               SelectionMode="Single">
                         <ListView.View>
                             <GridView>
@@ -140,12 +164,14 @@
             <TabItem Header="Transcription jobs">
                 <DockPanel>
                     <WrapPanel DockPanel.Dock="Top">
-                        <Button Content="Cancel selected job" Click="CancelJob_Click"/>
-                        <Button Content="Retry selected recording" Click="RetryJob_Click"/>
+                        <Button Content="Cancel selected job" Command="{Binding CancelJobCommand}"/>
+                        <Button Content="Retry selected recording" Command="{Binding RetryTranscriptionCommand}"/>
                         <Button Content="View transcript" Click="ViewTranscript_Click"/>
                     </WrapPanel>
                     <ListView x:Name="JobsList"
                               automation:AutomationProperties.Name="Transcription job status"
+                              ItemsSource="{Binding Jobs}"
+                              SelectedItem="{Binding SelectedJob}"
                               SelectionMode="Single">
                         <ListView.View>
                             <GridView>
@@ -163,6 +189,7 @@
         <Border Grid.Row="3" Margin="0,10,0,0" Padding="8" Background="#F7F7F7">
             <TextBlock x:Name="MessageText"
                        TextWrapping="Wrap"
+                       Text="{Binding Message}"
                        automation:AutomationProperties.LiveSetting="Assertive"/>
         </Border>
     </Grid>

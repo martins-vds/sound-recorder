@@ -20,17 +20,14 @@ namespace SoundRecorder.Desktop;
 
 public partial class MainWindow : Window
 {
-    private RecorderApplication _recorder = null!;
     private WindowsRecordingEngine _recordingEngine = null!;
-    private TranscriptionQueue _queue = null!;
-    private LocalTranscriptionModelManager _modelManager = null!;
-    private JsonRecordingHistory _history = null!;
-    private RecoveryManager _recovery = null!;
+    private MainViewModel _viewModel = null!;
     private NotifyIcon _notifyIcon = null!;
     private DispatcherTimer _timer = null!;
     private ILogger<MainWindow> _logger = null!;
     private bool _allowClose;
     private bool _limitWarningShown;
+    private string _previousStatus = "Idle";
 
     public MainWindow()
     {
@@ -61,37 +58,48 @@ public partial class MainWindow : Window
         _recordingEngine = new WindowsRecordingEngine(
             Path.Combine(root, "capture"),
             loggerFactory.CreateLogger<WindowsRecordingEngine>());
-        _modelManager = new LocalTranscriptionModelManager(
+        var modelManager = new LocalTranscriptionModelManager(
             Path.Combine(root, "models"),
             new HttpClient(),
             loggerFactory.CreateLogger<LocalTranscriptionModelManager>());
         var writer = new AtomicTranscriptWriter(
             loggerFactory.CreateLogger<AtomicTranscriptWriter>());
         var transcriber = new WhisperLocalTranscriber(
-            _modelManager,
+            modelManager,
             loggerFactory.CreateLogger<WhisperLocalTranscriber>());
         var jobRepository = new JsonTranscriptionJobRepository(
             Path.Combine(root, "jobs.json"),
             loggerFactory.CreateLogger<JsonTranscriptionJobRepository>());
-        _queue = new TranscriptionQueue(
+        var queue = new TranscriptionQueue(
             transcriber,
             writer,
             jobRepository,
             loggerFactory.CreateLogger<TranscriptionQueue>());
-        _history = new JsonRecordingHistory(
+        var history = new JsonRecordingHistory(
             Path.Combine(root, "history.json"),
             loggerFactory.CreateLogger<JsonRecordingHistory>());
-        _recorder = new RecorderApplication(
+        var recorder = new RecorderApplication(
             _recordingEngine,
-            _queue,
-            _modelManager,
-            _history,
+            queue,
+            modelManager,
+            history,
             loggerFactory.CreateLogger<RecorderApplication>());
-        _recovery = new RecoveryManager(
+        var recovery = new RecoveryManager(
             new LocalRecoveryStorage(
                 Path.Combine(root, "capture"),
                 loggerFactory.CreateLogger<LocalRecoveryStorage>()),
             loggerFactory.CreateLogger<RecoveryManager>());
+        _viewModel = new MainViewModel(
+            recorder,
+            _recordingEngine,
+            queue,
+            modelManager,
+            history,
+            recovery,
+            new WindowsAudioDeviceCatalog(),
+            loggerFactory.CreateLogger<MainViewModel>());
+        DataContext = _viewModel;
+        _viewModel.PropertyChanged += ViewModelOnPropertyChanged;
         _notifyIcon = CreateNotifyIcon();
         _timer = new DispatcherTimer
         {
@@ -108,24 +116,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            LoadDevices();
-            DestinationBox.Text = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
-                "Sound Recorder");
-            LanguageCombo.SelectedIndex = 0;
-            SourceCombo.SelectedIndex = 0;
-            var bundledModel = await _modelManager.ImportBundledAsync(
-                Path.Combine(AppContext.BaseDirectory, "models"),
-                CancellationToken.None);
-            if (bundledModel is not null)
-            {
-                ShowMessage($"Bundled model activated: {bundledModel.Id}");
-            }
-            UpdateModelStatus();
-            await RefreshHistoryAsync();
-            await _queue.RestoreAsync(CancellationToken.None);
+            await _viewModel.InitializeCommand.ExecuteAsync(null);
             await OfferRecoveryAsync();
-            RefreshJobs();
             _timer.Start();
             DesktopLog.MainWindowReady(_logger);
         }
@@ -138,148 +130,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadDevices()
-    {
-        var catalog = new WindowsAudioDeviceCatalog();
-        MicrophoneCombo.ItemsSource = catalog.GetMicrophones();
-        PlaybackCombo.ItemsSource = catalog.GetPlaybackDevices();
-        MicrophoneCombo.SelectedIndex = MicrophoneCombo.Items.Count > 0 ? 0 : -1;
-        PlaybackCombo.SelectedIndex = PlaybackCombo.Items.Count > 0 ? 0 : -1;
-    }
-
-    private async void Start_Click(object sender, RoutedEventArgs args)
-    {
-        if (PermissionCheckBox.IsChecked != true)
-        {
-            ShowMessage("Confirm that you have permission to record before starting.");
-            return;
-        }
-
-        WarnIfSynchronizedFolder();
-        var request = BuildRequest();
-        DesktopLog.RecordingStartRequested(_logger, request.Source);
-        SetThreadExecutionState(ExecutionState.Continuous | ExecutionState.SystemRequired);
-        await _recorder.StartAsync(request, permissionConfirmed: true);
-        if (_recorder.LastError is null)
-        {
-            ShowMessage("Recording started.");
-            _notifyIcon.Text = "Sound Recorder - recording";
-        }
-        else
-        {
-            SetThreadExecutionState(ExecutionState.Continuous);
-            var canRetryShorter = _recorder.LastError.Contains(
-                                      "four-hour recording",
-                                      StringComparison.OrdinalIgnoreCase) &&
-                                  System.Windows.MessageBox.Show(
-                                      _recorder.LastError +
-                                      "\n\nProceed with a shorter recording when free space runs out?",
-                                      "Insufficient space for maximum duration",
-                                      MessageBoxButton.YesNo,
-                                      MessageBoxImage.Warning) == MessageBoxResult.Yes;
-            if (canRetryShorter)
-            {
-                await _recorder.StartAsync(
-                    request with { AllowShortRecordingWhenStorageIsLow = true },
-                    permissionConfirmed: true);
-                if (_recorder.LastError is null)
-                {
-                    SetThreadExecutionState(
-                        ExecutionState.Continuous | ExecutionState.SystemRequired);
-                }
-            }
-
-            ShowMessage(_recorder.LastError ?? "Recording started.");
-        }
-
-        UpdateControls();
-    }
-
-    private async void Pause_Click(object sender, RoutedEventArgs args)
-    {
-        await _recorder.PauseAsync();
-        DesktopLog.RecordingPaused(_logger);
-        ShowMessage("Recording paused. Paused time is excluded from the saved audio.");
-        UpdateControls();
-    }
-
-    private async void Resume_Click(object sender, RoutedEventArgs args)
-    {
-        await _recorder.ResumeAsync();
-        DesktopLog.RecordingResumed(_logger);
-        ShowMessage("Recording resumed.");
-        UpdateControls();
-    }
-
-    private async void Stop_Click(object sender, RoutedEventArgs args)
-    {
-        await StopRecordingAsync(enqueueTranscription: true);
-    }
-
-    private async Task StopRecordingAsync(bool enqueueTranscription)
-    {
-        try
-        {
-            var recording = await _recorder.StopAsync(
-                CancellationToken.None,
-                enqueueTranscription);
-            SetThreadExecutionState(ExecutionState.Continuous);
-            _limitWarningShown = false;
-            if (recording is not null)
-            {
-                ShowMessage(
-                    recording.Outcome == RecordingOutcome.Complete
-                        ? $"Recording saved to {recording.AudioPath}. {_recorder.TranscriptionNotice}"
-                        : $"Recording was interrupted. Available audio was saved to {recording.AudioPath}.");
-                await RefreshHistoryAsync();
-                RefreshJobs();
-                PermissionCheckBox.IsChecked = false;
-                DesktopLog.RecordingStopped(_logger, recording.Outcome);
-            }
-            else if (_recorder.LastError is not null)
-            {
-                ShowMessage(_recorder.LastError);
-            }
-
-            _notifyIcon.Text = "Sound Recorder";
-            UpdateControls();
-        }
-        catch (Exception exception)
-        {
-            SetThreadExecutionState(ExecutionState.Continuous);
-            DesktopLog.RecordingStopFailed(_logger, exception);
-            ShowMessage(
-                $"The recording could not be finalized. Available partial audio remains for recovery; see {App.LogFilePath}");
-        }
-    }
-
-    private RecordingRequest BuildRequest()
-    {
-        var source = SourceCombo.SelectedItem is ComboBoxItem item &&
-                     Enum.TryParse<AudioSource>((string)item.Tag, out var parsed)
-            ? parsed
-            : AudioSource.MicrophoneOnly;
-        return new RecordingRequest(
-            source,
-            (string?)MicrophoneCombo.SelectedValue,
-            (string?)PlaybackCombo.SelectedValue,
-            DestinationBox.Text.Trim(),
-            string.IsNullOrWhiteSpace(TitleBox.Text) ? null : TitleBox.Text.Trim(),
-            (LanguageCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "English",
-            AllowShortRecordingWhenStorageIsLow: false);
-    }
-
-    private void SourceCombo_SelectionChanged(object sender, SelectionChangedEventArgs args)
-    {
-        var source = BuildRequest().Source;
-        MicrophoneCombo.IsEnabled = source != AudioSource.SystemAudioOnly;
-        PlaybackCombo.IsEnabled = source != AudioSource.MicrophoneOnly;
-        SystemAudioScopeText.Text = source == AudioSource.MicrophoneOnly
-            ? "Microphone input is saved as mono."
-            : $"{ProductCopy.SystemAudioScope} {ProductCopy.HeadphoneRecommendation} " +
-              ProductCopy.EchoCancellationLimitation;
-    }
-
     private void ChooseDestination_Click(object sender, RoutedEventArgs args)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog
@@ -288,7 +138,7 @@ public partial class MainWindow : Window
         };
         if (dialog.ShowDialog() == true)
         {
-            DestinationBox.Text = dialog.FolderName;
+            _viewModel.DestinationFolder = dialog.FolderName;
             WarnIfSynchronizedFolder();
         }
     }
@@ -304,82 +154,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        try
-        {
-            await _modelManager.ImportAsync(dialog.FileName, CancellationToken.None);
-            UpdateModelStatus();
-            ShowMessage("The model package was verified and activated locally.");
-        }
-        catch (Exception exception)
-        {
-            ShowMessage($"The model package was not activated: {exception.Message}");
-        }
-    }
-
-    private async void DownloadModel_Click(object sender, RoutedEventArgs args)
-    {
-        if (!Uri.TryCreate(ModelUrlBox.Text, UriKind.Absolute, out var uri) ||
-            uri.Scheme is not ("https" or "http"))
-        {
-            ShowMessage("Enter an HTTP or HTTPS URL for a model package.");
-            return;
-        }
-
-        try
-        {
-            await _modelManager.DownloadAndImportAsync(uri, CancellationToken.None);
-            UpdateModelStatus();
-            ShowMessage("The model package was downloaded, verified, and activated locally.");
-        }
-        catch (Exception exception)
-        {
-            ShowMessage($"The model download or update failed: {exception.Message}");
-        }
-    }
-
-    private async void CancelJob_Click(object sender, RoutedEventArgs args)
-    {
-        if (JobsList.SelectedItem is not TranscriptionJob job)
-        {
-            ShowMessage("Select a transcription job to cancel.");
-            return;
-        }
-
-        await _queue.CancelAsync(job.Id, CancellationToken.None);
-        RefreshJobs();
-    }
-
-    private async void RetryJob_Click(object sender, RoutedEventArgs args)
-    {
-        var recording = (JobsList.SelectedItem as TranscriptionJob)?.Recording
-                        ?? HistoryList.SelectedItem as SavedRecording;
-        if (recording is null)
-        {
-            ShowMessage("Select a recording or job to transcribe again.");
-            return;
-        }
-
-        var language = ((ComboBoxItem)LanguageCombo.SelectedItem).Content.ToString()!;
-        await _queue.RetryAsync(recording with { Language = language }, CancellationToken.None);
-        RefreshJobs();
-    }
-
-    private void RetryHistory_Click(object sender, RoutedEventArgs args)
-    {
-        RetryJob_Click(sender, args);
+        await _viewModel.ImportModelCommand.ExecuteAsync(dialog.FileName);
     }
 
     private async void ViewTranscript_Click(object sender, RoutedEventArgs args)
     {
-        var job = JobsList.SelectedItem as TranscriptionJob;
-        var path = job?.Outputs?.TextPath;
-        if (path is null || !File.Exists(path))
+        await _viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+        var text = _viewModel.Transcript;
+        if (text is null)
         {
-            ShowMessage("Select a successful transcription job.");
             return;
         }
-
-        var text = await File.ReadAllTextAsync(path);
         var copy = System.Windows.MessageBox.Show(
             text,
             "Transcript",
@@ -412,13 +197,16 @@ public partial class MainWindow : Window
 
     private void TimerOnTick(object? sender, EventArgs args)
     {
-        var duration = _recordingEngine.CapturedDuration;
-        DurationText.Text = duration.ToString(@"hh\:mm\:ss");
-        MicrophoneLevel.Value = _recordingEngine.MicrophoneLevel;
-        SystemLevel.Value = _recordingEngine.SystemAudioLevel;
+        _viewModel.Refresh();
+        if (_viewModel.Status == "Recording" && _previousStatus == "Idle")
+        {
+            _limitWarningShown = false;
+        }
+
+        _previousStatus = _viewModel.Status;
         if (!_limitWarningShown &&
-            duration >= RecordingFormat.WarningCapturedDuration &&
-            _recorder.VisibleStatus is "Recording" or "Paused")
+            _recordingEngine.CapturedDuration >= RecordingFormat.WarningCapturedDuration &&
+            _viewModel.Status is "Recording" or "Paused")
         {
             _limitWarningShown = true;
             ShowMessage("The four-hour captured-duration limit is approaching.");
@@ -429,9 +217,36 @@ public partial class MainWindow : Window
                 ToolTipIcon.Warning);
         }
 
-        StatusText.Text = _recorder.VisibleStatus;
-        RefreshJobs();
-        UpdateControls();
+        SetThreadExecutionState(
+            _viewModel.IsIdle
+                ? ExecutionState.Continuous
+                : ExecutionState.Continuous | ExecutionState.SystemRequired);
+        _notifyIcon.Text = _viewModel.IsIdle
+            ? "Sound Recorder"
+            : "Sound Recorder - recording";
+    }
+
+    private async void ViewModelOnPropertyChanged(
+        object? sender,
+        PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName != nameof(MainViewModel.NeedsShortRecordingConsent) ||
+            !_viewModel.NeedsShortRecordingConsent)
+        {
+            return;
+        }
+
+        _viewModel.NeedsShortRecordingConsent = false;
+        var approved = System.Windows.MessageBox.Show(
+            _viewModel.Message +
+            "\n\nProceed with a shorter recording when free space runs out?",
+            "Insufficient space for maximum duration",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        if (approved)
+        {
+            await _viewModel.StartRecordingAsync(allowShortRecording: true);
+        }
     }
 
     private async void RecordingEngineOnRecordingCompleted(
@@ -440,16 +255,14 @@ public partial class MainWindow : Window
     {
         await Dispatcher.InvokeAsync(async () =>
         {
-            await _recorder.AcceptCompletedRecordingAsync(recording);
-            PermissionCheckBox.IsChecked = false;
-            await RefreshHistoryAsync();
+            await _viewModel.AcceptCompletedRecordingAsync(recording);
             ShowMessage($"Recording saved at the four-hour limit: {recording.AudioPath}");
         });
     }
 
     private async Task OfferRecoveryAsync()
     {
-        foreach (var candidate in await _recovery.FindAsync())
+        foreach (var candidate in await _viewModel.FindRecoveryCandidatesAsync())
         {
             var answer = System.Windows.MessageBox.Show(
                 $"Recover available audio from the recording last saved at {candidate.LastSavedAt}?",
@@ -461,59 +274,8 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            var result = await _recovery.RecoverAsync(candidate);
-            if (result.Recording is not null)
-            {
-                await _history.AddAsync(result.Recording, CancellationToken.None);
-                ShowMessage(
-                    $"Recovered audio was saved as a recovered recording. Transcription requires an explicit request: {result.Recording.AudioPath}");
-            }
-            else
-            {
-                ShowMessage(result.Error!);
-            }
+            await _viewModel.RecoverAsync(candidate);
         }
-
-        await RefreshHistoryAsync();
-    }
-
-    private async Task RefreshHistoryAsync()
-    {
-        var recordings = await _history.LoadAsync(CancellationToken.None);
-        HistoryList.ItemsSource = recordings
-            .OrderByDescending(recording => recording.Id)
-            .ToArray();
-        var missing = recordings.FirstOrDefault(record => !File.Exists(record.AudioPath));
-        if (missing is not null)
-        {
-            ShowMessage($"The recorded audio file is missing: {missing.AudioPath}");
-        }
-    }
-
-    private void RefreshJobs()
-    {
-        JobsList.ItemsSource = _queue.Jobs.ToArray();
-    }
-
-    private void UpdateModelStatus()
-    {
-        var package = _modelManager.CurrentPackage;
-        ModelStatusText.Text = package is null
-            ? "No compatible model is installed. Recordings remain available for later transcription."
-            : $"Active model: {package.Id} ({string.Join(", ", package.Languages)})";
-    }
-
-    private void UpdateControls()
-    {
-        var idle = _recorder.VisibleStatus == "Idle";
-        StartButton.IsEnabled = idle;
-        PauseButton.IsEnabled = _recorder.VisibleStatus == "Recording";
-        ResumeButton.IsEnabled = _recorder.VisibleStatus == "Paused";
-        StopButton.IsEnabled = !idle;
-        SourceCombo.IsEnabled = idle;
-        MicrophoneCombo.IsEnabled = idle && BuildRequest().Source != AudioSource.SystemAudioOnly;
-        PlaybackCombo.IsEnabled = idle && BuildRequest().Source != AudioSource.MicrophoneOnly;
-        PermissionCheckBox.IsEnabled = idle;
     }
 
     private NotifyIcon CreateNotifyIcon()
@@ -540,7 +302,7 @@ public partial class MainWindow : Window
 
     private void WarnIfSynchronizedFolder()
     {
-        var path = Path.GetFullPath(DestinationBox.Text.Trim());
+        var path = Path.GetFullPath(_viewModel.DestinationFolder);
         var synchronizedRoots = new[]
             {
                 Environment.GetEnvironmentVariable("OneDrive"),
@@ -558,13 +320,12 @@ public partial class MainWindow : Window
 
     private void ShowMessage(string message)
     {
-        MessageText.Text = message;
+        _viewModel.Message = message;
     }
 
     private async Task RequestExitAsync()
     {
-        if (_recorder.VisibleStatus == "Idle" &&
-            _queue.Jobs.All(job => job.Status != TranscriptionJobStatus.Running))
+        if (!_viewModel.HasActiveWork())
         {
             _allowClose = true;
             Close();
@@ -582,16 +343,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_recorder.VisibleStatus != "Idle")
-        {
-            await StopRecordingAsync(enqueueTranscription: false);
-        }
-
-        foreach (var running in _queue.Jobs.Where(
-                     job => job.Status == TranscriptionJobStatus.Running))
-        {
-            await _queue.CancelAsync(running.Id, CancellationToken.None);
-        }
+        await _viewModel.StopActiveWorkAsync();
 
         _allowClose = true;
         Close();
@@ -606,8 +358,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_recorder.VisibleStatus is "Recording" or "Paused" ||
-            _queue.Jobs.Any(job => job.Status == TranscriptionJobStatus.Running))
+        if (_viewModel.HasActiveWork())
         {
             args.Cancel = true;
             var answer = System.Windows.MessageBox.Show(
@@ -630,7 +381,7 @@ public partial class MainWindow : Window
             args.Cancel = true;
             try
             {
-                await StopActiveWorkAsync();
+                await _viewModel.StopActiveWorkAsync();
             }
             catch (Exception exception)
             {
@@ -657,25 +408,11 @@ public partial class MainWindow : Window
             _notifyIcon.ShowBalloonTip(
                 3000,
                 "Sound Recorder is still running",
-                _recorder.VisibleStatus,
+                _viewModel.Status,
                 ToolTipIcon.Info);
         }
 
         base.OnStateChanged(args);
-    }
-
-    private async Task StopActiveWorkAsync()
-    {
-        if (_recorder.VisibleStatus != "Idle")
-        {
-            await StopRecordingAsync(enqueueTranscription: false);
-        }
-
-        foreach (var job in _queue.Jobs.Where(
-                     job => job.Status == TranscriptionJobStatus.Running))
-        {
-            await _queue.CancelAsync(job.Id, CancellationToken.None);
-        }
     }
 
     private void DisposeWindowServices()
@@ -692,7 +429,7 @@ public partial class MainWindow : Window
     {
         if (args.Mode == Microsoft.Win32.PowerModes.Suspend)
         {
-            await StopActiveWorkAsync();
+            await _viewModel.StopActiveWorkAsync();
             ShowMessage("Windows is suspending. Available audio was finalized and work was interrupted.");
         }
     }
@@ -701,7 +438,7 @@ public partial class MainWindow : Window
         object sender,
         Microsoft.Win32.SessionEndingEventArgs args)
     {
-        await StopActiveWorkAsync();
+        await _viewModel.StopActiveWorkAsync();
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]

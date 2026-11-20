@@ -86,7 +86,7 @@ The app records startup readiness, capture lifecycle, recovery, queue transition
 
 - `SoundRecorder.Core`: public recording, queue, history, and recovery state machines without Windows or third-party dependencies.
 - `SoundRecorder.Infrastructure`: NAudio/WASAPI capture, local Whisper processing, atomic TXT/SRT output, model-package validation, recovery, and JSON persistence.
-- `SoundRecorder.Desktop`: WPF lifecycle, notification-area status, accessibility labels, explicit permission/model actions, and local history UI.
+- `SoundRecorder.Desktop`: MVVM-based WPF UI using CommunityToolkit.Mvvm. Async commands own recording/model/queue operations; code-behind remains limited to dialogs, notification-area behavior, and Windows lifecycle integration.
 - `requirements\`: canonical Reqnroll specifications linked into the test project rather than copied.
 
 Audio is flushed during capture for recovery. Normal capture finalizes to a 48 kHz 16-bit PCM WAV, mixing microphone audio into both stereo channels for combined capture. Transcription is FIFO with one worker, and output pairs are promoted only after both files complete. Model activation occurs after manifest compatibility and SHA-256 verification, while the previous working model remains available.
