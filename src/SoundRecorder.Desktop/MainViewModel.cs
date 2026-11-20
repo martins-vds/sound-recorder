@@ -374,7 +374,10 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        Transcript = await File.ReadAllTextAsync(path);
+        var text = await File.ReadAllTextAsync(path);
+        Transcript = string.IsNullOrWhiteSpace(text)
+            ? "No speech was recognized in this recording."
+            : text;
     }
 
     public async Task AcceptCompletedRecordingAsync(SavedRecording recording)

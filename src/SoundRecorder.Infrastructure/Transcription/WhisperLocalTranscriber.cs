@@ -50,11 +50,13 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
                 cancellationToken);
             await using var audio = File.OpenRead(temporaryAudioPath);
             InfrastructureLog.TranscriptionStarted(_logger, recording.Id);
-            var segments = await _processAudio(
-                model,
-                recording,
-                audio,
-                cancellationToken);
+            var segments = NormalizeSegments(
+                await _processAudio(
+                    model,
+                    recording,
+                    audio,
+                    cancellationToken),
+                recording.CapturedDuration);
             InfrastructureLog.TranscriptionProducedSegments(
                 _logger,
                 segments.Count,
@@ -68,6 +70,22 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
                 File.Delete(temporaryAudioPath);
             }
         }
+    }
+
+    private static IReadOnlyList<TranscriptSegment> NormalizeSegments(
+        IReadOnlyList<TranscriptSegment> segments,
+        TimeSpan duration)
+    {
+        var tolerance = TimeSpan.FromMilliseconds(100);
+        return segments
+            .Where(segment =>
+                segment.Start < duration &&
+                segment.End > segment.Start &&
+                segment.End <= duration + tolerance)
+            .Select(segment => segment.End > duration
+                ? segment with { End = duration }
+                : segment)
+            .ToArray();
     }
 
     private static void ResampleForWhisper(
@@ -105,17 +123,10 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
 
         await foreach (var segment in processor.ProcessAsync(audio, cancellationToken))
         {
-            var start = segment.Start;
-            var end = segment.End;
-            if (end <= start || end > recording.CapturedDuration)
-            {
-                continue;
-            }
-
             var text = segment.Text.Trim();
             if (text.Length > 0)
             {
-                segments.Add(new TranscriptSegment(start, end, text));
+                segments.Add(new TranscriptSegment(segment.Start, segment.End, text));
             }
         }
 

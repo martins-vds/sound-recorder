@@ -85,6 +85,61 @@ public sealed class MainViewModelTests
         Assert.Contains(nameof(MainViewModel.RetryTranscriptionCommand), members);
     }
 
+    [Fact]
+    public async Task ViewTranscriptCommand_EmptyTranscript_ProvidesVisibleExplanation()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var textPath = Path.Combine(directory, "recording.txt");
+        await File.WriteAllTextAsync(textPath, string.Empty);
+        var recording = new SavedRecording(
+            Guid.NewGuid(),
+            Path.Combine(directory, "recording.wav"),
+            "English",
+            RecordingOutcome.Complete,
+            TimeSpan.FromSeconds(1));
+        var job = new TranscriptionJob(
+            Guid.NewGuid(),
+            recording,
+            DateTimeOffset.UtcNow,
+            TranscriptionJobStatus.Succeeded,
+            new TranscriptOutputs(textPath, Path.Combine(directory, "recording.srt")),
+            null);
+        var viewModel = await CreateViewModelAsync(directory, job);
+        viewModel.SelectedJob = job;
+
+        await viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+
+        Assert.Equal(
+            "No speech was recognized in this recording.",
+            viewModel.Transcript);
+    }
+
+    private static async Task<MainViewModel> CreateViewModelAsync(
+        string directory,
+        TranscriptionJob job)
+    {
+        var repository = new JobRepository(job);
+        var queue = new TranscriptionQueue(
+            new UnusedTranscriber(),
+            new UnusedWriter(),
+            repository);
+        await queue.RestoreAsync(CancellationToken.None);
+        var recordingEngine = new WindowsRecordingEngine(directory);
+        var modelManager = new LocalTranscriptionModelManager(
+            Path.Combine(directory, "models"),
+            new HttpClient());
+        return new MainViewModel(
+            new RecorderApplication(recordingEngine, queue, modelManager),
+            recordingEngine,
+            queue,
+            modelManager,
+            new JsonRecordingHistory(Path.Combine(directory, "history.json")),
+            new RecoveryManager(new EmptyRecoveryStorage()),
+            new WindowsAudioDeviceCatalog(),
+            NullLogger<MainViewModel>.Instance);
+    }
+
     private sealed class JobRepository(TranscriptionJob job) : ITranscriptionJobRepository
     {
         public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(

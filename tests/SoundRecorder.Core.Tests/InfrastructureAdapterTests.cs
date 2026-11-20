@@ -58,6 +58,44 @@ public sealed class InfrastructureAdapterTests
     }
 
     [Fact]
+    public async Task TranscribeAsync_WhisperEndRoundsPastDuration_PreservesSegmentAtDuration()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var audioPath = Path.Combine(directory, "recording.wav");
+        using (var writer = new WaveFileWriter(audioPath, new WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[48_000 * 2], 0, 48_000 * 2);
+        }
+
+        var duration = TimeSpan.FromSeconds(1) - TimeSpan.FromMilliseconds(1.5);
+        var transcriber = new WhisperLocalTranscriber(
+            new TestModelStore(),
+            null,
+            (_, _, _, _) => Task.FromResult<IReadOnlyList<TranscriptSegment>>(
+            [
+                new TranscriptSegment(
+                    TimeSpan.Zero,
+                    TimeSpan.FromSeconds(1),
+                    "hello"),
+            ]));
+        var recording = new SavedRecording(
+            Guid.NewGuid(),
+            audioPath,
+            "English",
+            RecordingOutcome.Complete,
+            duration);
+
+        var document = await transcriber.TranscribeAsync(
+            recording,
+            CancellationToken.None);
+
+        var segment = Assert.Single(document.Segments);
+        Assert.Equal(duration, segment.End);
+        Assert.Equal("hello", segment.Text);
+    }
+
+    [Fact]
     public async Task BundledModelPackageIsImportedOnFirstStartup()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
