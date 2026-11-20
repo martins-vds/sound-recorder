@@ -177,6 +177,25 @@ public sealed class RecorderApplicationMutationTests
     }
 
     [Fact]
+    public async Task StopFailureLeavesTheRecorderIdleWithRecoveryGuidance()
+    {
+        var logger = new RecordingLogger<RecorderApplication>();
+        var engine = new TestRecordingEngine
+        {
+            StopFailure = new IOException("The partial WAV is still open."),
+        };
+        var app = new RecorderApplication(engine, logger: logger);
+        await app.StartAsync(ValidRequest(), true);
+
+        var recording = await app.StopAsync();
+
+        Assert.Null(recording);
+        Assert.Equal("Idle", app.VisibleStatus);
+        Assert.Contains("recovery", app.LastError);
+        Assert.Contains(910, logger.EventIds);
+    }
+
+    [Fact]
     public async Task CompleteRecordingClearsAnEngineFailure()
     {
         var engine = new TestRecordingEngine
@@ -696,6 +715,7 @@ internal sealed class TestRecordingEngine : IRecordingEngine
     }
 
     public RecordingStartException? StartFailure { get; init; }
+    public IOException? StopFailure { get; init; }
     public string? LastFailure { get; init; }
     public SavedRecording Result { get; }
     public bool Started { get; private set; }
@@ -733,6 +753,11 @@ internal sealed class TestRecordingEngine : IRecordingEngine
     public Task<SavedRecording> StopAsync(CancellationToken cancellationToken)
     {
         StopCalls++;
+        if (StopFailure is not null)
+        {
+            throw StopFailure;
+        }
+
         return Task.FromResult(Result);
     }
 }

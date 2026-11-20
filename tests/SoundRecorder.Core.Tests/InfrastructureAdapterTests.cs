@@ -13,6 +13,38 @@ namespace SoundRecorder.Core.Tests;
 public sealed class InfrastructureAdapterTests
 {
     [Fact]
+    public void FinalizationReadsPartialCaptureOnlyAfterWriterIsClosed()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var partialPath = Path.Combine(directory, "partial.wav");
+        var writer = new WaveFileWriter(
+            partialPath,
+            WaveFormat.CreateIeeeFloatWaveFormat(48_000, 1));
+        writer.WriteSamples(new float[48_000], 0, 48_000);
+        writer.Flush();
+
+        Assert.Throws<IOException>(
+            () => WaveRecordingFinalizerAccessor.Finalize(
+                partialPath,
+                null,
+                AudioSource.MicrophoneOnly,
+                Path.Combine(directory, "before-close.wav")));
+
+        writer.Dispose();
+        var outputPath = Path.Combine(directory, "after-close.wav");
+        WaveRecordingFinalizerAccessor.Finalize(
+            partialPath,
+            null,
+            AudioSource.MicrophoneOnly,
+            outputPath);
+
+        using var reader = new WaveFileReader(outputPath);
+        Assert.Equal(WaveFormatEncoding.Pcm, reader.WaveFormat.Encoding);
+        Assert.Equal(48_000, reader.WaveFormat.SampleRate);
+    }
+
+    [Fact]
     public async Task RecoveryRepairsIeeeFloatWaveDataChunkBeforeFinalizing()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -110,5 +142,25 @@ public sealed class InfrastructureAdapterTests
         }
 
         return -1;
+    }
+}
+
+internal static class WaveRecordingFinalizerAccessor
+{
+    public static void Finalize(
+        string? microphonePath,
+        string? systemAudioPath,
+        AudioSource source,
+        string outputPath)
+    {
+        var method = typeof(LocalTranscriptionModelManager).Assembly
+            .GetType("SoundRecorder.Infrastructure.Audio.WaveRecordingFinalizer")!
+            .GetMethod(
+                "Finalize",
+                System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic)!
+            .CreateDelegate<Action<string?, string?, AudioSource, string>>();
+        method(microphonePath, systemAudioPath, source, outputPath);
     }
 }

@@ -211,25 +211,39 @@ public partial class MainWindow : Window
 
     private async Task StopRecordingAsync(bool enqueueTranscription)
     {
-        var recording = await _recorder.StopAsync(
-            CancellationToken.None,
-            enqueueTranscription);
-        SetThreadExecutionState(ExecutionState.Continuous);
-        _limitWarningShown = false;
-        if (recording is not null)
+        try
         {
-            ShowMessage(
-                recording.Outcome == RecordingOutcome.Complete
-                    ? $"Recording saved to {recording.AudioPath}. {_recorder.TranscriptionNotice}"
-                    : $"Recording was interrupted. Available audio was saved to {recording.AudioPath}.");
-            await RefreshHistoryAsync();
-            RefreshJobs();
-            PermissionCheckBox.IsChecked = false;
-            DesktopLog.RecordingStopped(_logger, recording.Outcome);
-        }
+            var recording = await _recorder.StopAsync(
+                CancellationToken.None,
+                enqueueTranscription);
+            SetThreadExecutionState(ExecutionState.Continuous);
+            _limitWarningShown = false;
+            if (recording is not null)
+            {
+                ShowMessage(
+                    recording.Outcome == RecordingOutcome.Complete
+                        ? $"Recording saved to {recording.AudioPath}. {_recorder.TranscriptionNotice}"
+                        : $"Recording was interrupted. Available audio was saved to {recording.AudioPath}.");
+                await RefreshHistoryAsync();
+                RefreshJobs();
+                PermissionCheckBox.IsChecked = false;
+                DesktopLog.RecordingStopped(_logger, recording.Outcome);
+            }
+            else if (_recorder.LastError is not null)
+            {
+                ShowMessage(_recorder.LastError);
+            }
 
-        _notifyIcon.Text = "Sound Recorder";
-        UpdateControls();
+            _notifyIcon.Text = "Sound Recorder";
+            UpdateControls();
+        }
+        catch (Exception exception)
+        {
+            SetThreadExecutionState(ExecutionState.Continuous);
+            DesktopLog.RecordingStopFailed(_logger, exception);
+            ShowMessage(
+                $"The recording could not be finalized. Available partial audio remains for recovery; see {App.LogFilePath}");
+        }
     }
 
     private RecordingRequest BuildRequest()

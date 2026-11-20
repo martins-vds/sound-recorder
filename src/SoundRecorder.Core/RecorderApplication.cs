@@ -111,9 +111,21 @@ public sealed class RecorderApplication
             return null;
         }
 
-        var recording = await _recordingEngine.StopAsync(cancellationToken);
-        await AcceptCompletedRecordingAsync(recording, enqueueTranscription, cancellationToken);
-        return recording;
+        try
+        {
+            var recording = await _recordingEngine.StopAsync(cancellationToken);
+            await AcceptCompletedRecordingAsync(recording, enqueueTranscription, cancellationToken);
+            return recording;
+        }
+        catch (Exception exception)
+        {
+            Status = RecordingStatus.Idle;
+            LastError =
+                "The recording could not be finalized. Available partial audio remains for recovery.";
+            TranscriptionNotice = null;
+            CoreLog.RecordingStopFailed(_logger, exception);
+            return null;
+        }
     }
 
     public async Task AcceptCompletedRecordingAsync(

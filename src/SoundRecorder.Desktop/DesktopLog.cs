@@ -96,4 +96,12 @@ internal static partial class DesktopLog
     public static partial void RecordingStopped(
         ILogger logger,
         RecordingOutcome recordingOutcome);
+
+    [LoggerMessage(
+        EventId = 910,
+        Level = LogLevel.Error,
+        Message = "Recording stop or finalization failed")]
+    public static partial void RecordingStopFailed(
+        ILogger logger,
+        Exception exception);
 }

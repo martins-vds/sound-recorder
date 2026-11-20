@@ -101,8 +101,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         {
             InfrastructureLog.CaptureStartFailed(_logger, exception, _recordingId);
             await StopCaptureSourcesAsync();
+            var microphonePath = _microphone?.Path;
+            var systemAudioPath = _systemAudio?.Path;
             DisposeSources();
-            DeletePartialFiles();
+            DeletePartialFiles(microphonePath, systemAudioPath);
             throw new RecordingStartException(
                 $"Recording could not start: {exception.Message}",
                 exception);
@@ -159,9 +161,11 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         }
 
         await StopCaptureSourcesAsync();
-        var recording = FinalizeRecording();
+        var microphonePath = _microphone?.Path;
+        var systemAudioPath = _systemAudio?.Path;
         DisposeSources();
-        DeletePartialFiles();
+        var recording = FinalizeRecording(microphonePath, systemAudioPath);
+        DeletePartialFiles(microphonePath, systemAudioPath);
         InfrastructureLog.CaptureFinalized(_logger, recording.Id, recording.Outcome);
         return recording;
     }
@@ -249,7 +253,9 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         await Task.WhenAll(sources.Select(source => source.StopAsync(capturedDuration)));
     }
 
-    private SavedRecording FinalizeRecording()
+    private SavedRecording FinalizeRecording(
+        string? microphonePath,
+        string? systemAudioPath)
     {
         var request = _request
             ?? throw new InvalidOperationException("No recording is active.");
@@ -258,8 +264,8 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             request.Title,
             DateTimeOffset.Now);
         WaveRecordingFinalizer.Finalize(
-            _microphone?.Path,
-            _systemAudio?.Path,
+            microphonePath,
+            systemAudioPath,
             request.Source,
             outputPath);
 
@@ -339,16 +345,20 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         }
     }
 
-    private void DeletePartialFiles()
+    private void DeletePartialFiles(
+        string? microphonePath = null,
+        string? systemAudioPath = null)
     {
-        if (_microphone is not null && File.Exists(_microphone.Path))
+        microphonePath ??= _microphone?.Path;
+        systemAudioPath ??= _systemAudio?.Path;
+        if (microphonePath is not null && File.Exists(microphonePath))
         {
-            File.Delete(_microphone.Path);
+            File.Delete(microphonePath);
         }
 
-        if (_systemAudio is not null && File.Exists(_systemAudio.Path))
+        if (systemAudioPath is not null && File.Exists(systemAudioPath))
         {
-            File.Delete(_systemAudio.Path);
+            File.Delete(systemAudioPath);
         }
 
         if (_checkpointPath is not null && File.Exists(_checkpointPath))

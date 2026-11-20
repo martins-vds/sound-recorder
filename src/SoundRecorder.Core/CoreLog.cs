@@ -65,6 +65,14 @@ internal static partial class CoreLog
         Guid recordingId);
 
     [LoggerMessage(
+        EventId = 910,
+        Level = LogLevel.Error,
+        Message = "Recording stop or finalization failed")]
+    public static partial void RecordingStopFailed(
+        ILogger logger,
+        Exception exception);
+
+    [LoggerMessage(
         EventId = 300,
         Level = LogLevel.Information,
         Message = "Restored {JobCount} transcription jobs")]
