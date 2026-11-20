@@ -168,6 +168,12 @@
                         <Button Content="Retry selected recording" Command="{Binding RetryTranscriptionCommand}"/>
                         <Button Content="View transcript" Click="ViewTranscript_Click"/>
                     </WrapPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding SelectedJob.Outputs.TextPath, StringFormat=Transcript TXT: {0}}"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding SelectedJob.Outputs.SubtitlePath, StringFormat=Subtitles SRT: {0}}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
                     <ListView x:Name="JobsList"
                               automation:AutomationProperties.Name="Transcription job status"
                               ItemsSource="{Binding Jobs}"
@@ -179,6 +185,8 @@
                                 <GridViewColumn Header="Status" DisplayMemberBinding="{Binding Status}" Width="100"/>
                                 <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Recording.Language}" Width="130"/>
                                 <GridViewColumn Header="Error" DisplayMemberBinding="{Binding Error}" Width="280"/>
+                                <GridViewColumn Header="Transcript (TXT)" DisplayMemberBinding="{Binding Outputs.TextPath}" Width="390"/>
+                                <GridViewColumn Header="Subtitles (SRT)" DisplayMemberBinding="{Binding Outputs.SubtitlePath}" Width="390"/>
                                 <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding Recording.AudioPath}" Width="390"/>
                             </GridView>
                         </ListView.View>

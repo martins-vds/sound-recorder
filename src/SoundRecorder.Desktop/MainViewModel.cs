@@ -478,7 +478,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void RefreshJobs()
     {
+        var selectedJobId = SelectedJob?.Id;
         ReplaceItems(Jobs, _queue.Jobs);
+        if (selectedJobId is not null)
+        {
+            SelectedJob = Jobs.FirstOrDefault(job => job.Id == selectedJobId);
+        }
     }
 
     private void RefreshModelStatus()
