@@ -23,6 +23,8 @@ if ($DownloadModel) {
     $modelFileName = "ggml-$DownloadModel.bin"
     $modelUrl = "https://huggingface.co/sandrohanea/whisper.net/resolve/v5/classic/$modelFileName"
     $modelDirectory = Join-Path $OutputDirectory "models"
+    $cacheDirectory = Join-Path $env:LOCALAPPDATA "SoundRecorder\model-cache"
+    $cachedModelPath = Join-Path $cacheDirectory $modelFileName
     $stagingDirectory = Join-Path $env:TEMP "sound-recorder-model-$([guid]::NewGuid().ToString('N'))"
     $modelPath = Join-Path $stagingDirectory $modelFileName
     $manifestPath = Join-Path $stagingDirectory "manifest.json"
@@ -31,8 +33,33 @@ if ($DownloadModel) {
     try {
         New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
         New-Item -ItemType Directory -Force -Path $modelDirectory | Out-Null
-        Write-Host "Downloading $modelFileName from Whisper.net v5..."
-        Invoke-WebRequest -Uri $modelUrl -OutFile $modelPath
+        if (Test-Path $cachedModelPath) {
+            $cachedLength = (Get-Item $cachedModelPath).Length
+            if ($cachedLength -gt 0) {
+                Write-Host "Using cached $modelFileName from $cachedModelPath"
+                Copy-Item $cachedModelPath $modelPath
+            }
+        }
+
+        if (-not (Test-Path $modelPath)) {
+            New-Item -ItemType Directory -Force -Path $cacheDirectory | Out-Null
+            $downloadPath = "$cachedModelPath.download"
+            try {
+                Write-Host "Downloading $modelFileName from Whisper.net v5..."
+                Invoke-WebRequest -Uri $modelUrl -OutFile $downloadPath
+                if ((Get-Item $downloadPath).Length -eq 0) {
+                    throw "Downloaded model is empty."
+                }
+
+                Move-Item $downloadPath $cachedModelPath -Force
+                Copy-Item $cachedModelPath $modelPath
+            }
+            finally {
+                if (Test-Path $downloadPath) {
+                    Remove-Item $downloadPath -Force
+                }
+            }
+        }
 
         $sha256 = (Get-FileHash -Path $modelPath -Algorithm SHA256).Hash
         @{
