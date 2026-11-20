@@ -1,6 +1,5 @@
 using System.IO.Compression;
 using System.Net.Http;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -307,8 +306,10 @@ public sealed class InfrastructureAdapterTests
     }
 
     [Fact]
-    public void CalculateLevel_ExtensibleFloatFormat_ReturnsPeak()
+    public void Append_ExtensibleFloatFormat_PublishesPeak()
     {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
         var format = new WaveFormatExtensible(
             48_000,
             32,
@@ -321,9 +322,10 @@ public sealed class InfrastructureAdapterTests
             .SelectMany(BitConverter.GetBytes)
             .ToArray();
 
-        var level = WindowsRecordingEngineAccessor.CalculateLevel(bytes, format);
+        using var writer = new WaveCaptureWriter(Path.Combine(directory, "capture.wav"), format);
+        writer.Append(bytes, 0);
 
-        Assert.Equal(.75f, level);
+        Assert.Equal(.75f, writer.Level);
     }
 
     [Fact]
@@ -454,20 +456,5 @@ internal static class WaveRecordingFinalizerAccessor
                 System.Reflection.BindingFlags.NonPublic)!
             .CreateDelegate<Action<string?, string?, AudioSource, string>>();
         method(microphonePath, systemAudioPath, source, outputPath);
-    }
-}
-
-internal static class WindowsRecordingEngineAccessor
-{
-    public static float CalculateLevel(byte[] buffer, WaveFormat format)
-    {
-        var captureType = typeof(WindowsRecordingEngine)
-            .GetNestedType("CaptureSource", BindingFlags.NonPublic)!;
-        var method = captureType.GetMethod(
-            "CalculateLevel",
-            BindingFlags.Static | BindingFlags.NonPublic)!;
-        return (float)method.Invoke(
-            null,
-            [buffer, buffer.Length, format])!;
     }
 }

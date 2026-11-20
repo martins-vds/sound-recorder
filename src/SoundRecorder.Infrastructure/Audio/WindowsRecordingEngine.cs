@@ -394,11 +394,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     private sealed class CaptureSource : IDisposable
     {
         private readonly WasapiRecorder _capture;
-        private readonly WaveFileWriter _writer;
+        private readonly WaveCaptureWriter _writer;
         private readonly Func<bool> _isPaused;
         private readonly Action<Exception> _failure;
         private int _failureReported;
-        private float _level;
         private readonly TaskCompletionSource _stopped = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -409,7 +408,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             Action<Exception> failure)
         {
             _capture = capture;
-            _writer = new WaveFileWriter(path, capture.WaveFormat);
+            _writer = new WaveCaptureWriter(path, capture.WaveFormat);
             _isPaused = isPaused;
             _failure = failure;
             Path = path;
@@ -419,7 +418,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
         public string Path { get; }
 
-        public float Level => Volatile.Read(ref _level);
+        public float Level => _writer.Level;
 
         public void Start()
         {
@@ -441,17 +440,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
         public void Flush(TimeSpan capturedDuration)
         {
-            lock (_writer)
-            {
-                if (capturedDuration != TimeSpan.MaxValue)
-                {
-                    var expectedLength = (long)(
-                        capturedDuration.TotalSeconds * _writer.WaveFormat.AverageBytesPerSecond);
-                    FillSilenceTo(expectedLength);
-                }
-
-                _writer.Flush();
-            }
+            _writer.Flush(capturedDuration);
         }
 
         public void Dispose()
@@ -475,25 +464,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
             try
             {
-                var capturedBytes = buffer.ToArray();
-                var invalidSamples = WaveCaptureSanitizer.Sanitize(
-                    capturedBytes,
-                    _writer.WaveFormat,
-                    flags);
-                lock (_writer)
-                {
-                    _writer.Write(capturedBytes, 0, capturedBytes.Length);
-                }
-
-                Volatile.Write(
-                    ref _level,
-                    CalculateLevel(
-                        capturedBytes,
-                        capturedBytes.Length,
-                        _writer.WaveFormat));
+                var invalidSamples = _writer.Append(buffer, flags);
                 if (invalidSamples > Math.Max(
                         1,
-                        capturedBytes.Length / _writer.WaveFormat.BlockAlign / 100) &&
+                        buffer.Length / _capture.WaveFormat.BlockAlign / 100) &&
                     Interlocked.Exchange(ref _failureReported, 1) == 0)
                 {
                     _failure(new InvalidDataException(
@@ -521,50 +495,6 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             }
 
             _stopped.TrySetResult();
-        }
-
-        private static float CalculateLevel(
-            byte[] buffer,
-            int bytesRecorded,
-            WaveFormat format)
-        {
-            var max = 0f;
-            if (WaveCaptureSanitizer.IsIeeeFloat(format))
-            {
-                for (var index = 0; index <= bytesRecorded - 4; index += 4)
-                {
-                    max = Math.Max(max, MathF.Abs(BitConverter.ToSingle(buffer, index)));
-                }
-
-                return max;
-            }
-
-            if (format.BitsPerSample == 16)
-            {
-                for (var index = 0; index <= bytesRecorded - 2; index += 2)
-                {
-                    max = Math.Max(max, MathF.Abs(BitConverter.ToInt16(buffer, index) / 32768f));
-                }
-            }
-
-            return max;
-        }
-
-        private void FillSilenceTo(long expectedLength)
-        {
-            var missingBytes = expectedLength - _writer.Position;
-            if (missingBytes <= 0)
-            {
-                return;
-            }
-
-            var silence = new byte[Math.Min(missingBytes, 64 * 1024)];
-            while (missingBytes > 0)
-            {
-                var count = (int)Math.Min(missingBytes, silence.Length);
-                _writer.Write(silence, 0, count);
-                missingBytes -= count;
-            }
         }
     }
 }
