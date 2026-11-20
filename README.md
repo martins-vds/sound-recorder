@@ -14,6 +14,12 @@ Run the desktop application:
 dotnet run --project .\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj
 ```
 
+Publish a self-contained Windows x64 build:
+
+```powershell
+.\scripts\publish.ps1
+```
+
 Install as the current standard user:
 
 ```powershell
