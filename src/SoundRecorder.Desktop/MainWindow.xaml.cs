@@ -594,10 +594,7 @@ public partial class MainWindow : Window
     {
         if (_allowClose)
         {
-            _notifyIcon.Dispose();
-            _recordingEngine.Dispose();
-            Microsoft.Win32.SystemEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
-            Microsoft.Win32.SystemEvents.SessionEnding -= SystemEventsOnSessionEnding;
+            DisposeWindowServices();
             base.OnClosing(args);
             return;
         }
@@ -623,11 +620,26 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await StopActiveWorkAsync();
+            args.Cancel = true;
+            try
+            {
+                await StopActiveWorkAsync();
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.RecordingStopFailed(_logger, exception);
+            }
+            finally
+            {
+                _allowClose = true;
+                Close();
+            }
+            return;
         }
 
         _allowClose = true;
-        Close();
+        DisposeWindowServices();
+        base.OnClosing(args);
     }
 
     protected override void OnStateChanged(EventArgs args)
@@ -657,6 +669,14 @@ public partial class MainWindow : Window
         {
             await _queue.CancelAsync(job.Id, CancellationToken.None);
         }
+    }
+
+    private void DisposeWindowServices()
+    {
+        _notifyIcon.Dispose();
+        _recordingEngine.Dispose();
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
+        Microsoft.Win32.SystemEvents.SessionEnding -= SystemEventsOnSessionEnding;
     }
 
     private async void SystemEventsOnPowerModeChanged(
