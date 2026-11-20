@@ -79,10 +79,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
                 _microphone = CreateCaptureSource(
                     new WasapiRecorderBuilder()
                         .WithDevice(device)
-                        .WithFormat(
-                            WaveFormat.CreateIeeeFloatWaveFormat(
-                                RecordingFormat.SampleRate,
-                                1))
+                        .WithFormat(new WaveFormat(
+                            RecordingFormat.SampleRate,
+                            RecordingFormat.BitsPerSample,
+                            1))
                         .WithBufferLength(100)
                         .WithMmcssThreadPriority("Audio")
                         .Build(),
@@ -96,10 +96,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
                     new WasapiRecorderBuilder()
                         .WithDevice(device)
                         .WithLoopbackCapture()
-                        .WithFormat(
-                            WaveFormat.CreateIeeeFloatWaveFormat(
-                                RecordingFormat.SampleRate,
-                                2))
+                        .WithFormat(new WaveFormat(
+                            RecordingFormat.SampleRate,
+                            RecordingFormat.BitsPerSample,
+                            2))
                         .WithBufferLength(100)
                         .WithMmcssThreadPriority("Audio")
                         .Build(),
@@ -526,7 +526,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             WaveFormat format)
         {
             var max = 0f;
-            if (format.Encoding == WaveFormatEncoding.IeeeFloat)
+            if (WaveCaptureSanitizer.IsIeeeFloat(format))
             {
                 for (var index = 0; index <= bytesRecorded - 4; index += 4)
                 {

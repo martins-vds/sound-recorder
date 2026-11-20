@@ -38,7 +38,7 @@ internal static class WaveCaptureSanitizer
         return invalidSamples;
     }
 
-    private static bool IsIeeeFloat(WaveFormat format)
+    internal static bool IsIeeeFloat(WaveFormat format)
     {
         return format.BitsPerSample == 32 &&
                (format.Encoding == WaveFormatEncoding.IeeeFloat ||

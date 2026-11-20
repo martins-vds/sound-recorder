@@ -63,6 +63,13 @@ internal static class WaveRecordingFinalizer
         }
 
         var waveReader = new WaveFileReader(path);
+        if (IsMatchingPcmFormat(waveReader.WaveFormat, targetFormat))
+        {
+            readers.Add(waveReader);
+            disposables.Add(waveReader);
+            return;
+        }
+
         IWaveProvider sanitizedReader = new SanitizingWaveProvider(waveReader);
         var resampler = new MediaFoundationResampler(sanitizedReader, targetFormat)
         {
@@ -71,5 +78,15 @@ internal static class WaveRecordingFinalizer
         readers.Add(resampler);
         disposables.Add(resampler);
         disposables.Add(waveReader);
+    }
+
+    private static bool IsMatchingPcmFormat(
+        WaveFormat source,
+        WaveFormat target)
+    {
+        return source.Encoding == WaveFormatEncoding.Pcm &&
+               source.SampleRate == target.SampleRate &&
+               source.BitsPerSample == target.BitsPerSample &&
+               source.Channels == target.Channels;
     }
 }

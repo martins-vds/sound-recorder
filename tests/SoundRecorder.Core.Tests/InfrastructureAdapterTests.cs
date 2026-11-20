@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Net.Http;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -213,6 +214,41 @@ public sealed class InfrastructureAdapterTests
     }
 
     [Fact]
+    public void Finalization_48KHzPcmInput_PreservesCapturedSamplesExactly()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var inputPath = Path.Combine(directory, "capture.wav");
+        var samples = new short[48_000];
+        var random = new Random(42);
+        random.NextBytes(System.Runtime.InteropServices.MemoryMarshal
+            .AsBytes(samples.AsSpan()));
+        using (var writer = new WaveFileWriter(
+                   inputPath,
+                   new WaveFormat(48_000, 16, 1)))
+        {
+            writer.WriteSamples(samples, 0, samples.Length);
+        }
+
+        var outputPath = Path.Combine(directory, "final.wav");
+        WaveRecordingFinalizerAccessor.Finalize(
+            inputPath,
+            null,
+            AudioSource.MicrophoneOnly,
+            outputPath);
+
+        using var output = new WaveFileReader(outputPath);
+        var buffer = new byte[samples.Length * 2];
+        var count = output.Read(buffer);
+        Assert.Equal(buffer.Length, count);
+        Assert.Equal(
+            System.Runtime.InteropServices.MemoryMarshal
+                .AsBytes(samples.AsSpan())
+                .ToArray(),
+            buffer);
+    }
+
+    [Fact]
     public void Sanitize_WasapiSilentPacket_ReplacesBufferContentsWithSilence()
     {
         var format = WaveFormat.CreateIeeeFloatWaveFormat(48_000, 2);
@@ -227,6 +263,26 @@ public sealed class InfrastructureAdapterTests
 
         Assert.Equal(0, invalid);
         Assert.All(data, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public void CalculateLevel_ExtensibleFloatFormat_ReturnsPeak()
+    {
+        var format = new WaveFormatExtensible(
+            48_000,
+            32,
+            1,
+            true,
+            32,
+            1);
+        var samples = new[] { -.25f, .75f };
+        var bytes = samples
+            .SelectMany(BitConverter.GetBytes)
+            .ToArray();
+
+        var level = WindowsRecordingEngineAccessor.CalculateLevel(bytes, format);
+
+        Assert.Equal(.75f, level);
     }
 
     [Fact]
@@ -357,5 +413,20 @@ internal static class WaveRecordingFinalizerAccessor
                 System.Reflection.BindingFlags.NonPublic)!
             .CreateDelegate<Action<string?, string?, AudioSource, string>>();
         method(microphonePath, systemAudioPath, source, outputPath);
+    }
+}
+
+internal static class WindowsRecordingEngineAccessor
+{
+    public static float CalculateLevel(byte[] buffer, WaveFormat format)
+    {
+        var captureType = typeof(WindowsRecordingEngine)
+            .GetNestedType("CaptureSource", BindingFlags.NonPublic)!;
+        var method = captureType.GetMethod(
+            "CalculateLevel",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        return (float)method.Invoke(
+            null,
+            [buffer, buffer.Length, format])!;
     }
 }
