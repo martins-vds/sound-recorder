@@ -64,9 +64,10 @@ public partial class MainWindow : Window
             loggerFactory.CreateLogger<LocalTranscriptionModelManager>());
         var writer = new AtomicTranscriptWriter(
             loggerFactory.CreateLogger<AtomicTranscriptWriter>());
-        var transcriber = new WhisperLocalTranscriber(
+        var transcriber = new WhisperProcessTranscriber(
+            Path.Combine(AppContext.BaseDirectory, "SoundRecorder.Desktop.exe"),
             modelManager,
-            loggerFactory.CreateLogger<WhisperLocalTranscriber>());
+            loggerFactory.CreateLogger<WhisperProcessTranscriber>());
         var jobRepository = new JsonTranscriptionJobRepository(
             Path.Combine(root, "jobs.json"),
             loggerFactory.CreateLogger<JsonTranscriptionJobRepository>());

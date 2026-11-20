@@ -16,6 +16,35 @@ namespace SoundRecorder.Core.Tests;
 public sealed class InfrastructureAdapterTests
 {
     [Fact]
+    public async Task TranscribeAsync_PreCanceledJob_DoesNotStartWorker()
+    {
+        var transcriber = new WhisperProcessTranscriber(
+            "missing-worker.exe",
+            new TestModelStore());
+        var recording = new SavedRecording(
+            Guid.NewGuid(), "recording.wav", "English", RecordingOutcome.Complete, TimeSpan.FromSeconds(1));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => transcriber.TranscribeAsync(recording, cancellation.Token));
+    }
+
+    [Fact]
+    public async Task RunWorkerAsync_InvalidRequest_ReturnsExplicitFailure()
+    {
+        using var input = new StringReader("not-json\n");
+        using var output = new StringWriter();
+
+        var exitCode = await WhisperProcessTranscriber.RunWorkerAsync(input, output);
+
+        Assert.Equal(1, exitCode);
+        using var response = JsonDocument.Parse(output.ToString());
+        Assert.False(string.IsNullOrWhiteSpace(response.RootElement.GetProperty("Error").GetString()));
+        Assert.Equal(JsonValueKind.Null, response.RootElement.GetProperty("Segments").ValueKind);
+    }
+
+    [Fact]
     public async Task TranscribeAsync_48KHzRecording_Processes16KHzMonoWave()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

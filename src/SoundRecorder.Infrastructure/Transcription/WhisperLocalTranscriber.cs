@@ -32,16 +32,24 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         _processAudio = processAudio;
     }
 
-    public async Task<TranscriptDocument> TranscribeAsync(
+    public Task<TranscriptDocument> TranscribeAsync(
         SavedRecording recording,
+        CancellationToken cancellationToken)
+    {
+        return TranscribeAsync(
+            recording,
+            Path.Combine(Path.GetTempPath(), $"sound-recorder-whisper-{Guid.NewGuid():N}.wav"),
+            cancellationToken);
+    }
+
+    internal async Task<TranscriptDocument> TranscribeAsync(
+        SavedRecording recording,
+        string temporaryAudioPath,
         CancellationToken cancellationToken)
     {
         var model = _models.GetModelPath(recording.Language)
             ?? throw new InvalidOperationException(
                 $"No compatible local transcription model is installed for {recording.Language}.");
-        var temporaryAudioPath = Path.Combine(
-            Path.GetTempPath(),
-            $"sound-recorder-whisper-{Guid.NewGuid():N}.wav");
         try
         {
             ResampleForWhisper(
@@ -116,7 +124,8 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         CancellationToken cancellationToken)
     {
         using var factory = WhisperFactory.FromPath(model);
-        using var processor = factory.CreateBuilder()
+        // Cancellation ends enumeration before native inference necessarily releases the model.
+        await using var processor = factory.CreateBuilder()
             .WithLanguage(ToWhisperLanguage(recording.Language))
             .Build();
         var segments = new List<TranscriptSegment>();

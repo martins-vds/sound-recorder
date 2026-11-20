@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
 using SoundRecorder.Infrastructure.Diagnostics;
+using SoundRecorder.Infrastructure.Transcription;
 
 namespace SoundRecorder.Desktop;
 
@@ -14,8 +15,19 @@ public partial class App : System.Windows.Application
 
     internal static string? LogFilePath { get; private set; }
 
-    protected override void OnStartup(System.Windows.StartupEventArgs args)
+    protected override async void OnStartup(System.Windows.StartupEventArgs args)
     {
+        if (args.Args is ["--transcribe-worker"])
+        {
+            ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown;
+            var exitCode = await WhisperProcessTranscriber.RunWorkerAsync(
+                Console.In,
+                Console.Out);
+            Shutdown(exitCode);
+            return;
+        }
+
+        StartupUri = new Uri("MainWindow.xaml", UriKind.Relative);
         var root = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "SoundRecorder");
