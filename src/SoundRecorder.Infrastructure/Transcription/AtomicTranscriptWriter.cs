@@ -1,11 +1,22 @@
 using System.Globalization;
 using System.Text;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SoundRecorder.Infrastructure.Transcription;
 
 public sealed class AtomicTranscriptWriter : ITranscriptWriter
 {
+    private readonly ILogger<AtomicTranscriptWriter> _logger;
+
+    public AtomicTranscriptWriter(
+        ILogger<AtomicTranscriptWriter>? logger = null)
+    {
+        _logger = logger ?? NullLogger<AtomicTranscriptWriter>.Instance;
+    }
+
     public async Task<TranscriptOutputs> WriteAsync(
         TranscriptDocument document,
         CancellationToken cancellationToken)
@@ -31,14 +42,19 @@ public sealed class AtomicTranscriptWriter : ITranscriptWriter
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryTextPath, textPath);
             File.Move(temporarySubtitlePath, subtitlePath);
+            InfrastructureLog.TranscriptPairSaved(_logger, document.Recording.Id);
             return new TranscriptOutputs(textPath, subtitlePath);
         }
-        catch
+        catch (Exception exception)
         {
             DeleteIfExists(temporaryTextPath);
             DeleteIfExists(temporarySubtitlePath);
             DeleteIfExistsIfNew(textPath, temporaryTextPath);
             DeleteIfExistsIfNew(subtitlePath, temporarySubtitlePath);
+            InfrastructureLog.TranscriptPairSaveFailed(
+                _logger,
+                exception,
+                document.Recording.Id);
             throw;
         }
     }

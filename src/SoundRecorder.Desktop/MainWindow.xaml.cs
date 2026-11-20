@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Forms;
 using System.Windows.Threading;
+using Microsoft.Extensions.Logging;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Audio;
 using SoundRecorder.Infrastructure.Models;
@@ -19,41 +20,78 @@ namespace SoundRecorder.Desktop;
 
 public partial class MainWindow : Window
 {
-    private readonly RecorderApplication _recorder;
-    private readonly WindowsRecordingEngine _recordingEngine;
-    private readonly TranscriptionQueue _queue;
-    private readonly LocalTranscriptionModelManager _modelManager;
-    private readonly JsonRecordingHistory _history;
-    private readonly RecoveryManager _recovery;
-    private readonly NotifyIcon _notifyIcon;
-    private readonly DispatcherTimer _timer;
+    private RecorderApplication _recorder = null!;
+    private WindowsRecordingEngine _recordingEngine = null!;
+    private TranscriptionQueue _queue = null!;
+    private LocalTranscriptionModelManager _modelManager = null!;
+    private JsonRecordingHistory _history = null!;
+    private RecoveryManager _recovery = null!;
+    private NotifyIcon _notifyIcon = null!;
+    private DispatcherTimer _timer = null!;
+    private ILogger<MainWindow> _logger = null!;
     private bool _allowClose;
     private bool _limitWarningShown;
 
     public MainWindow()
     {
-        InitializeComponent();
+        try
+        {
+            InitializeComponent();
+            _logger = App.LoggerFactory!.CreateLogger<MainWindow>();
+            DesktopLog.MainWindowInitializing(_logger);
+            InitializeServices();
+        }
+        catch (Exception exception)
+        {
+            if (_logger is not null)
+            {
+                DesktopLog.MainWindowInitializationFailed(_logger, exception);
+            }
+            throw;
+        }
+    }
+
+    private void InitializeServices()
+    {
         var root = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "SoundRecorder");
         Directory.CreateDirectory(root);
-        _recordingEngine = new WindowsRecordingEngine(Path.Combine(root, "capture"));
+        var loggerFactory = App.LoggerFactory!;
+        _recordingEngine = new WindowsRecordingEngine(
+            Path.Combine(root, "capture"),
+            loggerFactory.CreateLogger<WindowsRecordingEngine>());
         _modelManager = new LocalTranscriptionModelManager(
             Path.Combine(root, "models"),
-            new HttpClient());
-        var writer = new AtomicTranscriptWriter();
-        var transcriber = new WhisperLocalTranscriber(_modelManager);
+            new HttpClient(),
+            loggerFactory.CreateLogger<LocalTranscriptionModelManager>());
+        var writer = new AtomicTranscriptWriter(
+            loggerFactory.CreateLogger<AtomicTranscriptWriter>());
+        var transcriber = new WhisperLocalTranscriber(
+            _modelManager,
+            loggerFactory.CreateLogger<WhisperLocalTranscriber>());
         var jobRepository = new JsonTranscriptionJobRepository(
-            Path.Combine(root, "jobs.json"));
-        _queue = new TranscriptionQueue(transcriber, writer, jobRepository);
-        _history = new JsonRecordingHistory(Path.Combine(root, "history.json"));
+            Path.Combine(root, "jobs.json"),
+            loggerFactory.CreateLogger<JsonTranscriptionJobRepository>());
+        _queue = new TranscriptionQueue(
+            transcriber,
+            writer,
+            jobRepository,
+            loggerFactory.CreateLogger<TranscriptionQueue>());
+        _history = new JsonRecordingHistory(
+            Path.Combine(root, "history.json"),
+            loggerFactory.CreateLogger<JsonRecordingHistory>());
         _recorder = new RecorderApplication(
             _recordingEngine,
             _queue,
             _modelManager,
-            _history);
+            _history,
+            loggerFactory.CreateLogger<RecorderApplication>());
         _recovery = new RecoveryManager(
-            new LocalRecoveryStorage(Path.Combine(root, "capture")));
+            new LocalRecoveryStorage(
+                Path.Combine(root, "capture"),
+                loggerFactory.CreateLogger<LocalRecoveryStorage>()),
+            loggerFactory.CreateLogger<RecoveryManager>());
         _notifyIcon = CreateNotifyIcon();
         _timer = new DispatcherTimer
         {
@@ -68,18 +106,29 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs args)
     {
-        LoadDevices();
-        DestinationBox.Text = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
-            "Sound Recorder");
-        SourceCombo.SelectedIndex = 0;
-        LanguageCombo.SelectedIndex = 0;
-        UpdateModelStatus();
-        await RefreshHistoryAsync();
-        await _queue.RestoreAsync(CancellationToken.None);
-        await OfferRecoveryAsync();
-        RefreshJobs();
-        _timer.Start();
+        try
+        {
+            LoadDevices();
+            DestinationBox.Text = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
+                "Sound Recorder");
+            LanguageCombo.SelectedIndex = 0;
+            SourceCombo.SelectedIndex = 0;
+            UpdateModelStatus();
+            await RefreshHistoryAsync();
+            await _queue.RestoreAsync(CancellationToken.None);
+            await OfferRecoveryAsync();
+            RefreshJobs();
+            _timer.Start();
+            DesktopLog.MainWindowReady(_logger);
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.MainWindowLoadFailed(_logger, exception);
+            _timer.Start();
+            ShowMessage(
+                $"Some local state could not be loaded. The app remains available; see {App.LogFilePath}");
+        }
     }
 
     private void LoadDevices()
@@ -101,6 +150,7 @@ public partial class MainWindow : Window
 
         WarnIfSynchronizedFolder();
         var request = BuildRequest();
+        DesktopLog.RecordingStartRequested(_logger, request.Source);
         SetThreadExecutionState(ExecutionState.Continuous | ExecutionState.SystemRequired);
         await _recorder.StartAsync(request, permissionConfirmed: true);
         if (_recorder.LastError is null)
@@ -141,6 +191,7 @@ public partial class MainWindow : Window
     private async void Pause_Click(object sender, RoutedEventArgs args)
     {
         await _recorder.PauseAsync();
+        DesktopLog.RecordingPaused(_logger);
         ShowMessage("Recording paused. Paused time is excluded from the saved audio.");
         UpdateControls();
     }
@@ -148,6 +199,7 @@ public partial class MainWindow : Window
     private async void Resume_Click(object sender, RoutedEventArgs args)
     {
         await _recorder.ResumeAsync();
+        DesktopLog.RecordingResumed(_logger);
         ShowMessage("Recording resumed.");
         UpdateControls();
     }
@@ -173,6 +225,7 @@ public partial class MainWindow : Window
             await RefreshHistoryAsync();
             RefreshJobs();
             PermissionCheckBox.IsChecked = false;
+            DesktopLog.RecordingStopped(_logger, recording.Outcome);
         }
 
         _notifyIcon.Text = "Sound Recorder";
@@ -191,7 +244,7 @@ public partial class MainWindow : Window
             (string?)PlaybackCombo.SelectedValue,
             DestinationBox.Text.Trim(),
             string.IsNullOrWhiteSpace(TitleBox.Text) ? null : TitleBox.Text.Trim(),
-            ((ComboBoxItem)LanguageCombo.SelectedItem).Content.ToString()!,
+            (LanguageCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "English",
             AllowShortRecordingWhenStorageIsLow: false);
     }
 

@@ -1,9 +1,54 @@
+using Microsoft.Extensions.Logging;
 using SoundRecorder.Core;
 
 namespace SoundRecorder.Core.Tests;
 
 public sealed class RecorderApplicationMutationTests
 {
+    [Fact]
+    public async Task ApplicationEmitsLifecycleAndFailureEvents()
+    {
+        var logger = new RecordingLogger<RecorderApplication>();
+        var engine = new TestRecordingEngine();
+        var app = new RecorderApplication(engine, logger: logger);
+
+        await app.StartAsync(ValidRequest(), permissionConfirmed: false);
+        await app.StartAsync(
+            ValidRequest() with { MicrophoneId = null },
+            permissionConfirmed: true);
+        await app.StartAsync(ValidRequest(), permissionConfirmed: true);
+        await app.StartAsync(ValidRequest(), permissionConfirmed: true);
+        await app.PauseAsync();
+        await app.ResumeAsync();
+        await app.StopAsync();
+
+        var failingEngine = new TestRecordingEngine
+        {
+            StartFailure = new RecordingStartException("Capture failed."),
+        };
+        var failingApp = new RecorderApplication(failingEngine, logger: logger);
+        await failingApp.StartAsync(ValidRequest(), permissionConfirmed: true);
+
+        var completionLogger = new RecordingLogger<RecorderApplication>();
+        var completionFailureHistory = new FailAlwaysHistory();
+        var completionApp = new RecorderApplication(
+            engine,
+            history: completionFailureHistory,
+            logger: completionLogger);
+        await Assert.ThrowsAsync<IOException>(
+            () => completionApp.AcceptCompletedRecordingAsync(engine.Result));
+
+        Assert.Contains(210, logger.EventIds);
+        Assert.Contains(211, logger.EventIds);
+        Assert.Contains(212, logger.EventIds);
+        Assert.Contains(200, logger.EventIds);
+        Assert.Contains(201, logger.EventIds);
+        Assert.Contains(202, logger.EventIds);
+        Assert.Contains(203, logger.EventIds);
+        Assert.Contains(901, logger.EventIds);
+        Assert.Contains(902, completionLogger.EventIds);
+    }
+
     [Fact]
     public async Task StartRequiresPermissionAndReportsExactAction()
     {
@@ -350,7 +395,8 @@ public sealed class TranscriptionQueueMutationTests
         var transcriber = new ControlledTranscriber();
         var writer = new ControlledWriter();
         var repository = new RecordingJobRepository();
-        var queue = new TranscriptionQueue(transcriber, writer, repository);
+        var logger = new RecordingLogger<TranscriptionQueue>();
+        var queue = new TranscriptionQueue(transcriber, writer, repository, logger);
         var recording = Recording();
 
         await queue.EnqueueAsync(recording, CancellationToken.None);
@@ -363,6 +409,9 @@ public sealed class TranscriptionQueueMutationTests
         Assert.Contains(TranscriptionJobStatus.Queued, repository.SavedStatuses);
         Assert.Contains(TranscriptionJobStatus.Running, repository.SavedStatuses);
         Assert.Equal(TranscriptionJobStatus.Succeeded, repository.LastSavedStatus);
+        Assert.Contains(301, logger.EventIds);
+        Assert.Contains(305, logger.EventIds);
+        Assert.Contains(306, logger.EventIds);
     }
 
     [Fact]
@@ -386,7 +435,12 @@ public sealed class TranscriptionQueueMutationTests
             null);
         var repository = new RecordingJobRepository([queued, interrupted]);
         var transcriber = new ControlledTranscriber(block: true);
-        var queue = new TranscriptionQueue(transcriber, new ControlledWriter(), repository);
+        var logger = new RecordingLogger<TranscriptionQueue>();
+        var queue = new TranscriptionQueue(
+            transcriber,
+            new ControlledWriter(),
+            repository,
+            logger);
 
         await queue.RestoreAsync(CancellationToken.None);
         await WaitForAsync(() => transcriber.StartedIds.Count == 1);
@@ -399,6 +453,7 @@ public sealed class TranscriptionQueueMutationTests
         transcriber.Release();
         await queue.WaitForIdleAsync(CancellationToken.None);
         Assert.Equal(TranscriptionJobStatus.Succeeded, queued.Status);
+        Assert.Contains(300, logger.EventIds);
     }
 
     [Fact]
@@ -406,7 +461,12 @@ public sealed class TranscriptionQueueMutationTests
     {
         var transcriber = new ControlledTranscriber(block: true);
         var repository = new RecordingJobRepository();
-        var queue = new TranscriptionQueue(transcriber, new ControlledWriter(), repository);
+        var logger = new RecordingLogger<TranscriptionQueue>();
+        var queue = new TranscriptionQueue(
+            transcriber,
+            new ControlledWriter(),
+            repository,
+            logger);
         await queue.EnqueueAsync(Recording(), CancellationToken.None);
         await WaitForAsync(() => queue.Jobs[0].Status == TranscriptionJobStatus.Running);
         await queue.EnqueueAsync(Recording(), CancellationToken.None);
@@ -423,6 +483,9 @@ public sealed class TranscriptionQueueMutationTests
         await queue.WaitForIdleAsync(CancellationToken.None);
         Assert.Equal(TranscriptionJobStatus.Canceled, queue.Jobs[0].Status);
         Assert.Contains(TranscriptionJobStatus.Canceled, repository.SavedStatuses);
+        Assert.Contains(302, logger.EventIds);
+        Assert.Contains(303, logger.EventIds);
+        Assert.Contains(307, logger.EventIds);
     }
 
     [Fact]
@@ -430,7 +493,12 @@ public sealed class TranscriptionQueueMutationTests
     {
         var transcriber = new ControlledTranscriber(failure: new IOException("disk full"));
         var repository = new RecordingJobRepository();
-        var queue = new TranscriptionQueue(transcriber, new ControlledWriter(), repository);
+        var logger = new RecordingLogger<TranscriptionQueue>();
+        var queue = new TranscriptionQueue(
+            transcriber,
+            new ControlledWriter(),
+            repository,
+            logger);
         var recording = Recording();
         await queue.EnqueueAsync(recording, CancellationToken.None);
         await queue.WaitForIdleAsync(CancellationToken.None);
@@ -446,6 +514,8 @@ public sealed class TranscriptionQueueMutationTests
         Assert.NotEqual(failed.Id, retry.Id);
         Assert.Equal(2, queue.Jobs.Count);
         Assert.Equal(TranscriptionJobStatus.Succeeded, retry.Status);
+        Assert.Contains(304, logger.EventIds);
+        Assert.Contains(903, logger.EventIds);
     }
 
     [Fact]
@@ -485,6 +555,32 @@ public sealed class TranscriptionQueueMutationTests
         transcriber.Release();
         await idle;
         Assert.Equal(TranscriptionJobStatus.Succeeded, retry.Status);
+    }
+
+    [Fact]
+    public async Task RecoveryEmitsCandidateSuccessAndFailureEvents()
+    {
+        var logger = new RecordingLogger<RecoveryManager>();
+        var candidate = new RecoveryCandidate(
+            Guid.NewGuid(),
+            "state",
+            "English",
+            TimeSpan.FromSeconds(1),
+            DateTimeOffset.UtcNow);
+        var success = new RecordingRecoveryStorage(candidate);
+        var recovery = new RecoveryManager(success, logger);
+
+        await recovery.FindAsync();
+        await recovery.RecoverAsync(candidate);
+        var failureStorage = new RecordingRecoveryStorage(
+            candidate,
+            new IOException("Recovery storage failed."));
+        var failure = new RecoveryManager(failureStorage, logger);
+        await failure.RecoverAsync(candidate);
+
+        Assert.Contains(400, logger.EventIds);
+        Assert.Contains(401, logger.EventIds);
+        Assert.Contains(904, logger.EventIds);
     }
 
     private static SavedRecording Recording()
@@ -558,6 +654,7 @@ public sealed class TranscriptionQueueMutationTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(Outputs);
         }
+
     }
 
     private sealed class RecordingJobRepository(
@@ -700,6 +797,83 @@ internal sealed class FailOnceHistory : IRecordingHistory
         }
 
         Recordings.Add(recording);
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class FailAlwaysHistory : IRecordingHistory
+{
+    public Task<IReadOnlyList<SavedRecording>> LoadAsync(
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult<IReadOnlyList<SavedRecording>>([]);
+    }
+
+    public Task AddAsync(
+        SavedRecording recording,
+        CancellationToken cancellationToken)
+    {
+        throw new IOException("Unable to persist recording history.");
+    }
+}
+
+internal sealed class RecordingLogger<T> : ILogger<T>
+{
+    public List<int> EventIds { get; } = [];
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull
+    {
+        return null;
+    }
+
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return true;
+    }
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        EventIds.Add(eventId.Id);
+    }
+}
+
+internal sealed class RecordingRecoveryStorage(
+    RecoveryCandidate candidate,
+    Exception? failure = null) : IRecoveryStorage
+{
+    public Task<IReadOnlyList<RecoveryCandidate>> FindAsync(
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult<IReadOnlyList<RecoveryCandidate>>([candidate]);
+    }
+
+    public Task<SavedRecording> RecoverAsync(
+        RecoveryCandidate requested,
+        CancellationToken cancellationToken)
+    {
+        if (failure is not null)
+        {
+            throw failure;
+        }
+
+        return Task.FromResult(new SavedRecording(
+            candidate.RecordingId,
+            "recording.wav",
+            "English",
+            RecordingOutcome.Recovered,
+            TimeSpan.FromSeconds(1)));
+    }
+
+    public Task DiscardAsync(
+        RecoveryCandidate requested,
+        CancellationToken cancellationToken)
+    {
         return Task.CompletedTask;
     }
 }

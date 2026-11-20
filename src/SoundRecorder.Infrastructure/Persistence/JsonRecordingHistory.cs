@@ -1,5 +1,8 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure;
 
 namespace SoundRecorder.Infrastructure.Persistence;
 
@@ -7,10 +10,14 @@ public sealed class JsonRecordingHistory : IRecordingHistory
 {
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ILogger<JsonRecordingHistory> _logger;
 
-    public JsonRecordingHistory(string path)
+    public JsonRecordingHistory(
+        string path,
+        ILogger<JsonRecordingHistory>? logger = null)
     {
         _path = path;
+        _logger = logger ?? NullLogger<JsonRecordingHistory>.Instance;
     }
 
     public async Task<IReadOnlyList<SavedRecording>> LoadAsync(
@@ -47,6 +54,7 @@ public sealed class JsonRecordingHistory : IRecordingHistory
             }
 
             File.Move(temporaryPath, _path, overwrite: true);
+            InfrastructureLog.RecordingHistorySaved(_logger, recording.Id);
         }
         finally
         {

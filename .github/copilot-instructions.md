@@ -17,6 +17,7 @@ This repository implements the version-one product contract in C#/.NET. Treat `G
 
 - Use C# for application code and automated test implementations, with Reqnroll for executable Gherkin specifications.
 - Before implementing or changing behavior, editing tests or requirements, or running quality analysis, read [Testing Instructions](instructions/testing.instructions.md). That file owns the test-driven workflow and the mandatory CRAP and mutation-score gates.
+- Use `ILogger` for operational events and source-generated `[LoggerMessage]` methods for application logging. Keep recording/transcript content and paths containing user titles out of log messages.
 
 ## Requirements architecture
 

@@ -3,6 +3,9 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SoundRecorder.Infrastructure.Models;
 
@@ -10,13 +13,18 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
 {
     private readonly string _modelsDirectory;
     private readonly HttpClient _httpClient;
+    private readonly ILogger<LocalTranscriptionModelManager> _logger;
     private TranscriptionModelPackage? _currentPackage;
     private string? _currentModelPath;
 
-    public LocalTranscriptionModelManager(string modelsDirectory, HttpClient httpClient)
+    public LocalTranscriptionModelManager(
+        string modelsDirectory,
+        HttpClient httpClient,
+        ILogger<LocalTranscriptionModelManager>? logger = null)
     {
         _modelsDirectory = modelsDirectory;
         _httpClient = httpClient;
+        _logger = logger ?? NullLogger<LocalTranscriptionModelManager>.Instance;
         Directory.CreateDirectory(_modelsDirectory);
         LoadCurrentPackage();
     }
@@ -41,6 +49,7 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
         string packagePath,
         CancellationToken cancellationToken)
     {
+        InfrastructureLog.ModelImportStarted(_logger);
         var stagingDirectory = Path.Combine(
             _modelsDirectory,
             $".staging-{Guid.NewGuid():N}");
@@ -85,7 +94,13 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
             File.Move(temporaryPackagePath, previousPackagePath, overwrite: true);
             _currentPackage = manifest;
             _currentModelPath = Path.Combine(targetDirectory, manifest.ModelFile);
+            InfrastructureLog.ModelActivated(_logger, manifest.Id);
             return manifest;
+        }
+        catch (Exception exception)
+        {
+            InfrastructureLog.ModelImportFailed(_logger, exception);
+            throw;
         }
         finally
         {
@@ -100,6 +115,7 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
         Uri packageUri,
         CancellationToken cancellationToken)
     {
+        InfrastructureLog.ModelDownloadStarted(_logger);
         var temporaryPackage = Path.Combine(
             _modelsDirectory,
             $"{Guid.NewGuid():N}.model-package.zip");
@@ -113,6 +129,11 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
             await output.FlushAsync(cancellationToken);
             output.Close();
             return await ImportAsync(temporaryPackage, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            InfrastructureLog.ModelDownloadFailed(_logger, exception);
+            throw;
         }
         finally
         {

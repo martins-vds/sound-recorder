@@ -1,5 +1,8 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure;
 
 namespace SoundRecorder.Infrastructure.Persistence;
 
@@ -12,10 +15,14 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
 
     private readonly string _path;
     private readonly SemaphoreSlim _saveGate = new(1, 1);
+    private readonly ILogger<JsonTranscriptionJobRepository> _logger;
 
-    public JsonTranscriptionJobRepository(string path)
+    public JsonTranscriptionJobRepository(
+        string path,
+        ILogger<JsonTranscriptionJobRepository>? logger = null)
     {
         _path = path;
+        _logger = logger ?? NullLogger<JsonTranscriptionJobRepository>.Instance;
     }
 
     public async Task<IReadOnlyList<TranscriptionJob>> LoadAsync(
@@ -31,7 +38,7 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
             stream,
             JsonOptions,
             cancellationToken) ?? [];
-        return states
+        var jobs = states
             .Select(state => new TranscriptionJob(
                 state.Id,
                 state.Recording,
@@ -40,6 +47,8 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
                 state.Outputs,
                 state.Error))
             .ToArray();
+        InfrastructureLog.TranscriptionJobsLoaded(_logger, jobs.Length);
+        return jobs;
     }
 
     public async Task SaveAsync(
@@ -66,6 +75,7 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
             }
 
             File.Move(temporaryPath, _path, overwrite: true);
+            InfrastructureLog.TranscriptionJobsPersisted(_logger, jobs.Count);
         }
         finally
         {

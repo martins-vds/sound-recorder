@@ -2,7 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SoundRecorder.Core;
+using SoundRecorder.Infrastructure;
 using SoundRecorder.Infrastructure.Privacy;
 
 namespace SoundRecorder.Infrastructure.Audio;
@@ -11,6 +14,7 @@ namespace SoundRecorder.Infrastructure.Audio;
 public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 {
     private readonly string _stateDirectory;
+    private readonly ILogger<WindowsRecordingEngine> _logger;
     private readonly object _captureLock = new();
     private CaptureSource? _microphone;
     private CaptureSource? _systemAudio;
@@ -28,9 +32,12 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     private Task<SavedRecording>? _completionTask;
     private int _completionEventRaised;
 
-    public WindowsRecordingEngine(string stateDirectory)
+    public WindowsRecordingEngine(
+        string stateDirectory,
+        ILogger<WindowsRecordingEngine>? logger = null)
     {
         _stateDirectory = stateDirectory;
+        _logger = logger ?? NullLogger<WindowsRecordingEngine>.Instance;
         Directory.CreateDirectory(_stateDirectory);
     }
     public TimeSpan CapturedDuration => _capturedDuration + (_capturedClock?.Elapsed ?? TimeSpan.Zero);
@@ -54,6 +61,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         var playbackRequired = request.Source is
             AudioSource.SystemAudioOnly or AudioSource.MicrophoneAndSystemAudio;
         _recordingId = Guid.NewGuid();
+        InfrastructureLog.CaptureStarting(_logger, _recordingId, request.Source);
         _request = request;
         _captureFailed = false;
         _captureError = null;
@@ -87,9 +95,11 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _microphone?.Start();
             _systemAudio?.Start();
             _limitTimer = new Timer(CheckDurationLimit, null, 1000, 1000);
+            InfrastructureLog.CaptureStarted(_logger, _recordingId);
         }
         catch (Exception exception)
         {
+            InfrastructureLog.CaptureStartFailed(_logger, exception, _recordingId);
             await StopCaptureSourcesAsync();
             DisposeSources();
             DeletePartialFiles();
@@ -109,6 +119,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _capturedClock.Reset();
             _paused = true;
             SaveCheckpoint();
+            InfrastructureLog.CapturePaused(_logger, _recordingId);
         }
 
         return Task.CompletedTask;
@@ -122,6 +133,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _paused = false;
             _capturedClock.Start();
             SaveCheckpoint();
+            InfrastructureLog.CaptureResumed(_logger, _recordingId);
         }
 
         return Task.CompletedTask;
@@ -150,6 +162,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         var recording = FinalizeRecording();
         DisposeSources();
         DeletePartialFiles();
+        InfrastructureLog.CaptureFinalized(_logger, recording.Id, recording.Outcome);
         return recording;
     }
 
@@ -174,6 +187,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     {
         _captureFailed = true;
         _captureError = exception.Message;
+        InfrastructureLog.CaptureFailed(_logger, exception, _recordingId);
         if (_request is not null)
         {
             _ = CompleteAutomaticallyAsync();

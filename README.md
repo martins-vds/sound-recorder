@@ -56,6 +56,18 @@ CRAP analysis uses [microsoft/crap4csharp](https://github.com/microsoft/crap4csh
 dotnet run --project <crap4csharp>\src\Crap4CSharp -c Release -- .\src\SoundRecorder.Core
 ```
 
+## Diagnostics
+
+The desktop app uses `ILogger` with compile-time `LoggerMessage` generation and a local JSONL provider. Each line contains timestamp, process/thread identity, category, level, event ID/name, structured properties, and exception diagnostics.
+
+Logs are written to:
+
+```text
+%LOCALAPPDATA%\SoundRecorder\logs\sound-recorder-YYYYMMDD.jsonl
+```
+
+The app records startup readiness, capture lifecycle, recovery, queue transitions, model activation, transcript output, and unhandled failures. Logs do not include recording or transcript content.
+
 ## Architecture
 
 - `SoundRecorder.Core`: public recording, queue, history, and recovery state machines without Windows or third-party dependencies.

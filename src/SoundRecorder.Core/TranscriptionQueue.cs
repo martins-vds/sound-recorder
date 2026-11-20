@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace SoundRecorder.Core;
 
 public sealed class TranscriptionQueue : ITranscriptionQueue
@@ -5,6 +8,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private readonly ILocalTranscriber _transcriber;
     private readonly ITranscriptWriter _writer;
     private readonly ITranscriptionJobRepository _repository;
+    private readonly ILogger<TranscriptionQueue> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<TranscriptionJob> _jobs = [];
     private CancellationTokenSource? _runningJobCancellation;
@@ -13,11 +17,13 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     public TranscriptionQueue(
         ILocalTranscriber transcriber,
         ITranscriptWriter writer,
-        ITranscriptionJobRepository repository)
+        ITranscriptionJobRepository repository,
+        ILogger<TranscriptionQueue>? logger = null)
     {
         _transcriber = transcriber;
         _writer = writer;
         _repository = repository;
+        _logger = logger ?? NullLogger<TranscriptionQueue>.Instance;
     }
 
     public IReadOnlyList<TranscriptionJob> Jobs
@@ -49,6 +55,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
 
         StartWorker();
         await SaveAsync(cancellationToken);
+        CoreLog.QueueRestored(_logger, _jobs.Count);
     }
 
     public async Task EnqueueAsync(
@@ -62,6 +69,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         }
 
         await SaveAsync(cancellationToken);
+        CoreLog.JobQueued(_logger, job.Id, recording.Id);
         StartWorker();
     }
 
@@ -80,9 +88,11 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         if (canceledJob?.Status == TranscriptionJobStatus.Running)
         {
             await _runningJobCancellation!.CancelAsync();
+            CoreLog.RunningJobCancellationRequested(_logger, jobId);
         }
 
         await SaveAsync(cancellationToken);
+        CoreLog.JobCancellationCompleted(_logger, jobId);
     }
 
     public async Task<TranscriptionJob> RetryAsync(
@@ -97,6 +107,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
 
         await SaveAsync(cancellationToken);
         StartWorker();
+        CoreLog.JobRetryQueued(_logger, job.Id, recording.Id);
         return job;
     }
 
@@ -156,6 +167,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     {
         _runningJobCancellation = new CancellationTokenSource();
         job.Status = TranscriptionJobStatus.Running;
+        CoreLog.JobStarted(_logger, job.Id);
         await SaveAsync(_runningJobCancellation.Token);
 
         try
@@ -165,15 +177,18 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
                 _runningJobCancellation.Token);
             job.Outputs = await _writer.WriteAsync(document, _runningJobCancellation.Token);
             job.Status = TranscriptionJobStatus.Succeeded;
+            CoreLog.JobSucceeded(_logger, job.Id);
         }
         catch (OperationCanceledException)
         {
             job.Status = TranscriptionJobStatus.Canceled;
+            CoreLog.JobCanceled(_logger, job.Id);
         }
         catch (Exception exception)
         {
             job.Status = TranscriptionJobStatus.Failed;
             job.Error = exception.Message;
+            CoreLog.JobFailed(_logger, exception, job.Id);
         }
         finally
         {

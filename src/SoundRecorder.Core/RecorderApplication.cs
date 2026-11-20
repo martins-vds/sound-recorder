@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace SoundRecorder.Core;
 
 public sealed class RecorderApplication
@@ -6,6 +9,7 @@ public sealed class RecorderApplication
     private readonly ITranscriptionQueue? _transcriptionQueue;
     private readonly ITranscriptionModelStore? _modelStore;
     private readonly IRecordingHistory? _history;
+    private readonly ILogger<RecorderApplication> _logger;
     private readonly SemaphoreSlim _completionGate = new(1, 1);
     private readonly HashSet<Guid> _completedRecordingIds = [];
 
@@ -13,12 +17,14 @@ public sealed class RecorderApplication
         IRecordingEngine recordingEngine,
         ITranscriptionQueue? transcriptionQueue = null,
         ITranscriptionModelStore? modelStore = null,
-        IRecordingHistory? history = null)
+        IRecordingHistory? history = null,
+        ILogger<RecorderApplication>? logger = null)
     {
         _recordingEngine = recordingEngine;
         _transcriptionQueue = transcriptionQueue;
         _modelStore = modelStore;
         _history = history;
+        _logger = logger ?? NullLogger<RecorderApplication>.Instance;
     }
 
     public bool IsActive => Status == RecordingStatus.Recording;
@@ -39,12 +45,14 @@ public sealed class RecorderApplication
         if (!permissionConfirmed)
         {
             LastError = "Confirm that you have permission to record before starting.";
+            CoreLog.RecordingPermissionMissing(_logger);
             return;
         }
 
         if (Status is RecordingStatus.Recording or RecordingStatus.Paused)
         {
             LastError = "A recording is already active. Stop it before starting another.";
+            CoreLog.RecordingAlreadyActive(_logger);
             return;
         }
 
@@ -52,6 +60,7 @@ public sealed class RecorderApplication
         if (validationError is not null)
         {
             LastError = validationError;
+            CoreLog.RecordingPrerequisiteMissing(_logger);
             return;
         }
 
@@ -60,10 +69,12 @@ public sealed class RecorderApplication
             await _recordingEngine.StartAsync(request, cancellationToken);
             LastError = null;
             Status = RecordingStatus.Recording;
+            CoreLog.RecordingStarted(_logger, request.Source);
         }
         catch (RecordingStartException exception)
         {
             LastError = exception.Message;
+            CoreLog.RecordingStartFailed(_logger, exception);
         }
     }
 
@@ -76,6 +87,7 @@ public sealed class RecorderApplication
 
         await _recordingEngine.PauseAsync(cancellationToken);
         Status = RecordingStatus.Paused;
+        CoreLog.RecordingPaused(_logger);
     }
 
     public async Task ResumeAsync(CancellationToken cancellationToken = default)
@@ -87,6 +99,7 @@ public sealed class RecorderApplication
 
         await _recordingEngine.ResumeAsync(cancellationToken);
         Status = RecordingStatus.Recording;
+        CoreLog.RecordingResumed(_logger);
     }
 
     public async Task<SavedRecording?> StopAsync(
@@ -118,6 +131,7 @@ public sealed class RecorderApplication
 
             Status = RecordingStatus.Idle;
             LastError = CompletionError(recording);
+            CoreLog.RecordingCompleted(_logger, recording.Id, recording.Outcome);
 
             if (ShouldAutomaticallyTranscribe(recording, enqueueTranscription))
             {
@@ -134,9 +148,10 @@ public sealed class RecorderApplication
                 await _history.AddAsync(recording, cancellationToken);
             }
         }
-        catch
+        catch (Exception exception)
         {
             _completedRecordingIds.Remove(recording.Id);
+            CoreLog.RecordingCompletionFailed(_logger, exception, recording.Id);
             throw;
         }
         finally

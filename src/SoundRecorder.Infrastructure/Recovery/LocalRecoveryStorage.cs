@@ -1,16 +1,23 @@
 using System.Text.Json;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Audio;
+using SoundRecorder.Infrastructure;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SoundRecorder.Infrastructure.Recovery;
 
 public sealed class LocalRecoveryStorage : IRecoveryStorage
 {
     private readonly string _stateDirectory;
+    private readonly ILogger<LocalRecoveryStorage> _logger;
 
-    public LocalRecoveryStorage(string stateDirectory)
+    public LocalRecoveryStorage(
+        string stateDirectory,
+        ILogger<LocalRecoveryStorage>? logger = null)
     {
         _stateDirectory = stateDirectory;
+        _logger = logger ?? NullLogger<LocalRecoveryStorage>.Instance;
     }
 
     public Task<IReadOnlyList<RecoveryCandidate>> FindAsync(
@@ -27,6 +34,7 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
             .Where(candidate => candidate is not null)
             .Cast<RecoveryCandidate>()
             .ToArray();
+        InfrastructureLog.RecoveryCandidatesFound(_logger, candidates.Length);
         return Task.FromResult<IReadOnlyList<RecoveryCandidate>>(candidates);
     }
 
@@ -64,6 +72,7 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
             JsonSerializer.Serialize(new { checkpoint.RecordingId }),
             cancellationToken);
         await DiscardSourcesAsync(checkpoint, candidate.CapturedAudioPath, cancellationToken);
+        InfrastructureLog.RecoveryCompleted(_logger, checkpoint.RecordingId);
         return new SavedRecording(
             checkpoint.RecordingId,
             outputPath,
