@@ -75,11 +75,23 @@ try {
 
 The Stryker configuration requires a mutation score of at least 99, enforcing a score above 98%.
 
-CRAP analysis uses [microsoft/crap4csharp](https://github.com/microsoft/crap4csharp). From that tool's checkout, run:
+CRAP analysis uses the [martins-vds/crap4csharp fork](https://github.com/martins-vds/crap4csharp). Install its release package or build it from that fork. Analyze every handwritten C# file for one production project at a time:
 
 ```powershell
-dotnet run --project <crap4csharp>\src\Crap4CSharp -c Release -- .\src\SoundRecorder.Core
+$sources = Get-ChildItem .\src\SoundRecorder.Infrastructure -Recurse -Filter *.cs |
+    Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
+    Select-Object -ExpandProperty FullName
+crap4csharp @sources --test-project .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj `
+    --framework net10.0-windows --all-tests --crap-threshold 7.999999999999999
 ```
+
+Repeat for Core and Desktop. Core's domain gate can use the default unit selection by omitting `--all-tests`; native adapter evidence uses the integration-inclusive selection shown above. Every executable member must have a numeric result: `N/A` is incomplete evidence even if the tool exits zero. The threshold is the largest representable value below 8, so a member scoring exactly 8 fails rather than passing the tool's inclusive boundary. CRAP does not score constructors.
+
+Run Stryker separately for each production project using `--project SoundRecorder.Core.csproj`, `SoundRecorder.Infrastructure.csproj`, or `SoundRecorder.Desktop.csproj` from the test directory. Inspect the JSON report's unrounded detected/eligible mutant ratio: each project must exceed 98%; exit status or a rounded display alone is not proof.
+
+For filesystem mutation runs, point `TEMP` and `TMP` at a dedicated disposable directory for that invocation. Mutated path construction must not expose the normal temporary directory or unrelated files to cleanup.
+
+Real WASAPI checks are enabled with `SOUND_RECORDER_TEST_AUDIO=1`. Native Whisper adapter checks use `SOUND_RECORDER_TEST_NATIVE_MODEL` pointing to an existing local tiny GGML model. The checked-in speech fixture was generated offline with Windows SAPI and contains no user recording; these adapter tests do not establish release accuracy.
 
 ## Diagnostics
 

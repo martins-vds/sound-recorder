@@ -82,10 +82,7 @@ public sealed class JsonFileLoggerProvider : ILoggerProvider
         string category) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull
-        {
-            return null;
-        }
+            where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel)
         {

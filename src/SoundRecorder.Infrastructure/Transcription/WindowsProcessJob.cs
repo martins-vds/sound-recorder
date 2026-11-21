@@ -5,19 +5,36 @@ using Microsoft.Win32.SafeHandles;
 
 namespace SoundRecorder.Infrastructure.Transcription;
 
-internal sealed class WindowsProcessJob : SafeHandleZeroOrMinusOneIsInvalid
+internal interface IWorkerLifetime : IDisposable
+{
+    void Assign(Process process);
+}
+
+internal sealed class WindowsProcessJob : SafeHandleZeroOrMinusOneIsInvalid, IWorkerLifetime
 {
     private const uint KillOnJobClose = 0x00002000;
     private const int ExtendedLimitInformationClass = 9;
+    private readonly Func<IntPtr, bool>? _close;
 
     private WindowsProcessJob() : base(ownsHandle: true)
     {
     }
 
-    public static WindowsProcessJob Create()
+    internal WindowsProcessJob(IntPtr handle, Func<IntPtr, bool> close) : this()
+    {
+        SetHandle(handle);
+        _close = close;
+    }
+
+    public static WindowsProcessJob Create() =>
+        Create(static () => CreateJobObjectW(IntPtr.Zero, null), Configure);
+
+    internal static WindowsProcessJob Create(
+        Func<WindowsProcessJob> create,
+        Func<WindowsProcessJob, bool> configure)
     {
         // A non-inheritable handle makes this parent the only owner of the worker's lifetime.
-        var job = CreateJobObjectW(IntPtr.Zero, null);
+        var job = create();
         if (job.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();
@@ -25,18 +42,7 @@ internal sealed class WindowsProcessJob : SafeHandleZeroOrMinusOneIsInvalid
             throw new Win32Exception(error);
         }
 
-        var limits = new ExtendedLimitInformation
-        {
-            BasicLimitInformation = new BasicLimitInformation
-            {
-                LimitFlags = KillOnJobClose,
-            },
-        };
-        if (!SetInformationJobObject(
-                job,
-                ExtendedLimitInformationClass,
-                ref limits,
-                (uint)Marshal.SizeOf<ExtendedLimitInformation>()))
+        if (!configure(job))
         {
             var error = Marshal.GetLastWin32Error();
             job.Dispose();
@@ -44,6 +50,22 @@ internal sealed class WindowsProcessJob : SafeHandleZeroOrMinusOneIsInvalid
         }
 
         return job;
+    }
+
+    private static bool Configure(WindowsProcessJob job)
+    {
+        var limits = new ExtendedLimitInformation
+        {
+            BasicLimitInformation = new BasicLimitInformation
+            {
+                LimitFlags = KillOnJobClose,
+            },
+        };
+        return SetInformationJobObject(
+            job,
+            ExtendedLimitInformationClass,
+            ref limits,
+            (uint)Marshal.SizeOf<ExtendedLimitInformation>());
     }
 
     public void Assign(Process process)
@@ -54,7 +76,7 @@ internal sealed class WindowsProcessJob : SafeHandleZeroOrMinusOneIsInvalid
         }
     }
 
-    protected override bool ReleaseHandle() => CloseHandle(handle);
+    protected override bool ReleaseHandle() => _close?.Invoke(handle) ?? CloseHandle(handle);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimitInformation

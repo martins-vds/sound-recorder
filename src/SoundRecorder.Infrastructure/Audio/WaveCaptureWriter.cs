@@ -6,13 +6,21 @@ namespace SoundRecorder.Infrastructure.Audio;
 /// <summary>Persists capture packets and publishes their peak level.</summary>
 public sealed class WaveCaptureWriter : IDisposable
 {
+    private static readonly byte[] Silence = new byte[65_536];
     private readonly WaveFileWriter _writer;
+    private readonly Stream? _ownedStream;
     private float _level;
 
     /// <summary>Creates a WAV file in the capture device's agreed format.</summary>
     public WaveCaptureWriter(string path, WaveFormat format)
     {
         _writer = new WaveFileWriter(path, format);
+    }
+
+    internal WaveCaptureWriter(Stream stream, WaveFormat format)
+    {
+        _writer = new WaveFileWriter(stream, format);
+        _ownedStream = stream;
     }
 
     /// <summary>The latest nonempty packet's peak amplitude, from zero to one.</summary>
@@ -61,6 +69,7 @@ public sealed class WaveCaptureWriter : IDisposable
     public void Dispose()
     {
         _writer.Dispose();
+        _ownedStream?.Dispose();
     }
 
     private static float CalculateLevel(byte[] buffer, WaveFormat format)
@@ -86,18 +95,10 @@ public sealed class WaveCaptureWriter : IDisposable
 
     private void FillSilenceTo(long expectedLength)
     {
-        var missingBytes = expectedLength - _writer.Position;
-        if (missingBytes <= 0)
+        while (_writer.Position < expectedLength)
         {
-            return;
-        }
-
-        var silence = new byte[Math.Min(missingBytes, 64 * 1024)];
-        while (missingBytes > 0)
-        {
-            var count = (int)Math.Min(missingBytes, silence.Length);
-            _writer.Write(silence, 0, count);
-            missingBytes -= count;
+            var count = (int)Math.Min(expectedLength - _writer.Position, Silence.Length);
+            _writer.Write(Silence, 0, count);
         }
     }
 }

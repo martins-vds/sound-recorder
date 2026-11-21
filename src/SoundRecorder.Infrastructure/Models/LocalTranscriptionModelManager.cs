@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SoundRecorder.Infrastructure.Models;
 
-public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
+public sealed class LocalTranscriptionModelManager : ILocalTranscriptionModelManager
 {
     private readonly string _modelsDirectory;
     private readonly HttpClient _httpClient;
@@ -36,7 +36,6 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
         return _currentPackage?.Languages.Contains(
                    language,
                    StringComparer.OrdinalIgnoreCase) == true &&
-               _currentModelPath is not null &&
                File.Exists(_currentModelPath);
     }
 
@@ -66,7 +65,6 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
             var modelEntry = archive.GetEntry(manifest.ModelFile)
                 ?? throw new InvalidDataException(
                     $"The model package does not contain '{manifest.ModelFile}'.");
-            ValidateSafeFileName(modelEntry.FullName);
             var stagedModelPath = Path.Combine(stagingDirectory, manifest.ModelFile);
             modelEntry.ExtractToFile(stagedModelPath);
             var actualHash = await ComputeHashAsync(stagedModelPath, cancellationToken);
@@ -148,8 +146,7 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
         string bundledModelsDirectory,
         CancellationToken cancellationToken)
     {
-        if (_currentPackage is not null &&
-            HasCompatibleModel("English") &&
+        if (HasCompatibleModel("English") &&
             HasCompatibleModel("Brazilian Portuguese"))
         {
             return null;
@@ -166,15 +163,15 @@ public sealed class LocalTranscriptionModelManager : ITranscriptionModelStore
                 SearchOption.TopDirectoryOnly)
             .Take(2)
             .ToArray();
-        if (packages.Length != 1)
+        if (packages.Length == 0)
         {
-            if (packages.Length > 1)
-            {
-                throw new InvalidDataException(
-                    "Multiple bundled model packages were found. Keep exactly one.");
-            }
-
             return null;
+        }
+
+        if (packages.Length > 1)
+        {
+            throw new InvalidDataException(
+                "Multiple bundled model packages were found. Keep exactly one.");
         }
 
         return await ImportAsync(packages[0], cancellationToken);

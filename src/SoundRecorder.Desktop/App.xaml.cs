@@ -1,15 +1,22 @@
-using System.IO;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
-using SoundRecorder.Infrastructure.Diagnostics;
-using SoundRecorder.Infrastructure.Transcription;
 
 namespace SoundRecorder.Desktop;
 
 public partial class App : System.Windows.Application
 {
-    private ILoggerFactory? _loggerFactory;
-    private ILogger<App>? _logger;
+    private readonly ApplicationLifecycle _lifecycle;
+
+    public App()
+        : this(shutdown => new ApplicationLifecycle(new WindowsDesktopDialogs(), shutdown))
+    {
+    }
+
+    /// <summary>Connects the WPF application to its process lifecycle without starting a window.</summary>
+    public App(Func<Action<int>, ApplicationLifecycle> createLifecycle)
+    {
+        _lifecycle = createLifecycle(Shutdown);
+    }
 
     internal static ILoggerFactory? LoggerFactory { get; private set; }
 
@@ -17,84 +24,62 @@ public partial class App : System.Windows.Application
 
     protected override async void OnStartup(System.Windows.StartupEventArgs args)
     {
-        if (args.Args is ["--transcribe-worker"])
+        if (await InitializeAsync(args.Args))
+        {
+            base.OnStartup(args);
+        }
+    }
+
+    /// <summary>Routes process startup before the WPF startup event is raised.</summary>
+    public async Task<bool> InitializeAsync(string[] arguments)
+    {
+        if (ApplicationLifecycle.IsWorkerInvocation(arguments))
         {
             ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown;
-            var exitCode = await WhisperProcessTranscriber.RunWorkerAsync(
-                Console.In,
-                Console.Out);
-            Shutdown(exitCode);
-            return;
+            await _lifecycle.RunWorkerAsync();
+            return false;
         }
 
         StartupUri = new Uri("MainWindow.xaml", UriKind.Relative);
-        var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SoundRecorder");
-        var provider = new JsonFileLoggerProvider(Path.Combine(root, "logs"));
-        _loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
-        {
-            builder.SetMinimumLevel(LogLevel.Information);
-            builder.AddProvider(provider);
-        });
-        LoggerFactory = _loggerFactory;
-        LogFilePath = provider.FilePath;
-        _logger = _loggerFactory.CreateLogger<App>();
-        DesktopLog.ApplicationStarting(_logger);
+        _lifecycle.InitializeDesktop();
+        LoggerFactory = _lifecycle.LoggerFactory;
+        LogFilePath = _lifecycle.LogFilePath;
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         Exit += OnExit;
-        base.OnStartup(args);
+        return true;
     }
 
     private void OnDispatcherUnhandledException(
         object sender,
         DispatcherUnhandledExceptionEventArgs args)
     {
-        if (_logger is not null)
-        {
-            DesktopLog.DispatcherUnhandledException(_logger, args.Exception);
-        }
+        _lifecycle.LogDispatcherException(args.Exception);
         args.Handled = true;
-        System.Windows.MessageBox.Show(
-            $"Sound Recorder encountered an unexpected error.\n\nDiagnostics: {LogFilePath}",
-            "Sound Recorder",
-            System.Windows.MessageBoxButton.OK,
-            System.Windows.MessageBoxImage.Error);
-        Shutdown(1);
+        _lifecycle.ShutdownAfterDispatcherException();
     }
 
     private void OnDomainUnhandledException(
         object sender,
-        UnhandledExceptionEventArgs args)
-    {
-        if (args.ExceptionObject is Exception exception)
-        {
-            if (_logger is not null)
-            {
-                DesktopLog.ProcessUnhandledException(_logger, exception);
-            }
-        }
-    }
+        UnhandledExceptionEventArgs args) =>
+        _lifecycle.ReportDomainException(args.ExceptionObject);
 
     private void OnUnobservedTaskException(
         object? sender,
-        UnobservedTaskExceptionEventArgs args)
-    {
-        if (_logger is not null)
-        {
-            DesktopLog.UnobservedTaskException(_logger, args.Exception);
-        }
-        args.SetObserved();
-    }
+        UnobservedTaskExceptionEventArgs args) =>
+        _lifecycle.ObserveTaskException(args);
 
-    private void OnExit(object sender, System.Windows.ExitEventArgs args)
+    private void OnExit(object sender, System.Windows.ExitEventArgs args) =>
+        CompleteExit(args.ApplicationExitCode);
+
+    /// <summary>Releases process event subscriptions and flushes diagnostics on application exit.</summary>
+    public void CompleteExit(int exitCode)
     {
-        if (_logger is not null)
-        {
-            DesktopLog.ApplicationExited(_logger, args.ApplicationExitCode);
-        }
-        _loggerFactory?.Dispose();
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+        Exit -= OnExit;
+        _lifecycle.CompleteExit(exitCode);
     }
 }

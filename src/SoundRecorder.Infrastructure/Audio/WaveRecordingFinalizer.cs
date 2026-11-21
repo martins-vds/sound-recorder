@@ -12,6 +12,16 @@ internal static class WaveRecordingFinalizer
         AudioSource source,
         string outputPath)
     {
+        Finalize(microphonePath, systemAudioPath, source, outputPath, CreateResampler);
+    }
+
+    internal static void Finalize(
+        string? microphonePath,
+        string? systemAudioPath,
+        AudioSource source,
+        string outputPath,
+        Func<IWaveProvider, WaveFormat, (IWaveProvider Provider, IDisposable Resource)> createResampler)
+    {
         var channels = source == AudioSource.MicrophoneOnly ? 1 : 2;
         var targetFormat = new WaveFormat(
             RecordingFormat.SampleRate,
@@ -21,8 +31,8 @@ internal static class WaveRecordingFinalizer
         var disposables = new List<IDisposable>();
         try
         {
-            AddReader(microphonePath, targetFormat, readers, disposables);
-            AddReader(systemAudioPath, targetFormat, readers, disposables);
+            AddReader(microphonePath, targetFormat, readers, disposables, createResampler);
+            AddReader(systemAudioPath, targetFormat, readers, disposables, createResampler);
             if (readers.Count == 0)
             {
                 throw new InvalidDataException("No captured audio is available to finalize.");
@@ -54,7 +64,8 @@ internal static class WaveRecordingFinalizer
         string? path,
         WaveFormat targetFormat,
         List<IWaveProvider> readers,
-        List<IDisposable> disposables)
+        List<IDisposable> disposables,
+        Func<IWaveProvider, WaveFormat, (IWaveProvider Provider, IDisposable Resource)> createResampler)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
@@ -70,13 +81,16 @@ internal static class WaveRecordingFinalizer
         }
 
         IWaveProvider sanitizedReader = new SanitizingWaveProvider(waveReader);
-        var resampler = new MediaFoundationResampler(sanitizedReader, targetFormat)
-        {
-            ResamplerQuality = 60,
-        };
-        readers.Add(resampler);
-        disposables.Add(resampler);
+        var resampler = createResampler(sanitizedReader, targetFormat);
+        readers.Add(resampler.Provider);
+        disposables.Add(resampler.Resource);
         disposables.Add(waveReader);
+    }
+
+    private static (IWaveProvider, IDisposable) CreateResampler(IWaveProvider source, WaveFormat target)
+    {
+        var resampler = new MediaFoundationResampler(source, target);
+        return (resampler, resampler);
     }
 
     private static bool IsMatchingPcmFormat(
@@ -91,14 +105,7 @@ internal static class WaveRecordingFinalizer
 
     private static ISampleProvider ToSampleProvider(IWaveProvider reader)
     {
-        ISampleProvider provider = reader.WaveFormat.Encoding switch
-        {
-            WaveFormatEncoding.IeeeFloat => new WaveToSampleProvider(reader),
-            WaveFormatEncoding.Pcm when reader.WaveFormat.BitsPerSample == 16
-                => new Pcm16BitToSampleProvider(reader),
-            _ => throw new InvalidDataException(
-                $"Unsupported capture format '{reader.WaveFormat}'."),
-        };
+        ISampleProvider provider = new Pcm16BitToSampleProvider(reader);
         return provider.WaveFormat.Channels == 1
             ? new MonoToStereoSampleProvider(provider)
             : provider;

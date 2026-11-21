@@ -183,7 +183,7 @@ public sealed class InfrastructureAdapterTests
         writer.Flush();
 
         Assert.Throws<IOException>(
-            () => WaveRecordingFinalizerAccessor.Finalize(
+            () => WaveRecordingFinalizer.Finalize(
                 partialPath,
                 null,
                 AudioSource.MicrophoneOnly,
@@ -191,7 +191,7 @@ public sealed class InfrastructureAdapterTests
 
         writer.Dispose();
         var outputPath = Path.Combine(directory, "after-close.wav");
-        WaveRecordingFinalizerAccessor.Finalize(
+        WaveRecordingFinalizer.Finalize(
             partialPath,
             null,
             AudioSource.MicrophoneOnly,
@@ -226,7 +226,7 @@ public sealed class InfrastructureAdapterTests
         }
 
         var outputPath = Path.Combine(directory, "final.wav");
-        WaveRecordingFinalizerAccessor.Finalize(
+        WaveRecordingFinalizer.Finalize(
             partialPath,
             null,
             AudioSource.MicrophoneOnly,
@@ -259,7 +259,7 @@ public sealed class InfrastructureAdapterTests
         }
 
         var outputPath = Path.Combine(directory, "final.wav");
-        WaveRecordingFinalizerAccessor.Finalize(
+        WaveRecordingFinalizer.Finalize(
             inputPath,
             null,
             AudioSource.MicrophoneOnly,
@@ -304,7 +304,7 @@ public sealed class InfrastructureAdapterTests
         }
 
         var outputPath = Path.Combine(directory, "combined.wav");
-        WaveRecordingFinalizerAccessor.Finalize(
+        WaveRecordingFinalizer.Finalize(
             microphonePath,
             systemPath,
             AudioSource.MicrophoneAndSystemAudio,
@@ -465,25 +465,5 @@ public sealed class InfrastructureAdapterTests
         public bool HasCompatibleModel(string language) => true;
 
         public string? GetModelPath(string language) => "model.bin";
-    }
-}
-
-internal static class WaveRecordingFinalizerAccessor
-{
-    public static void Finalize(
-        string? microphonePath,
-        string? systemAudioPath,
-        AudioSource source,
-        string outputPath)
-    {
-        var method = typeof(LocalTranscriptionModelManager).Assembly
-            .GetType("SoundRecorder.Infrastructure.Audio.WaveRecordingFinalizer")!
-            .GetMethod(
-                "Finalize",
-                System.Reflection.BindingFlags.Static |
-                System.Reflection.BindingFlags.Public |
-                System.Reflection.BindingFlags.NonPublic)!
-            .CreateDelegate<Action<string?, string?, AudioSource, string>>();
-        method(microphonePath, systemAudioPath, source, outputPath);
     }
 }

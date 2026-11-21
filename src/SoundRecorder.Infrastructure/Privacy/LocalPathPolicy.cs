@@ -2,7 +2,13 @@ namespace SoundRecorder.Infrastructure.Privacy;
 
 public static class LocalPathPolicy
 {
-    public static void RejectNetworkDestination(string path)
+    /// <summary>Rejects UNC and mapped network destinations without substituting a local path.</summary>
+    public static void RejectNetworkDestination(string path) =>
+        RejectNetworkDestination(path, GetDriveType);
+
+    internal static void RejectNetworkDestination(
+        string path,
+        Func<string, DriveType> getDriveType)
     {
         var fullPath = Path.GetFullPath(path);
         if (fullPath.StartsWith(@"\\", StringComparison.Ordinal))
@@ -12,12 +18,14 @@ public static class LocalPathPolicy
         }
 
         var root = Path.GetPathRoot(fullPath)!;
-        if (new DriveInfo(root).DriveType == DriveType.Network)
+        if (getDriveType(root) == DriveType.Network)
         {
             throw new InvalidOperationException(
                 "Network destinations are not supported. Select a local folder.");
         }
     }
+
+    private static DriveType GetDriveType(string root) => new DriveInfo(root).DriveType;
 
     public static bool IsKnownSynchronizedFolder(
         string path,

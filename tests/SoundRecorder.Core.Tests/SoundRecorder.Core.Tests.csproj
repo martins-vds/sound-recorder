@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <EmbeddedResource Include="Fixtures\native-speech.wav" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,5 +31,10 @@
     <ProjectReference Include="..\..\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj" />
     <ProjectReference Include="..\SoundRecorder.ProcessTestHost\SoundRecorder.ProcessTestHost.csproj" />
   </ItemGroup>
+
+  <Target Name="CopyProcessTestHostExecutable" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\SoundRecorder.ProcessTestHost\bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\SoundRecorder.ProcessTestHost.exe"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

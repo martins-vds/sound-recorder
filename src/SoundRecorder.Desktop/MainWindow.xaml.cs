@@ -1,10 +1,7 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
-using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
@@ -20,24 +17,49 @@ namespace SoundRecorder.Desktop;
 
 public partial class MainWindow : Window
 {
-    private WindowsRecordingEngine _recordingEngine = null!;
+    private IRecordingMonitor _recordingEngine = null!;
+    private IDisposable? _captureLifetime;
     private MainViewModel _viewModel = null!;
-    private NotifyIcon _notifyIcon = null!;
+    private IDesktopEnvironment _environment = null!;
+    private IDesktopDialogs _dialogs = null!;
     private DispatcherTimer _timer = null!;
     private ILogger<MainWindow> _logger = null!;
+    private IDesktopLifecycleEvents? _lifecycleEvents;
+    private WindowPresentationActions _presentation = null!;
     private bool _allowClose;
     private bool _limitWarningShown;
-    private string _previousStatus = "Idle";
+    private string? _previousStatus;
 
     public MainWindow()
+        : this(
+            ApplicationLifecycle.StateDirectory(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),
+            App.LoggerFactory!,
+            () => new WindowsDesktopDialogs(),
+            () => new WindowsDesktopEnvironment(),
+            engine => new WindowsDesktopLifecycleEvents(engine))
+    {
+    }
+
+    /// <summary>Composes real local application services in a chosen state directory.</summary>
+    public MainWindow(
+        string stateDirectory,
+        ILoggerFactory loggerFactory,
+        Func<IDesktopDialogs> dialogs,
+        Func<IDesktopEnvironment> environment,
+        Func<WindowsRecordingEngine, IDesktopLifecycleEvents> lifecycleEvents,
+        IAudioDeviceCatalog? devices = null,
+        Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber>? transcriber = null)
     {
         try
         {
             InitializeComponent();
-            _logger = App.LoggerFactory!.CreateLogger<MainWindow>();
+            _logger = loggerFactory.CreateLogger<MainWindow>();
             DesktopLog.MainWindowInitializing(_logger);
-            InitializeServices();
+            InitializeServices(stateDirectory, loggerFactory, dialogs, environment, lifecycleEvents,
+                devices ?? new WindowsAudioDeviceCatalog(), transcriber ?? CreateTranscriber);
         }
+
         catch (Exception exception)
         {
             if (_logger is not null)
@@ -48,26 +70,55 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InitializeServices()
+    /// <summary>Creates a window with local application services and explicit native effect adapters.</summary>
+    public MainWindow(
+        MainViewModel viewModel,
+        IRecordingMonitor recordingMonitor,
+        IDesktopDialogs dialogs,
+        IDesktopEnvironment environment,
+        ILogger<MainWindow> logger,
+        IDisposable? captureLifetime = null,
+        IDesktopLifecycleEvents? lifecycleEvents = null,
+        WindowPresentationActions? presentation = null,
+        DispatcherTimer? timer = null)
     {
-        var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SoundRecorder");
-        Directory.CreateDirectory(root);
-        var loggerFactory = App.LoggerFactory!;
-        _recordingEngine = new WindowsRecordingEngine(
+        InitializeComponent();
+        _viewModel = viewModel;
+        _recordingEngine = recordingMonitor;
+        _dialogs = dialogs;
+        _environment = environment;
+        _logger = logger;
+        _captureLifetime = captureLifetime;
+        _lifecycleEvents = lifecycleEvents;
+        _presentation = presentation ?? new(Show, Hide, Activate);
+        _timer = timer!;
+        ConnectWindowServices();
+    }
+
+    private void InitializeServices(
+        string root,
+        ILoggerFactory loggerFactory,
+        Func<IDesktopDialogs> dialogs,
+        Func<IDesktopEnvironment> environment,
+        Func<WindowsRecordingEngine, IDesktopLifecycleEvents> lifecycleEvents,
+        IAudioDeviceCatalog devices,
+        Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber> createTranscriber)
+    {
+        var recordingEngine = new WindowsRecordingEngine(
             Path.Combine(root, "capture"),
             loggerFactory.CreateLogger<WindowsRecordingEngine>());
+        _recordingEngine = recordingEngine;
+        _captureLifetime = recordingEngine;
         var modelManager = new LocalTranscriptionModelManager(
             Path.Combine(root, "models"),
             new HttpClient(),
             loggerFactory.CreateLogger<LocalTranscriptionModelManager>());
         var writer = new AtomicTranscriptWriter(
             loggerFactory.CreateLogger<AtomicTranscriptWriter>());
-        var transcriber = new WhisperProcessTranscriber(
+        var transcriber = createTranscriber(
             Path.Combine(AppContext.BaseDirectory, "SoundRecorder.Desktop.exe"),
             modelManager,
-            loggerFactory.CreateLogger<WhisperProcessTranscriber>());
+            loggerFactory);
         var jobRepository = new JsonTranscriptionJobRepository(
             Path.Combine(root, "jobs.json"),
             loggerFactory.CreateLogger<JsonTranscriptionJobRepository>());
@@ -80,7 +131,7 @@ public partial class MainWindow : Window
             Path.Combine(root, "history.json"),
             loggerFactory.CreateLogger<JsonRecordingHistory>());
         var recorder = new RecorderApplication(
-            _recordingEngine,
+            recordingEngine,
             queue,
             modelManager,
             history,
@@ -92,28 +143,51 @@ public partial class MainWindow : Window
             loggerFactory.CreateLogger<RecoveryManager>());
         _viewModel = new MainViewModel(
             recorder,
-            _recordingEngine,
+            recordingEngine,
             queue,
             modelManager,
             history,
             recovery,
-            new WindowsAudioDeviceCatalog(),
+            devices,
             loggerFactory.CreateLogger<MainViewModel>());
+        _dialogs = dialogs();
+        _environment = environment();
+        _lifecycleEvents = lifecycleEvents(recordingEngine);
+        _presentation = new(Show, Hide, Activate);
+        ConnectWindowServices();
+    }
+
+    private static ILocalTranscriber CreateTranscriber(
+        string workerPath, ITranscriptionModelStore models, ILoggerFactory loggerFactory) =>
+        new WhisperProcessTranscriber(workerPath, models,
+            loggerFactory.CreateLogger<WhisperProcessTranscriber>());
+
+    private void ConnectWindowServices()
+    {
         DataContext = _viewModel;
         _viewModel.PropertyChanged += ViewModelOnPropertyChanged;
-        _notifyIcon = CreateNotifyIcon();
-        _timer = new DispatcherTimer
+        _environment.OpenRequested += EnvironmentOnOpenRequested;
+        _environment.ExitRequested += EnvironmentOnExitRequested;
+        _previousStatus = _viewModel.Status;
+        _timer ??= new DispatcherTimer();
+        _timer.Interval = TimeSpan.FromMilliseconds(250);
+        if (_lifecycleEvents is not null)
         {
-            Interval = TimeSpan.FromMilliseconds(250),
-        };
+            _lifecycleEvents.RecordingCompleted += RecordingEngineOnRecordingCompleted;
+            _lifecycleEvents.PowerModeChanged += SystemEventsOnPowerModeChanged;
+            _lifecycleEvents.SessionEnding += SystemEventsOnSessionEnding;
+        }
         _timer.Tick += TimerOnTick;
         Loaded += MainWindow_Loaded;
-        _recordingEngine.RecordingCompleted += RecordingEngineOnRecordingCompleted;
-        Microsoft.Win32.SystemEvents.PowerModeChanged += SystemEventsOnPowerModeChanged;
-        Microsoft.Win32.SystemEvents.SessionEnding += SystemEventsOnSessionEnding;
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs args)
+    {
+        await LoadAsync();
+    }
+
+    /// <summary>Restores local state and offers recovery before starting periodic status refresh.</summary>
+    public async Task LoadAsync()
     {
         try
         {
@@ -133,32 +207,44 @@ public partial class MainWindow : Window
 
     private void ChooseDestination_Click(object sender, RoutedEventArgs args)
     {
-        var dialog = new Microsoft.Win32.OpenFolderDialog
+        ChooseDestination();
+    }
+
+    /// <summary>Changes the output destination only after a folder has been selected.</summary>
+    public void ChooseDestination()
+    {
+        var folder = _dialogs.ChooseDestination();
+        if (folder is not null)
         {
-            Multiselect = false,
-        };
-        if (dialog.ShowDialog() == true)
-        {
-            _viewModel.DestinationFolder = dialog.FolderName;
+            _viewModel.DestinationFolder = folder;
             WarnIfSynchronizedFolder();
         }
     }
 
     private async void ImportModel_Click(object sender, RoutedEventArgs args)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Filter = "Sound Recorder model package (*.zip)|*.zip",
-        };
-        if (dialog.ShowDialog() != true)
+        await ImportModelAsync();
+    }
+
+    /// <summary>Installs a model only after the user selects its local package.</summary>
+    public async Task ImportModelAsync()
+    {
+        var package = _dialogs.ChooseModelPackage();
+        if (package is null)
         {
             return;
         }
 
-        await _viewModel.ImportModelCommand.ExecuteAsync(dialog.FileName);
+        await _viewModel.ImportModelCommand.ExecuteAsync(package);
     }
 
     private async void ViewTranscript_Click(object sender, RoutedEventArgs args)
+    {
+        await ViewTranscriptAsync();
+    }
+
+    /// <summary>Offers the selected transcript for viewing and explicit copying.</summary>
+    public async Task ViewTranscriptAsync()
     {
         await _viewModel.ViewTranscriptCommand.ExecuteAsync(null);
         var text = _viewModel.Transcript;
@@ -166,27 +252,27 @@ public partial class MainWindow : Window
         {
             return;
         }
-        var copy = System.Windows.MessageBox.Show(
+        var copy = _dialogs.Show(
             text,
             "Transcript",
             MessageBoxButton.OKCancel);
         if (copy == MessageBoxResult.OK)
         {
-            System.Windows.Clipboard.SetText(text);
+            _environment.CopyTranscript(text);
         }
     }
 
     private void OpenOutputFolder_Click(object sender, RoutedEventArgs args)
     {
-        var recording = HistoryList.SelectedItem as SavedRecording;
+        OpenOutputFolder(HistoryList.SelectedItem as SavedRecording);
+    }
+
+    /// <summary>Reveals an existing recording, reporting an externally missing file instead of recreating it.</summary>
+    public void OpenOutputFolder(SavedRecording? recording)
+    {
         if (recording is not null && File.Exists(recording.AudioPath))
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{recording.AudioPath}\"",
-                UseShellExecute = true,
-            });
+            _environment.OpenRecordingFolder(recording.AudioPath);
             return;
         }
 
@@ -198,6 +284,12 @@ public partial class MainWindow : Window
 
     private void TimerOnTick(object? sender, EventArgs args)
     {
+        RefreshStatus();
+    }
+
+    /// <summary>Refreshes capture status, one-shot duration warnings, notification status, and idle-sleep policy.</summary>
+    public void RefreshStatus()
+    {
         _viewModel.Refresh();
         if (_viewModel.Status == "Recording" && _previousStatus == "Idle")
         {
@@ -205,26 +297,29 @@ public partial class MainWindow : Window
         }
 
         _previousStatus = _viewModel.Status;
-        if (!_limitWarningShown &&
-            _recordingEngine.CapturedDuration >= RecordingFormat.WarningCapturedDuration &&
-            _viewModel.Status is "Recording" or "Paused")
+        WarnAboutDurationLimit();
+        _environment.PreventIdleSleep(!_viewModel.IsIdle);
+        _environment.SetNotificationText(_viewModel.IsIdle
+            ? "Sound Recorder"
+            : "Sound Recorder - recording");
+    }
+
+    private void WarnAboutDurationLimit()
+    {
+        if (_limitWarningShown ||
+            _recordingEngine.CapturedDuration < RecordingFormat.WarningCapturedDuration ||
+            _viewModel.Status is not ("Recording" or "Paused"))
         {
-            _limitWarningShown = true;
-            ShowMessage("The four-hour captured-duration limit is approaching.");
-            _notifyIcon.ShowBalloonTip(
-                5000,
-                "Recording limit approaching",
-                "The recording will save normally at four hours of captured audio.",
-                ToolTipIcon.Warning);
+            return;
         }
 
-        SetThreadExecutionState(
-            _viewModel.IsIdle
-                ? ExecutionState.Continuous
-                : ExecutionState.Continuous | ExecutionState.SystemRequired);
-        _notifyIcon.Text = _viewModel.IsIdle
-            ? "Sound Recorder"
-            : "Sound Recorder - recording";
+        _limitWarningShown = true;
+        ShowMessage("The four-hour captured-duration limit is approaching.");
+        _environment.ShowBalloonTip(
+            5000,
+            "Recording limit approaching",
+            "The recording will save normally at four hours of captured audio.",
+            ToolTipIcon.Warning);
     }
 
     private async void ViewModelOnPropertyChanged(
@@ -237,8 +332,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        await ConfirmShortRecordingAsync();
+    }
+
+    /// <summary>Consumes the low-space prompt and starts a shortened recording only after explicit approval.</summary>
+    public async Task ConfirmShortRecordingAsync()
+    {
         _viewModel.NeedsShortRecordingConsent = false;
-        var approved = System.Windows.MessageBox.Show(
+        var approved = _dialogs.Show(
             _viewModel.Message +
             "\n\nProceed with a shorter recording when free space runs out?",
             "Insufficient space for maximum duration",
@@ -256,16 +357,21 @@ public partial class MainWindow : Window
     {
         await Dispatcher.InvokeAsync(async () =>
         {
-            await _viewModel.AcceptCompletedRecordingAsync(recording);
-            ShowMessage(_viewModel.Message);
+            await AcceptCompletedRecordingAsync(recording);
         });
+    }
+
+    /// <summary>Publishes a capture-engine completion on the window's application thread.</summary>
+    public async Task AcceptCompletedRecordingAsync(SavedRecording recording)
+    {
+        await _viewModel.AcceptCompletedRecordingAsync(recording);
     }
 
     private async Task OfferRecoveryAsync()
     {
         foreach (var candidate in await _viewModel.FindRecoveryCandidatesAsync())
         {
-            var answer = System.Windows.MessageBox.Show(
+            var answer = _dialogs.Show(
                 $"Recover available audio from the recording last saved at {candidate.LastSavedAt}?",
                 "Recover interrupted recording",
                 MessageBoxButton.YesNo,
@@ -279,26 +385,17 @@ public partial class MainWindow : Window
         }
     }
 
-    private NotifyIcon CreateNotifyIcon()
-    {
-        var icon = new NotifyIcon
-        {
-            Icon = System.Drawing.SystemIcons.Application,
-            Text = "Sound Recorder",
-            Visible = true,
-        };
-        icon.DoubleClick += (_, _) => RestoreFromNotificationArea();
-        icon.ContextMenuStrip = new ContextMenuStrip();
-        icon.ContextMenuStrip.Items.Add("Open Sound Recorder", null, (_, _) => RestoreFromNotificationArea());
-        icon.ContextMenuStrip.Items.Add("Exit", null, async (_, _) => await RequestExitAsync());
-        return icon;
-    }
+    private void EnvironmentOnOpenRequested(object? sender, EventArgs args) =>
+        RestoreFromNotificationArea();
+
+    private async void EnvironmentOnExitRequested(object? sender, EventArgs args) =>
+        await RequestExitAsync();
 
     private void RestoreFromNotificationArea()
     {
-        Show();
+        _presentation.Show();
         WindowState = WindowState.Normal;
-        Activate();
+        _presentation.Activate();
     }
 
     private void WarnIfSynchronizedFolder()
@@ -324,104 +421,100 @@ public partial class MainWindow : Window
         _viewModel.Message = message;
     }
 
-    private async Task RequestExitAsync()
+    /// <summary>Confirms stopping active work before closing, without queuing a new transcription.</summary>
+    public async Task RequestExitAsync()
     {
-        if (!_viewModel.HasActiveWork())
+        if (_viewModel.HasActiveWork())
         {
-            _allowClose = true;
-            Close();
-            return;
+            var answer = _dialogs.Show(
+                "Stop active recording or transcription work and exit? " +
+                "Queued jobs and available captured audio will be preserved.",
+                "Exit Sound Recorder",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+            await _viewModel.StopActiveWorkAsync();
         }
-
-        var answer = System.Windows.MessageBox.Show(
-            "Stop active recording or transcription work and exit? " +
-            "Queued jobs and available captured audio will be preserved.",
-            "Exit Sound Recorder",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (answer != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        await _viewModel.StopActiveWorkAsync();
-
         _allowClose = true;
         Close();
     }
 
     protected override async void OnClosing(CancelEventArgs args)
     {
-        if (_allowClose)
+        if (_allowClose || !_viewModel.HasActiveWork())
         {
+            _allowClose = true;
             DisposeWindowServices();
             base.OnClosing(args);
             return;
         }
 
-        if (_viewModel.HasActiveWork())
+        args.Cancel = true;
+        var answer = _dialogs.Show(
+            "Keep running in the notification area, or stop active work and exit?",
+            "Active work",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question,
+            MessageBoxResult.Yes);
+        if (answer == MessageBoxResult.Yes)
         {
-            args.Cancel = true;
-            var answer = System.Windows.MessageBox.Show(
-                "Keep running in the notification area, or stop active work and exit?",
-                "Active work",
-                MessageBoxButton.YesNoCancel,
-                MessageBoxImage.Question,
-                MessageBoxResult.Yes);
-            if (answer == MessageBoxResult.Yes)
-            {
-                Hide();
-                return;
-            }
-
-            if (answer != MessageBoxResult.No)
-            {
-                return;
-            }
-
-            args.Cancel = true;
-            try
-            {
-                await _viewModel.StopActiveWorkAsync();
-            }
-            catch (Exception exception)
-            {
-                DesktopLog.RecordingStopFailed(_logger, exception);
-            }
-            finally
-            {
-                _allowClose = true;
-                Close();
-            }
-            return;
+            _presentation.Hide();
         }
-
-        _allowClose = true;
-        DisposeWindowServices();
-        base.OnClosing(args);
+        else if (answer == MessageBoxResult.No)
+        {
+            await StopAndCloseAsync();
+        }
     }
 
-    protected override void OnStateChanged(EventArgs args)
+    private async Task StopAndCloseAsync()
+    {
+        try
+        {
+            await _viewModel.StopActiveWorkAsync();
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.RecordingStopFailed(_logger, exception);
+        }
+        finally
+        {
+            _allowClose = true;
+            Close();
+        }
+    }
+
+    protected override void OnStateChanged(EventArgs args) => UpdateWindowState(args);
+
+    /// <summary>Publishes minimization status without stopping capture or transcription.</summary>
+    public void UpdateWindowState() => UpdateWindowState(EventArgs.Empty);
+
+    /// <summary>Handles the window-state notification and preserves the WPF state-changed event.</summary>
+    public void UpdateWindowState(EventArgs args)
     {
         if (WindowState == WindowState.Minimized)
         {
-            Hide();
-            _notifyIcon.ShowBalloonTip(
+            _presentation.Hide();
+            _environment.ShowBalloonTip(
                 3000,
                 "Sound Recorder is still running",
                 _viewModel.Status,
                 ToolTipIcon.Info);
         }
-
         base.OnStateChanged(args);
     }
 
     private void DisposeWindowServices()
     {
-        _notifyIcon.Dispose();
-        _recordingEngine.Dispose();
-        Microsoft.Win32.SystemEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
-        Microsoft.Win32.SystemEvents.SessionEnding -= SystemEventsOnSessionEnding;
+        _environment.Dispose();
+        _captureLifetime?.Dispose();
+        if (_lifecycleEvents is not null)
+        {
+            _lifecycleEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
+            _lifecycleEvents.SessionEnding -= SystemEventsOnSessionEnding;
+        }
     }
 
     private async void SystemEventsOnPowerModeChanged(
@@ -430,9 +523,15 @@ public partial class MainWindow : Window
     {
         if (args.Mode == Microsoft.Win32.PowerModes.Suspend)
         {
-            await _viewModel.StopActiveWorkAsync();
-            ShowMessage("Windows is suspending. Available audio was finalized and work was interrupted.");
+            await SuspendAsync();
         }
+    }
+
+    /// <summary>Finalizes available audio and stops transcription on explicit Windows suspension.</summary>
+    public async Task SuspendAsync()
+    {
+        await _viewModel.StopActiveWorkAsync();
+        ShowMessage("Windows is suspending. Available audio was finalized and work was interrupted.");
     }
 
     private async void SystemEventsOnSessionEnding(
@@ -442,14 +541,4 @@ public partial class MainWindow : Window
         await _viewModel.StopActiveWorkAsync();
     }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern ExecutionState SetThreadExecutionState(
-        ExecutionState esFlags);
-
-    [Flags]
-    private enum ExecutionState : uint
-    {
-        Continuous = 0x80000000,
-        SystemRequired = 0x00000001,
-    }
 }

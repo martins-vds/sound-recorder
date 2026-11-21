@@ -14,7 +14,21 @@ public sealed class WhisperCancellationTests
 {
     [LocalWhisperFact]
     [Trait("type", "IntegrationTests")]
-    public async Task TranscribeAsync_ParentIsTerminated_TerminatesItsWorker()
+    public Task TranscribeAsync_ParentIsTerminated_TerminatesItsWorker() =>
+        AssertParentLifetimeAsync(
+            Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_WORKER")!,
+            Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_MODEL")!,
+            TimeSpan.FromSeconds(3));
+
+    [Fact]
+    [Trait("type", "IntegrationTests")]
+    public Task TranscribeAsync_ProtocolParentIsTerminated_TerminatesItsWorker() =>
+        AssertParentLifetimeAsync(
+            Path.Combine(AppContext.BaseDirectory, "SoundRecorder.ProcessTestHost.exe"),
+            "hang",
+            TimeSpan.Zero);
+
+    private static async Task AssertParentLifetimeAsync(string executable, string model, TimeSpan warmup)
     {
         var directory = Directory.CreateTempSubdirectory("sound-recorder-parent-test-");
         Process? parent = null;
@@ -37,8 +51,8 @@ public sealed class WhisperCancellationTests
                 ArgumentList =
                 {
                     typeof(ProcessTestHost.Program).Assembly.Location,
-                    Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_WORKER")!,
-                    Environment.GetEnvironmentVariable("SOUND_RECORDER_TEST_MODEL")!,
+                    executable,
+                    model,
                     recording.AudioPath,
                     marker,
                 },
@@ -66,7 +80,7 @@ public sealed class WhisperCancellationTests
             Assert.NotEqual(parent.Id, ready.WorkerProcessId);
             Assert.NotEqual(Environment.ProcessId, ready.WorkerProcessId);
             worker = Process.GetProcessById(ready.WorkerProcessId);
-            await Task.Delay(TimeSpan.FromSeconds(3));
+            await Task.Delay(warmup);
             Assert.False(worker.HasExited);
 
             // Kill only the parent: killing its tree would conceal the orphan-worker bug.

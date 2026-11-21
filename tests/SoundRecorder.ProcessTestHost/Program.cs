@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Transcription;
@@ -9,6 +10,18 @@ public static class Program
 {
     public static async Task Main(string[] args)
     {
+        if (args is ["--hold"])
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan);
+            return;
+        }
+
+        if (args is ["--transcribe-worker"])
+        {
+            await RunProtocolFixtureAsync();
+            return;
+        }
+
         var transcriber = new WhisperProcessTranscriber(
             args[0],
             new ModelStore(args[1]),
@@ -16,6 +29,54 @@ public static class Program
         var recording = new SavedRecording(
             Guid.NewGuid(), args[2], "English", RecordingOutcome.Complete, TimeSpan.FromSeconds(1));
         await transcriber.TranscribeAsync(recording, CancellationToken.None);
+    }
+
+    private static async Task RunProtocolFixtureAsync()
+    {
+        using var request = JsonDocument.Parse((await Console.In.ReadLineAsync())!);
+        var mode = request.RootElement.GetProperty("ModelPath").GetString();
+        Console.WriteLine("{\"Started\":true}");
+        switch (mode)
+        {
+            case "error":
+                Console.WriteLine("{\"Error\":\"fixture inference failed\"}");
+                Environment.ExitCode = 7;
+                break;
+            case "exit":
+                Environment.ExitCode = 9;
+                break;
+            case "null":
+                Console.WriteLine("null");
+                break;
+            case "missing":
+                Console.WriteLine("{\"Error\":null}");
+                break;
+            case "malformed":
+                Console.WriteLine("not-json");
+                break;
+            case "hang":
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                break;
+            case "tree":
+                using (var child = Process.Start(new ProcessStartInfo(Environment.ProcessPath!)
+                       {
+                           UseShellExecute = false,
+                           CreateNoWindow = true,
+                           ArgumentList = { "--hold" },
+                       })!)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { Grandchild = child.Id }));
+                    await Task.Delay(Timeout.InfiniteTimeSpan);
+                }
+                break;
+            case "slow-exit":
+                Console.WriteLine("{\"Segments\":[{\"Start\":\"00:00:00\",\"End\":\"00:00:00.5000000\",\"Text\":\"hello\"}]}");
+                await Task.Delay(200);
+                break;
+            default:
+                Console.WriteLine("{\"Segments\":[{\"Start\":\"00:00:00\",\"End\":\"00:00:00.5000000\",\"Text\":\"hello\"}]}");
+                break;
+        }
     }
 
     public sealed record ReadyState(int ParentProcessId, int WorkerProcessId);

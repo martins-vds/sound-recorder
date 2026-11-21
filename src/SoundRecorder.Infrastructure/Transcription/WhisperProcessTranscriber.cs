@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -7,13 +6,32 @@ using SoundRecorder.Core;
 namespace SoundRecorder.Infrastructure.Transcription;
 
 /// <summary>Isolates native inference so cancellation cannot terminate the recorder.</summary>
-public sealed class WhisperProcessTranscriber(
-    string executablePath,
-    ITranscriptionModelStore models,
-    ILogger<WhisperProcessTranscriber>? logger = null) : ILocalTranscriber
+public sealed class WhisperProcessTranscriber : ILocalTranscriber
 {
-    private readonly ILogger<WhisperProcessTranscriber> _logger =
-        logger ?? NullLogger<WhisperProcessTranscriber>.Instance;
+    private readonly string _executablePath;
+    private readonly ITranscriptionModelStore _models;
+    private readonly Func<string, ITranscriptionWorker> _startWorker;
+    private readonly ILogger<WhisperProcessTranscriber> _logger;
+
+    public WhisperProcessTranscriber(
+        string executablePath,
+        ITranscriptionModelStore models,
+        ILogger<WhisperProcessTranscriber>? logger = null)
+        : this(executablePath, models, WindowsTranscriptionWorker.Start, logger)
+    {
+    }
+
+    internal WhisperProcessTranscriber(
+        string executablePath,
+        ITranscriptionModelStore models,
+        Func<string, ITranscriptionWorker> startWorker,
+        ILogger<WhisperProcessTranscriber>? logger = null)
+    {
+        _executablePath = executablePath;
+        _models = models;
+        _startWorker = startWorker;
+        _logger = logger ?? NullLogger<WhisperProcessTranscriber>.Instance;
+    }
 
     /// <summary>Runs one local worker and releases it before completing or canceling the job.</summary>
     public async Task<TranscriptDocument> TranscribeAsync(
@@ -21,58 +39,35 @@ public sealed class WhisperProcessTranscriber(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var model = models.GetModelPath(recording.Language)
+        var model = _models.GetModelPath(recording.Language)
             ?? throw new InvalidOperationException(
                 $"No compatible local transcription model is installed for {recording.Language}.");
         var directory = Path.Combine(Path.GetTempPath(), $"sound-recorder-worker-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
         {
-            using var lifetime = WindowsProcessJob.Create();
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo(executablePath)
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    ArgumentList = { "--transcribe-worker" },
-                },
-            };
-            if (!process.Start())
-            {
-                throw new IOException("The local transcription worker could not start.");
-            }
-
-            var diagnostics = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+            await using var process = _startWorker(_executablePath);
             try
             {
-                lifetime.Assign(process);
                 InfrastructureLog.TranscriptionWorkerStarted(_logger, process.Id, recording.Id);
-                using var registration = cancellationToken.Register(() => StopWorker(process));
+                using var registration = cancellationToken.Register(process.Abort);
                 var request = new WorkerRequest(model, recording, Path.Combine(directory, "processing.wav"));
-                await process.StandardInput.WriteLineAsync(
-                    JsonSerializer.Serialize(request).AsMemory(),
-                    cancellationToken);
-                process.StandardInput.Close();
+                using (var input = process.Input)
+                {
+                    await input.WriteLineAsync(
+                        JsonSerializer.Serialize(request).AsMemory(),
+                        cancellationToken);
+                }
                 var result = await ReadResultAsync(process, recording.Id, cancellationToken);
-                await process.WaitForExitAsync(cancellationToken);
+                var exitCode = await process.WaitForExitAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                var segments = GetSegments(result, process.ExitCode);
+                var segments = GetSegments(result, exitCode);
                 InfrastructureLog.TranscriptionProducedSegments(_logger, segments.Count, recording.Id);
                 return new TranscriptDocument(recording, recording.Language, segments);
             }
             catch (IOException exception) when (cancellationToken.IsCancellationRequested)
             {
                 throw new OperationCanceledException("Local transcription was canceled.", exception, cancellationToken);
-            }
-            finally
-            {
-                StopWorker(process);
-                await process.WaitForExitAsync(CancellationToken.None);
-                await diagnostics;
             }
         }
         finally
@@ -95,7 +90,13 @@ public sealed class WhisperProcessTranscriber(
     }
 
     /// <summary>Processes the private stdin/stdout protocol without opening the desktop UI.</summary>
-    public static async Task<int> RunWorkerAsync(TextReader input, TextWriter output)
+    public static Task<int> RunWorkerAsync(TextReader input, TextWriter output) =>
+        RunWorkerAsync(input, output, static (models, logger) => new WhisperLocalTranscriber(models, logger));
+
+    internal static async Task<int> RunWorkerAsync(
+        TextReader input,
+        TextWriter output,
+        Func<ITranscriptionModelStore, ILogger<WhisperLocalTranscriber>, WhisperLocalTranscriber> createTranscriber)
     {
         try
         {
@@ -103,7 +104,7 @@ public sealed class WhisperProcessTranscriber(
                 ?? throw new InvalidDataException("No local transcription request was supplied.");
             var request = JsonSerializer.Deserialize<WorkerRequest>(line)
                 ?? throw new InvalidDataException("The local transcription request is invalid.");
-            var transcriber = new WhisperLocalTranscriber(
+            var transcriber = createTranscriber(
                 new WorkerModelStore(request.ModelPath),
                 new WorkerLogger(output));
             var document = await transcriber.TranscribeAsync(
@@ -123,11 +124,11 @@ public sealed class WhisperProcessTranscriber(
     }
 
     private async Task<WorkerMessage> ReadResultAsync(
-        Process process,
+        ITranscriptionWorker process,
         Guid recordingId,
         CancellationToken cancellationToken)
     {
-        while (await process.StandardOutput.ReadLineAsync(cancellationToken) is { } line)
+        while (await process.Output.ReadLineAsync(cancellationToken) is { } line)
         {
             var message = JsonSerializer.Deserialize<WorkerMessage>(line)
                 ?? throw new InvalidDataException("The local transcription worker returned an invalid response.");
@@ -139,24 +140,10 @@ public sealed class WhisperProcessTranscriber(
             InfrastructureLog.TranscriptionStarted(_logger, recordingId);
         }
 
-        await process.WaitForExitAsync(cancellationToken);
+        var exitCode = await process.WaitForExitAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         throw new IOException(
-            $"The local transcription worker stopped without returning a result (code {process.ExitCode}). Retry the job.");
-    }
-
-    private static void StopWorker(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException) when (process.HasExited)
-        {
-        }
+            $"The local transcription worker stopped without returning a result (code {exitCode}). Retry the job.");
     }
 
     private sealed record WorkerRequest(

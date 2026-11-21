@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -10,23 +9,29 @@ using SoundRecorder.Infrastructure.Privacy;
 
 namespace SoundRecorder.Infrastructure.Audio;
 
-public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
+public sealed class WindowsRecordingEngine : IRecordingEngine, IRecordingMonitor, IDisposable
 {
     private readonly string _stateDirectory;
     private readonly ILogger<WindowsRecordingEngine> _logger;
+    private readonly Func<string, bool, WaveFormat, IAudioCaptureDevice> _openCapture;
+    private readonly TimeProvider _timeProvider;
+    private readonly Func<string, long> _availableStorage;
+    private readonly Func<string, WaveFormat, WaveCaptureWriter> _createWriter;
+    private readonly Action<string?, string?, AudioSource, string> _finalize;
     private readonly object _captureLock = new();
     private CaptureSource? _microphone;
     private CaptureSource? _systemAudio;
     private RecordingRequest? _request;
     private Guid _recordingId;
-    private Stopwatch? _capturedClock;
+    private long? _captureStartedAt;
+    private bool _hasCaptureClock;
     private TimeSpan _capturedDuration;
-    private Timer? _limitTimer;
+    private ITimer? _limitTimer;
     private string? _checkpointPath;
-    private bool _paused;
+    private volatile bool _paused;
     private bool _captureFailed;
     private string? _captureError;
-    private DateTimeOffset _lastFlush = DateTimeOffset.UtcNow;
+    private DateTimeOffset _lastFlush;
     private readonly object _completionLock = new();
     private Task<SavedRecording>? _completionTask;
     private int _completionEventRaised;
@@ -34,12 +39,45 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     public WindowsRecordingEngine(
         string stateDirectory,
         ILogger<WindowsRecordingEngine>? logger = null)
+        : this(
+            stateDirectory,
+            WasapiCaptureDevice.Open,
+            TimeProvider.System,
+            static path => new DriveInfo(Path.GetPathRoot(path)!).AvailableFreeSpace,
+            logger)
+    {
+    }
+
+    internal WindowsRecordingEngine(
+        string stateDirectory,
+        Func<string, bool, WaveFormat, IAudioCaptureDevice> openCapture,
+        TimeProvider timeProvider,
+        Func<string, long> availableStorage,
+        ILogger<WindowsRecordingEngine>? logger = null,
+        Func<string, WaveFormat, WaveCaptureWriter>? createWriter = null,
+        Action<string?, string?, AudioSource, string>? finalize = null)
     {
         _stateDirectory = stateDirectory;
+        _openCapture = openCapture;
+        _timeProvider = timeProvider;
+        _availableStorage = availableStorage;
+        _createWriter = createWriter ?? (static (path, format) => new WaveCaptureWriter(path, format));
+        _finalize = finalize ?? WaveRecordingFinalizer.Finalize;
+        _lastFlush = timeProvider.GetUtcNow();
         _logger = logger ?? NullLogger<WindowsRecordingEngine>.Instance;
         Directory.CreateDirectory(_stateDirectory);
     }
-    public TimeSpan CapturedDuration => _capturedDuration + (_capturedClock?.Elapsed ?? TimeSpan.Zero);
+    public TimeSpan CapturedDuration
+    {
+        get
+        {
+            lock (_captureLock)
+            {
+                return _capturedDuration +
+                    (_captureStartedAt is { } started ? _timeProvider.GetElapsedTime(started) : TimeSpan.Zero);
+            }
+        }
+    }
 
     public float MicrophoneLevel => _microphone?.Level ?? 0;
 
@@ -65,44 +103,40 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         _captureFailed = false;
         _captureError = null;
         _paused = false;
-        _capturedDuration = TimeSpan.Zero;
-        _capturedClock = Stopwatch.StartNew();
+        lock (_captureLock)
+        {
+            _capturedDuration = TimeSpan.Zero;
+            _hasCaptureClock = true;
+            _captureStartedAt = _timeProvider.GetTimestamp();
+        }
         _completionTask = null;
         Volatile.Write(ref _completionEventRaised, 0);
 
         try
         {
-            using var enumerator = new MMDeviceEnumerator();
             if (microphoneRequired)
             {
-                var device = enumerator.GetDevice(request.MicrophoneId!);
                 _microphone = CreateCaptureSource(
-                    new WasapiRecorderBuilder()
-                        .WithDevice(device)
-                        .WithFormat(new WaveFormat(
+                    _openCapture(
+                        request.MicrophoneId!,
+                        false,
+                        new WaveFormat(
                             RecordingFormat.SampleRate,
                             RecordingFormat.BitsPerSample,
-                            1))
-                        .WithBufferLength(100)
-                        .WithMmcssThreadPriority("Audio")
-                        .Build(),
+                            1)),
                     Path.Combine(_stateDirectory, $"{_recordingId:N}-microphone.wav"));
             }
 
             if (playbackRequired)
             {
-                var device = enumerator.GetDevice(request.PlaybackDeviceId!);
                 _systemAudio = CreateCaptureSource(
-                    new WasapiRecorderBuilder()
-                        .WithDevice(device)
-                        .WithLoopbackCapture()
-                        .WithFormat(new WaveFormat(
+                    _openCapture(
+                        request.PlaybackDeviceId!,
+                        true,
+                        new WaveFormat(
                             RecordingFormat.SampleRate,
                             RecordingFormat.BitsPerSample,
-                            2))
-                        .WithBufferLength(100)
-                        .WithMmcssThreadPriority("Audio")
-                        .Build(),
+                            2)),
                     Path.Combine(_stateDirectory, $"{_recordingId:N}-system.wav"));
             }
 
@@ -110,7 +144,8 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             SaveCheckpoint();
             _microphone?.Start();
             _systemAudio?.Start();
-            _limitTimer = new Timer(CheckDurationLimit, null, 1000, 1000);
+            _limitTimer = _timeProvider.CreateTimer(
+                CheckDurationLimit, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
             InfrastructureLog.CaptureStarted(_logger, _recordingId);
         }
         catch (Exception exception)
@@ -130,14 +165,16 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     public Task PauseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_capturedClock is not null && !_paused)
+        lock (_captureLock)
         {
-            _capturedClock.Stop();
-            _capturedDuration += _capturedClock.Elapsed;
-            _capturedClock.Reset();
-            _paused = true;
-            SaveCheckpoint();
-            InfrastructureLog.CapturePaused(_logger, _recordingId);
+            if (_hasCaptureClock && !_paused)
+            {
+                _capturedDuration = CapturedDuration;
+                _captureStartedAt = null;
+                _paused = true;
+                SaveCheckpoint();
+                InfrastructureLog.CapturePaused(_logger, _recordingId);
+            }
         }
 
         return Task.CompletedTask;
@@ -146,12 +183,15 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     public Task ResumeAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_capturedClock is not null && _paused)
+        lock (_captureLock)
         {
-            _paused = false;
-            _capturedClock.Start();
-            SaveCheckpoint();
-            InfrastructureLog.CaptureResumed(_logger, _recordingId);
+            if (_hasCaptureClock && _paused)
+            {
+                _paused = false;
+                _captureStartedAt = _timeProvider.GetTimestamp();
+                SaveCheckpoint();
+                InfrastructureLog.CaptureResumed(_logger, _recordingId);
+            }
         }
 
         return Task.CompletedTask;
@@ -169,11 +209,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     private async Task<SavedRecording> CompleteInternalAsync()
     {
         _limitTimer?.Dispose();
-        _capturedClock?.Stop();
-        if (_capturedClock is not null && !_paused)
+        lock (_captureLock)
         {
-            _capturedDuration += _capturedClock.Elapsed;
-            _capturedClock.Reset();
+            _capturedDuration = CapturedDuration;
+            _captureStartedAt = null;
         }
 
         await StopCaptureSourcesAsync();
@@ -192,9 +231,9 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         DisposeSources();
     }
 
-    private CaptureSource CreateCaptureSource(WasapiRecorder capture, string path)
+    private CaptureSource CreateCaptureSource(IAudioCaptureDevice capture, string path)
     {
-        var source = new CaptureSource(capture, path, IsPaused, HandleCaptureFailure);
+        var source = new CaptureSource(capture, path, IsPaused, HandleCaptureFailure, _createWriter);
         return source;
     }
 
@@ -208,17 +247,14 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         _captureFailed = true;
         _captureError = exception.Message;
         InfrastructureLog.CaptureFailed(_logger, exception, _recordingId);
-        if (_request is not null)
-        {
-            _ = CompleteAutomaticallyAsync();
-        }
+        _ = CompleteAutomaticallyAsync();
     }
 
     private void CheckDurationLimit(object? state)
     {
         if (CapturedDuration < RecordingFormat.MaximumCapturedDuration)
         {
-            if (DateTimeOffset.UtcNow - _lastFlush < TimeSpan.FromSeconds(4))
+            if (_timeProvider.GetUtcNow() - _lastFlush < TimeSpan.FromSeconds(4))
             {
                 return;
             }
@@ -242,7 +278,6 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
         }
         catch (Exception exception)
         {
-            _captureFailed = true;
             _captureError = $"The recording could not be finalized: {exception.Message}";
         }
     }
@@ -255,7 +290,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _systemAudio?.Flush(CapturedDuration);
         }
 
-        _lastFlush = DateTimeOffset.UtcNow;
+        _lastFlush = _timeProvider.GetUtcNow();
         SaveCheckpoint();
     }
 
@@ -279,7 +314,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             request.DestinationFolder!,
             request.Title,
             DateTimeOffset.Now);
-        WaveRecordingFinalizer.Finalize(
+        _finalize(
             microphonePath,
             systemAudioPath,
             request.Source,
@@ -298,7 +333,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
     private void SaveCheckpoint()
     {
-        if (_request is null || _checkpointPath is null)
+        if (_checkpointPath is null)
         {
             return;
         }
@@ -307,19 +342,19 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             _recordingId,
             _microphone?.Path ?? string.Empty,
             _systemAudio?.Path,
-            _request.DestinationFolder!,
+            _request!.DestinationFolder!,
             _request.Title,
             _request.Language,
             _request.Source,
             CapturedDuration.Ticks,
-            DateTimeOffset.UtcNow);
+            _timeProvider.GetUtcNow());
         File.WriteAllText(
             $"{_checkpointPath}.tmp",
             JsonSerializer.Serialize(checkpoint));
         File.Move($"{_checkpointPath}.tmp", _checkpointPath, overwrite: true);
     }
 
-    private static void ValidateDestination(RecordingRequest request)
+    private void ValidateDestination(RecordingRequest request)
     {
         var destination = request.DestinationFolder
             ?? throw new RecordingStartException("Select a local destination folder.");
@@ -333,10 +368,9 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             throw new RecordingStartException(exception.Message, exception);
         }
 
-        var drive = new DriveInfo(Path.GetPathRoot(fullPath)!);
         Directory.CreateDirectory(fullPath);
         var storageError = StoragePreflight.Validate(
-            drive.AvailableFreeSpace,
+            _availableStorage(fullPath),
             StoragePreflight.RequiredBytes(request.Source),
             request.AllowShortRecordingWhenStorageIsLow);
         if (storageError is not null)
@@ -362,24 +396,25 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
     }
 
     private void DeletePartialFiles(
-        string? microphonePath = null,
-        string? systemAudioPath = null)
+        string? microphonePath,
+        string? systemAudioPath)
     {
-        microphonePath ??= _microphone?.Path;
-        systemAudioPath ??= _systemAudio?.Path;
-        if (microphonePath is not null && File.Exists(microphonePath))
+        foreach (var path in new[]
         {
-            File.Delete(microphonePath);
+            microphonePath,
+            systemAudioPath,
+            _checkpointPath,
+        })
+        {
+            DeleteIfExists(path);
         }
+    }
 
-        if (systemAudioPath is not null && File.Exists(systemAudioPath))
+    private static void DeleteIfExists(string? path)
+    {
+        if (File.Exists(path))
         {
-            File.Delete(systemAudioPath);
-        }
-
-        if (_checkpointPath is not null && File.Exists(_checkpointPath))
-        {
-            File.Delete(_checkpointPath);
+            File.Delete(path);
         }
     }
 
@@ -393,7 +428,7 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
 
     private sealed class CaptureSource : IDisposable
     {
-        private readonly WasapiRecorder _capture;
+        private readonly IAudioCaptureDevice _capture;
         private readonly WaveCaptureWriter _writer;
         private readonly Func<bool> _isPaused;
         private readonly Action<Exception> _failure;
@@ -402,13 +437,14 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public CaptureSource(
-            WasapiRecorder capture,
+            IAudioCaptureDevice capture,
             string path,
             Func<bool> isPaused,
-            Action<Exception> failure)
+            Action<Exception> failure,
+            Func<string, WaveFormat, WaveCaptureWriter> createWriter)
         {
             _capture = capture;
-            _writer = new WaveCaptureWriter(path, capture.WaveFormat);
+            _writer = createWriter(path, capture.WaveFormat);
             _isPaused = isPaused;
             _failure = failure;
             Path = path;
@@ -473,7 +509,6 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
                     _failure(new InvalidDataException(
                         "The audio device returned invalid samples. " +
                         "The recording was stopped to prevent damaged audio."));
-                    _capture.StopRecording();
                 }
             }
             catch (Exception exception)
@@ -481,7 +516,6 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IDisposable
                 if (Interlocked.Exchange(ref _failureReported, 1) == 0)
                 {
                     _failure(exception);
-                    _capture.StopRecording();
                 }
             }
         }

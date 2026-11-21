@@ -11,7 +11,7 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
 {
     private readonly ITranscriptionModelStore _models;
     private readonly ILogger<WhisperLocalTranscriber> _logger;
-    private readonly Func<string, SavedRecording, Stream, CancellationToken,
+    private readonly Func<string, string, Stream, CancellationToken,
         Task<IReadOnlyList<TranscriptSegment>>> _processAudio;
 
     public WhisperLocalTranscriber(
@@ -24,7 +24,7 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
     internal WhisperLocalTranscriber(
         ITranscriptionModelStore models,
         ILogger<WhisperLocalTranscriber>? logger,
-        Func<string, SavedRecording, Stream, CancellationToken,
+        Func<string, string, Stream, CancellationToken,
             Task<IReadOnlyList<TranscriptSegment>>> processAudio)
     {
         _models = models;
@@ -61,7 +61,7 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
             var segments = NormalizeSegments(
                 await _processAudio(
                     model,
-                    recording,
+                    ToWhisperLanguage(recording.Language),
                     audio,
                     cancellationToken),
                 recording.CapturedDuration);
@@ -89,10 +89,13 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
             .Where(segment =>
                 segment.Start < duration &&
                 segment.End > segment.Start &&
-                segment.End <= duration + tolerance)
-            .Select(segment => segment.End > duration
-                ? segment with { End = duration }
-                : segment)
+                segment.End <= duration + tolerance &&
+                segment.Text.Trim().Length > 0)
+            .Select(segment => segment with
+            {
+                End = TimeSpan.FromTicks(Math.Min(segment.End.Ticks, duration.Ticks)),
+                Text = segment.Text.Trim(),
+            })
             .ToArray();
     }
 
@@ -103,10 +106,7 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
     {
         using var reader = new WaveFileReader(sourcePath);
         var targetFormat = new WaveFormat(16_000, 16, 1);
-        using var resampler = new MediaFoundationResampler(reader, targetFormat)
-        {
-            ResamplerQuality = 60,
-        };
+        using var resampler = new MediaFoundationResampler(reader, targetFormat);
         using var writer = new WaveFileWriter(destinationPath, targetFormat);
         var buffer = new byte[32 * 1024];
         int bytesRead;
@@ -119,24 +119,20 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
 
     private static async Task<IReadOnlyList<TranscriptSegment>> ProcessWithWhisperAsync(
         string model,
-        SavedRecording recording,
+        string language,
         Stream audio,
         CancellationToken cancellationToken)
     {
         using var factory = WhisperFactory.FromPath(model);
         // Cancellation ends enumeration before native inference necessarily releases the model.
         await using var processor = factory.CreateBuilder()
-            .WithLanguage(ToWhisperLanguage(recording.Language))
+            .WithLanguage(language)
             .Build();
         var segments = new List<TranscriptSegment>();
 
         await foreach (var segment in processor.ProcessAsync(audio, cancellationToken))
         {
-            var text = segment.Text.Trim();
-            if (text.Length > 0)
-            {
-                segments.Add(new TranscriptSegment(segment.Start, segment.End, text));
-            }
+            segments.Add(new TranscriptSegment(segment.Start, segment.End, segment.Text));
         }
 
         return segments;

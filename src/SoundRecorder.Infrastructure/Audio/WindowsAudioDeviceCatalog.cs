@@ -2,23 +2,31 @@ using NAudio.CoreAudioApi;
 
 namespace SoundRecorder.Infrastructure.Audio;
 
-public sealed class WindowsAudioDeviceCatalog
+public sealed class WindowsAudioDeviceCatalog : IAudioDeviceCatalog
 {
-    public IReadOnlyList<AudioDeviceDescriptor> GetMicrophones()
+    private readonly Func<DataFlow, IReadOnlyList<AudioDeviceDescriptor>> _enumerate;
+
+    public WindowsAudioDeviceCatalog() : this(EnumerateDevices)
     {
-        using var enumerator = new MMDeviceEnumerator();
-        return enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
-            .Select(device => new AudioDeviceDescriptor(device.ID, device.FriendlyName))
-            .OrderBy(device => device.Name)
-            .ToArray();
     }
 
-    public IReadOnlyList<AudioDeviceDescriptor> GetPlaybackDevices()
+    internal WindowsAudioDeviceCatalog(Func<DataFlow, IReadOnlyList<AudioDeviceDescriptor>> enumerate)
+    {
+        _enumerate = enumerate;
+    }
+
+    public IReadOnlyList<AudioDeviceDescriptor> GetMicrophones() => GetDevices(DataFlow.Capture);
+
+    public IReadOnlyList<AudioDeviceDescriptor> GetPlaybackDevices() => GetDevices(DataFlow.Render);
+
+    private IReadOnlyList<AudioDeviceDescriptor> GetDevices(DataFlow flow) =>
+        _enumerate(flow).OrderBy(device => device.Name).ToArray();
+
+    private static IReadOnlyList<AudioDeviceDescriptor> EnumerateDevices(DataFlow flow)
     {
         using var enumerator = new MMDeviceEnumerator();
-        return enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+        return enumerator.EnumerateAudioEndPoints(flow, DeviceState.Active)
             .Select(device => new AudioDeviceDescriptor(device.ID, device.FriendlyName))
-            .OrderBy(device => device.Name)
             .ToArray();
     }
 }

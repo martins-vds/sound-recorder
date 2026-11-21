@@ -11,13 +11,24 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
 {
     private readonly string _stateDirectory;
     private readonly ILogger<LocalRecoveryStorage> _logger;
+    private readonly TimeProvider _timeProvider;
 
+    /// <summary>Creates recovery storage using the local clock.</summary>
     public LocalRecoveryStorage(
         string stateDirectory,
+        ILogger<LocalRecoveryStorage>? logger = null)
+        : this(stateDirectory, TimeProvider.System, logger)
+    {
+    }
+
+    internal LocalRecoveryStorage(
+        string stateDirectory,
+        TimeProvider timeProvider,
         ILogger<LocalRecoveryStorage>? logger = null)
     {
         _stateDirectory = stateDirectory;
         _logger = logger ?? NullLogger<LocalRecoveryStorage>.Instance;
+        _timeProvider = timeProvider;
     }
 
     public Task<IReadOnlyList<RecoveryCandidate>> FindAsync(
@@ -44,7 +55,7 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
     {
         var checkpoint = await ReadCheckpointAsync(candidate.CapturedAudioPath, cancellationToken);
         var sourcePaths = new[] { checkpoint.MicrophonePath, checkpoint.SystemAudioPath }
-            .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            .Where(File.Exists)
             .Cast<string>()
             .ToArray();
         if (sourcePaths.Length == 0)
@@ -65,7 +76,6 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
             outputPath);
         var duration = sourcePaths
             .Select(GetWaveDuration)
-            .DefaultIfEmpty(TimeSpan.Zero)
             .Max();
         await File.WriteAllTextAsync(
             outputPath + ".recovered.json",
@@ -145,7 +155,7 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
         }
 
         using var stream = File.Open(path, FileMode.Open, FileAccess.ReadWrite);
-        using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII, leaveOpen: true);
+        using var reader = new BinaryReader(stream, System.Text.Encoding.ASCII);
         var riff = new string(reader.ReadChars(4));
         stream.Position = 8;
         var wave = new string(reader.ReadChars(4));
@@ -156,7 +166,7 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
         }
 
         stream.Position = 12;
-        var dataPosition = -1L;
+        long? dataPosition = null;
         while (stream.Position <= stream.Length - 8)
         {
             var chunkId = new string(reader.ReadChars(4));
@@ -168,19 +178,20 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
                 break;
             }
 
-            stream.Position = checked(chunkDataPosition + chunkLength + (chunkLength % 2));
+            stream.Position = chunkDataPosition + chunkLength + (chunkLength % 2);
         }
 
-        if (dataPosition < 0)
+        if (dataPosition is null)
         {
             throw new InvalidDataException(
                 $"The capture '{Path.GetFileName(path)}' has no WAV data chunk.");
         }
 
-        var dataLength = checked((int)(stream.Length - dataPosition));
+        var riffLength = checked((uint)(stream.Length - 8));
+        var dataLength = (uint)(stream.Length - dataPosition.Value);
         stream.Position = 4;
-        stream.Write(BitConverter.GetBytes(checked((int)(stream.Length - 8))));
-        stream.Position = dataPosition - 4;
+        stream.Write(BitConverter.GetBytes(riffLength));
+        stream.Position = dataPosition.Value - 4;
         stream.Write(BitConverter.GetBytes(dataLength));
     }
 
@@ -190,9 +201,9 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
         return reader.TotalTime;
     }
 
-    private static string CreateUniqueRecoveryPath(CaptureCheckpoint checkpoint)
+    private string CreateUniqueRecoveryPath(CaptureCheckpoint checkpoint)
     {
-        var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
+        var timestamp = _timeProvider.GetLocalNow().ToString("yyyyMMdd-HHmmss");
         var title = string.IsNullOrWhiteSpace(checkpoint.Title)
             ? string.Empty
             : $"-{RecordingFileName.Sanitize(checkpoint.Title)}";
@@ -210,9 +221,9 @@ public sealed class LocalRecoveryStorage : IRecoveryStorage
 
     private static void DeleteIfExists(string? path)
     {
-        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        if (File.Exists(path))
         {
-            File.Delete(path);
+            File.Delete(path!);
         }
     }
 }

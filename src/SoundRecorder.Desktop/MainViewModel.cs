@@ -16,12 +16,12 @@ namespace SoundRecorder.Desktop;
 public sealed partial class MainViewModel : ObservableObject
 {
     private readonly RecorderApplication _recorder;
-    private readonly WindowsRecordingEngine _recordingEngine;
+    private readonly IRecordingMonitor _recordingEngine;
     private readonly TranscriptionQueue _queue;
-    private readonly LocalTranscriptionModelManager _modelManager;
-    private readonly JsonRecordingHistory _history;
+    private readonly ILocalTranscriptionModelManager _modelManager;
+    private readonly IRecordingHistory _history;
     private readonly RecoveryManager _recovery;
-    private readonly WindowsAudioDeviceCatalog _devices;
+    private readonly IAudioDeviceCatalog _devices;
     private readonly ILogger<MainViewModel> _logger;
 
     public MainViewModel(
@@ -33,6 +33,28 @@ public sealed partial class MainViewModel : ObservableObject
         RecoveryManager recovery,
         WindowsAudioDeviceCatalog devices,
         ILogger<MainViewModel> logger)
+        : this(
+            recorder,
+            (IRecordingMonitor)recordingEngine,
+            queue,
+            modelManager,
+            history,
+            recovery,
+            devices,
+            logger)
+    {
+    }
+
+    /// <summary>Connects application commands to capture monitoring and local adapters.</summary>
+    public MainViewModel(
+        RecorderApplication recorder,
+        IRecordingMonitor recordingEngine,
+        TranscriptionQueue queue,
+        ILocalTranscriptionModelManager modelManager,
+        IRecordingHistory history,
+        RecoveryManager recovery,
+        IAudioDeviceCatalog devices,
+        ILogger<MainViewModel> logger)
     {
         _recorder = recorder;
         _recordingEngine = recordingEngine;
@@ -42,7 +64,7 @@ public sealed partial class MainViewModel : ObservableObject
         _recovery = recovery;
         _devices = devices;
         _logger = logger;
-        DestinationFolder = Path.Combine(
+        destinationFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
             "Sound Recorder");
         AudioSources =
@@ -55,7 +77,7 @@ public sealed partial class MainViewModel : ObservableObject
         ];
         Languages = ["English", "Brazilian Portuguese"];
         AudioSource = AudioSource.MicrophoneOnly;
-        Language = Languages[0];
+        language = Languages[0];
     }
 
     public IReadOnlyList<AudioSourceOption> AudioSources { get; }
@@ -90,13 +112,13 @@ public sealed partial class MainViewModel : ObservableObject
     private string? selectedPlaybackDeviceId;
 
     [ObservableProperty]
-    private string language = "English";
+    private string language;
 
     [ObservableProperty]
     private string? title;
 
     [ObservableProperty]
-    private string destinationFolder = string.Empty;
+    private string destinationFolder;
 
     [ObservableProperty]
     private string modelUrl = string.Empty;
@@ -149,8 +171,8 @@ public sealed partial class MainViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var microphones = await Task.Run(() => _devices.GetMicrophones());
-            var playbackDevices = await Task.Run(() => _devices.GetPlaybackDevices());
+            var microphones = await Task.Run(_devices.GetMicrophones);
+            var playbackDevices = await Task.Run(_devices.GetPlaybackDevices);
             ReplaceItems(Microphones, microphones);
             ReplaceItems(PlaybackDevices, playbackDevices);
             SelectedMicrophoneId = Microphones.FirstOrDefault()?.Id;
@@ -415,8 +437,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void Refresh()
     {
-        var duration = _recordingEngine.CapturedDuration;
-        CapturedDuration = duration.ToString(@"hh\:mm\:ss");
+        CapturedDuration = _recordingEngine.CapturedDuration.ToString(@"hh\:mm\:ss");
         MicrophoneLevel = _recordingEngine.MicrophoneLevel;
         SystemAudioLevel = _recordingEngine.SystemAudioLevel;
         RefreshState();

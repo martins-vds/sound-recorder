@@ -10,11 +10,23 @@ namespace SoundRecorder.Infrastructure.Transcription;
 public sealed class AtomicTranscriptWriter : ITranscriptWriter
 {
     private readonly ILogger<AtomicTranscriptWriter> _logger;
+    private readonly Action<string, string> _moveFile;
+    private readonly Func<string, string, Encoding, CancellationToken, Task> _writeAllTextAsync;
 
-    public AtomicTranscriptWriter(
-        ILogger<AtomicTranscriptWriter>? logger = null)
+    /// <summary>Creates a writer that commits transcript output to local storage.</summary>
+    public AtomicTranscriptWriter(ILogger<AtomicTranscriptWriter>? logger = null)
+        : this(logger, null, null)
+    {
+    }
+
+    internal AtomicTranscriptWriter(
+        ILogger<AtomicTranscriptWriter>? logger,
+        Action<string, string>? moveFile,
+        Func<string, string, Encoding, CancellationToken, Task>? writeAllTextAsync)
     {
         _logger = logger ?? NullLogger<AtomicTranscriptWriter>.Instance;
+        _moveFile = moveFile ?? File.Move;
+        _writeAllTextAsync = writeAllTextAsync ?? File.WriteAllTextAsync;
     }
 
     public async Task<TranscriptOutputs> WriteAsync(
@@ -25,23 +37,26 @@ public sealed class AtomicTranscriptWriter : ITranscriptWriter
         var (textPath, subtitlePath) = ChooseOutputPaths(document.Recording.AudioPath);
         var temporaryTextPath = $"{textPath}.{Guid.NewGuid():N}.tmp";
         var temporarySubtitlePath = $"{subtitlePath}.{Guid.NewGuid():N}.tmp";
+        var committedPaths = new List<string>();
 
         try
         {
-            await File.WriteAllTextAsync(
+            await _writeAllTextAsync(
                 temporaryTextPath,
                 FormatText(document),
                 new UTF8Encoding(false),
                 cancellationToken);
-            await File.WriteAllTextAsync(
+            await _writeAllTextAsync(
                 temporarySubtitlePath,
                 FormatSubtitles(document),
                 new UTF8Encoding(false),
                 cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporaryTextPath, textPath);
-            File.Move(temporarySubtitlePath, subtitlePath);
+            _moveFile(temporaryTextPath, textPath);
+            committedPaths.Add(textPath);
+            _moveFile(temporarySubtitlePath, subtitlePath);
+            committedPaths.Add(subtitlePath);
             InfrastructureLog.TranscriptPairSaved(_logger, document.Recording.Id);
             return new TranscriptOutputs(textPath, subtitlePath);
         }
@@ -49,8 +64,10 @@ public sealed class AtomicTranscriptWriter : ITranscriptWriter
         {
             DeleteIfExists(temporaryTextPath);
             DeleteIfExists(temporarySubtitlePath);
-            DeleteIfExistsIfNew(textPath, temporaryTextPath);
-            DeleteIfExistsIfNew(subtitlePath, temporarySubtitlePath);
+            foreach (var committedPath in committedPaths)
+            {
+                DeleteIfExists(committedPath);
+            }
             InfrastructureLog.TranscriptPairSaveFailed(
                 _logger,
                 exception,
@@ -134,14 +151,6 @@ public sealed class AtomicTranscriptWriter : ITranscriptWriter
         if (File.Exists(path))
         {
             File.Delete(path);
-        }
-    }
-
-    private static void DeleteIfExistsIfNew(string finalPath, string temporaryPath)
-    {
-        if (!File.Exists(temporaryPath) && File.Exists(finalPath))
-        {
-            File.Delete(finalPath);
         }
     }
 }
