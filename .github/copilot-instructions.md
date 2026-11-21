@@ -18,6 +18,7 @@ This repository implements the version-one product contract in C#/.NET. Treat `G
 
 - Use C# for application code and automated test implementations, with Reqnroll for executable Gherkin specifications.
 - Before implementing or changing behavior, editing tests or requirements, or running quality analysis, read [Testing Instructions](instructions/testing.instructions.md). That file owns the test-driven workflow and the mandatory CRAP and mutation-score gates.
+- When implementing or reviewing the approved meeting workspace, read [the implementation plan](../requirements/meeting-workspace-implementation-plan.md) and follow [the recurring prototype B visual-reference gate](instructions/approved-meeting-workspace.instructions.md).
 - Use `ILogger` for operational events and source-generated `[LoggerMessage]` methods for application logging. Keep recording/transcript content and paths containing user titles out of log messages.
 
 ## Requirements architecture
@@ -27,6 +28,9 @@ This repository implements the version-one product contract in C#/.NET. Treat `G
 - `tests\SoundRecorder.Core.Tests\Features\privacy-and-setup.feature` owns the offline Windows installation boundary, model lifecycle, accessibility, local-data policy, and network restrictions.
 - `tests\SoundRecorder.Core.Tests\Features\reliability.feature` owns failure honesty and recovery: prerequisites, interrupted/recovered states, storage failures, process/power interruption, minimization, and exit.
 - `tests\SoundRecorder.Core.Tests\Features\acceptance.feature` defines measurable release evidence and reference-machine thresholds. Keep benchmark/model selection explicitly separate from claims that acceptance has already been met.
+- `tests\SoundRecorder.Core.Tests\Features\recording-library.feature` owns approved playback/review and explicit recording-artifact ownership/deletion.
+- `tests\SoundRecorder.Core.Tests\Features\model-catalog.feature` owns the verified downloaded inventory, complete built-in download catalog, explicit selection, and download progress.
+- `tests\SoundRecorder.Core.Tests\Features\transcription-job-management.feature` owns per-attempt model/language choices, recognition progress, Stop/restart, and job-history-only deletion.
 - `tests\SoundRecorder.Ui.Tests\Features\` owns UI interaction specifications exercised through FlaUI against the real window with isolated test adapters; it does not replace the product contract or release evidence.
 
 `SoundRecorder.Core` owns public state machines and remains independent of WPF, NAudio, Whisper, JSON, and Windows APIs. `SoundRecorder.Infrastructure` supplies those adapters. `SoundRecorder.Desktop` uses `MainViewModel` plus CommunityToolkit.Mvvm commands for asynchronous orchestration; code-behind is limited to dialogs, tray, and Windows lifecycle integration. Reqnroll discovers the feature files directly within the test project's `Features` folder.

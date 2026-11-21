@@ -18,12 +18,14 @@ Feature: Install and operate a private offline Windows recorder
     And the app checks compatibility and package integrity before activation
     And the request contains no recording audio or transcript content
 
+  @meeting_workspace @planned
   Scenario: Complete setup without connecting the target computer
     Given the installer and a compatible model package have been transferred from another computer
     And the target computer has no network connection
     When the user installs the app and imports the local model package
     Then the app checks compatibility and package integrity before activation
-    And recording and local transcription become available without network access
+    When the user selects the verified imported model for new jobs
+    Then recording and local transcription become available without network access
 
   Scenario: Reject an unusable model package
     When an imported or downloaded model package fails compatibility or integrity checks

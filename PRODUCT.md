@@ -2,7 +2,7 @@
 
 <!-- impeccable:product-schema 1 -->
 
-This record accompanies the throwaway UX prototype branch, not a production redesign decision.
+Prototype B was approved for native implementation planning on 2026-11-21. Its frozen reference is `prototype/approved-meeting-workspace-b` at `8410c7782506313510ae917d3f160a08f47e769e`; the new capabilities are not yet implemented.
 
 ## Platform
 
@@ -31,6 +31,8 @@ The user requested valuable missing capabilities, clearer hierarchy, and fewer v
 The model-selection prototype must list only previously downloaded models in its selector, offer the full library-supported download catalog separately, and show download progress. The pinned Whisper.net 1.9.1 downloader enumerates 12 Whisper model families and 6 encodings (72 combinations). Custom compatible packages use import; auxiliary VAD and encoder files are not transcription-model options. Downloads, verification, selection, and language compatibility are demonstrated with synthetic in-memory state, not production implementation.
 
 Recording review offers functional playback of the existing synthetic test clip while reading an illustrative transcript. The user confirmed that audio-only deletion retains outputs and their library entry; full deletion removes associated artifacts/history. Job deletion removes only history. Stop interrupts one job, keeps existing outputs, and restarts from the beginning; Cancel handles queued/running work. Pause is unavailable in Whisper.net 1.9.1. Its recognition progress callback supports coarse estimates, not loading/preprocessing/output-writing progress; worker integration is still required. All job execution and deletion remain simulated.
+
+For production, each new job retains the model and language chosen when queued; changing the selected model applies only to new jobs. The implementation plan requires repeated visual comparison with B throughout native UI implementation, not only at final review.
 
 ## Product Principles
 

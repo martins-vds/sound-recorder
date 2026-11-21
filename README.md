@@ -4,14 +4,14 @@ Offline Windows 11 x64 desktop recorder for microphone and system audio, with lo
 
 ## Throwaway meeting UX prototype
 
-This branch compares three browser layouts without changing the production WPF application:
+Prototype **B (Meeting workspace)** was approved on 2026-11-21. The browser reference is preserved without changing the production WPF application:
 
 ```powershell
 .\scripts\prototype-ui.ps1
 ```
 
 Requires Python 3. Open `http://127.0.0.1:18761/meeting-recorder.html?variant=A`.
-Use the floating arrows or left/right keys to compare **A: Recording first**, **B: Meeting workspace**, and **C: Guided capture**. Keys do not switch variants while editing controls.
+Select `?variant=B` for the approved layout. A and C remain historical alternatives; keys do not switch variants while editing controls.
 
 The prototype lives next to the desktop UI in `src\SoundRecorder.Desktop\Prototypes\meeting-recorder.html`. All meetings, capture, levels, models, jobs, and outputs are simulated. No microphone or device-capture access, network model download, clipboard, Explorer, or application storage is used. State resets on reload; only the variant is retained in the URL. Use the demo scenario selector to explore missing models, an empty library, or a capture-device error. After stopping, use Start/Restart to run a simulated transcription.
 
@@ -25,7 +25,15 @@ Recording review includes functional native audio controls while the transcript 
 
 **View transcription jobs** exposes Start/Restart, Stop, Cancel, and Delete. Stop interrupts one running job; Cancel also handles queued work. Both discard the current attempt, retain previously completed outputs, and restart from the beginning. Pause is visibly disabled because Whisper.net 1.9.1 has no safe pause/resume or checkpoint API. The library's [`WithProgressHandler(OnProgressHandler)`](https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/WhisperProcessorBuilder.cs#L462) reports coarse integer, audio-position-based recognition percentages; it does not report model loading, preprocessing, or output writing. The prototype shows indeterminate loading/writing, coarse recognition estimates below 100, and success only after simulated output writing. **Worker without progress** demonstrates an indeterminate fallback without fabricated percentages. The production worker currently forwards start/result messages, not progress; real progress/control wiring is not implemented here.
 
-Search and inline transcript review are proposed capabilities, not production features. The open question is which hierarchy best supports meeting capture and transcript review. A prioritizes capture, B prioritizes finding and reading past meetings with a persistent capture dock, and C prioritizes guided setup. No winner has been selected; native WPF implementation and an implementation-issue decision pointer are deferred until selection.
+The frozen reference is branch `prototype/approved-meeting-workspace-b` at commit `8410c7782506313510ae917d3f160a08f47e769e`. Its B layout prioritizes finding and reading meetings with a persistent capture dock. Keep the prototype and its simulations off the production branch.
+
+## Approved implementation plan and specifications
+
+Follow the [meeting workspace implementation plan](requirements/meeting-workspace-implementation-plan.md). It includes the frozen-reference worktree/preview command, approved public test seams, migration and ownership requirements, dependency-ordered vertical slices, and mandatory side-by-side prototype checks before editing, after the first runnable change, and before every UI-slice commit.
+
+The Core and native UI Gherkin files are discoverable and unignored, tagged `@meeting_workspace @planned`. This is planning only: new bindings and behavior are not implemented, and undefined/unexecuted scenarios are incomplete evidence, not passing tests. The full suites may not pass until those scenarios are implemented. Add bindings and implementation one red-green slice at a time; preserve existing regression behavior while adopting B's navigation.
+
+Each new transcription job retains its model and language at enqueue; later selection changes affect only new jobs. During implementation, keep [the scoped visual-reference instructions](.github/instructions/approved-meeting-workspace.instructions.md) active and record repeated comparison evidence as required by the plan.
 
 ## Build
 

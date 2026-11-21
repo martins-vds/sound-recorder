@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests
+@ui @type:IntegrationTests @meeting_workspace @planned
 Feature: Operate recording controls through the desktop UI
   These scenarios exercise the real window with deterministic capture adapters.
   They do not establish real-device capture quality or release performance.
@@ -8,14 +8,16 @@ Feature: Operate recording controls through the desktop UI
     Then the recording status reads "Idle"
     And the captured duration reads "00:00:00"
     And recording permission is unchecked
-    And the "Start recording" button is disabled
-    And the "Pause" button is disabled
-    And the "Resume" button is disabled
-    And the "Stop" button is disabled
+    And Pause, Resume, and Stop are not offered as idle capture actions
+    When the user presses "Start recording"
+    Then recording setup and the permission confirmation are visible
+    And the recording status reads "Idle"
+    And no recording file or transcription job is created
 
   Scenario Outline: Enable only devices used by the selected audio source
     Given the isolated recorder UI is open with "no model" fixtures
-    When the user selects audio source "<source>"
+    When the user expands recording setup
+    And the user selects audio source "<source>"
     Then the microphone selector is <microphone>
     And the playback selector is <playback>
     And the source explanation contains "<explanation>"
@@ -32,13 +34,12 @@ Feature: Operate recording controls through the desktop UI
     Then the "Start recording" button is enabled
     When the user presses "Start recording"
     Then the recording status reads "Recording"
-    And the "Start recording" button is disabled
+    And Start recording and Resume are not offered during active capture
     And the "Pause" button is enabled
-    And the "Resume" button is disabled
     And the "Stop" button is enabled
     When the user presses "Pause"
     Then the recording status reads "Paused"
-    And the "Pause" button is disabled
+    And Pause and Start recording are not offered during paused capture
     And the "Resume" button is enabled
     And the paused captured duration does not advance
     When the user presses "Resume"
@@ -46,7 +47,7 @@ Feature: Operate recording controls through the desktop UI
     When the user presses "Stop"
     Then the recording status reads "Idle"
     And recording permission is unchecked
-    And the "Start recording" button is disabled
+    And recording cannot begin again without fresh permission confirmation
     And the UI message contains "Install a compatible transcription model"
     And the recording history has 1 row
 
