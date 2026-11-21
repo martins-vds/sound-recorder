@@ -36,7 +36,9 @@ Install as the current standard user:
 
 ## Test
 
-Run the Reqnroll scenarios linked directly from `requirements\`:
+Run the Reqnroll scenarios in `tests\SoundRecorder.Core.Tests\Features\`:
+
+The workspace settings configure the official Cucumber VS Code extension to discover both Core and UI C# bindings. Release acceptance steps remain undefined until their benchmark fixtures and bindings are implemented.
 
 ```powershell
 dotnet test .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj
@@ -48,7 +50,7 @@ Run one scenario by its generated test name:
 dotnet test .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj --filter "FullyQualifiedName~StartARecording"
 ```
 
-The `@release_acceptance` scenarios are ignored until the versioned corpus and candidate engine/model exist, as described in `requirements\acceptance.feature`.
+The `@release_acceptance` scenarios are ignored until the versioned corpus and candidate engine/model exist, as described in `tests\SoundRecorder.Core.Tests\Features\acceptance.feature`.
 
 The native worker regressions require a published executable and an existing local large-model fixture. They check normal completion, explicit worker errors, cancellation acknowledgment within one second, queue advancement within five seconds, and worker termination when only its parent is forcibly stopped. A test-only console host provides that parent without touching the desktop app. These tests never download a model:
 
@@ -60,6 +62,18 @@ dotnet test .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj --a
 ```
 
 Without those two environment variables the native integration tests are explicitly skipped. They are tagged `type=IntegrationTests`, separate from deterministic unit tests and release acceptance.
+
+### Desktop UI scenarios
+
+Run the FlaUI/UIA3 scenarios on an unlocked Windows interactive desktop. Do not use the keyboard or run another UI automation suite concurrently; the keyboard scenario briefly moves focus to its owned test window.
+
+```powershell
+dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj
+```
+
+The four feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover recording controls and validation, model setup and errors, history and transcription jobs, accessible labels/live regions, keyboard activation, minimization/restoration, and explicit close choices. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
+
+Capture, recognition, package selection, notification-area, clipboard, and Explorer effects use test adapters. Model package compatibility/SHA-256 validation and local history/job/transcript persistence use the real adapters. A small fixture window raises the notification-area restore event without touching the real system tray. No microphone, user recording/history, native transcription model, download, or system clipboard is used. These tests verify UI wiring, not real-device audio integrity, native recognition, screen-reader behavior, or release acceptance thresholds.
 
 ## Quality gates
 
@@ -110,7 +124,7 @@ The app records startup readiness, capture lifecycle, recovery, queue transition
 - `SoundRecorder.Core`: public recording, queue, history, and recovery state machines without Windows or third-party dependencies.
 - `SoundRecorder.Infrastructure`: NAudio/WASAPI capture, local Whisper processing, atomic TXT/SRT output, model-package validation, recovery, and JSON persistence.
 - `SoundRecorder.Desktop`: MVVM-based WPF UI using CommunityToolkit.Mvvm. Async commands own recording/model/queue operations; code-behind remains limited to dialogs, notification-area behavior, and Windows lifecycle integration.
-- `requirements\`: canonical Reqnroll specifications linked into the test project rather than copied.
+- `tests\SoundRecorder.Core.Tests\Features\`: canonical Reqnroll specifications discovered directly within the test project.
 
 Transcription runs in a headless child instance of the same executable (`--transcribe-worker`), without opening a window, loading application history, or starting another queue. Before sending audio work, the parent assigns that process to an anonymous Windows Job Object with a non-inherited kill-on-close handle. Windows therefore stops the worker if its parent crashes or is forcibly terminated; failure to establish that ownership aborts the job rather than running an unowned worker. Cancel still stops only that job's child process and waits for it to exit before releasing the worker. The parent removes its temporary processing audio after normal completion or cancellation; abrupt termination cannot run that file cleanup. This isolates native Whisper failures from recording and keeps cancellation bounded even when native inference cannot abort promptly. Only the parent queue publishes final TXT/SRT output.
 

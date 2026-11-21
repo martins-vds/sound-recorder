@@ -7,5 +7,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/SoundRecorder.Core.Tests/SoundRecorder.Core.Tests.csproj" />
     <Project Path="tests/SoundRecorder.ProcessTestHost/SoundRecorder.ProcessTestHost.csproj" />
+    <Project Path="tests/SoundRecorder.Ui.TestHost/SoundRecorder.Ui.TestHost.csproj" />
+    <Project Path="tests/SoundRecorder.Ui.Tests/SoundRecorder.Ui.Tests.csproj" />
   </Folder>
 </Solution>

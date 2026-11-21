@@ -2,13 +2,14 @@
 
 ## Repository purpose
 
-This repository implements the version-one product contract in C#/.NET. Treat `GLOSSARY.md` and the files under `requirements\` as the behavioral source of truth; link rather than copy the feature files into test projects.
+This repository implements the version-one product contract in C#/.NET. Treat `GLOSSARY.md` and the files under `tests\SoundRecorder.Core.Tests\Features\` as the behavioral source of truth; maintain a single canonical copy of each feature file.
 
 ## Build and validation
 
 - Build: `dotnet build SoundRecorder.slnx`
 - Run the app: `dotnet run --project .\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj`
 - Run Reqnroll scenarios: `dotnet test .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj`
+- Run FlaUI UI scenarios on an unlocked, otherwise idle interactive desktop: `dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj`
 - Run one scenario: add `--filter "FullyQualifiedName~StartARecording"`
 - Run mutation from `tests\SoundRecorder.Core.Tests`: `dotnet tool run dotnet-stryker --config-file ..\..\stryker-config.json`
 - `@release_acceptance` scenarios stay `@ignore` until the versioned corpus and final candidate engine/model exist.
@@ -21,13 +22,14 @@ This repository implements the version-one product contract in C#/.NET. Treat `G
 
 ## Requirements architecture
 
-- `requirements\capture.feature` owns the recording session contract: source/device selection, permission, levels, pause/resume, WAV format, naming, duration limits, and wake behavior.
-- `requirements\transcription.feature` owns saved-audio processing: persistent FIFO jobs, one local worker, explicit cancellation/retry, TXT/SRT output, and restart semantics.
-- `requirements\privacy-and-setup.feature` owns the offline Windows installation boundary, model lifecycle, accessibility, local-data policy, and network restrictions.
-- `requirements\reliability.feature` owns failure honesty and recovery: prerequisites, interrupted/recovered states, storage failures, process/power interruption, minimization, and exit.
-- `requirements\acceptance.feature` defines measurable release evidence and reference-machine thresholds. Keep benchmark/model selection explicitly separate from claims that acceptance has already been met.
+- `tests\SoundRecorder.Core.Tests\Features\capture.feature` owns the recording session contract: source/device selection, permission, levels, pause/resume, WAV format, naming, duration limits, and wake behavior.
+- `tests\SoundRecorder.Core.Tests\Features\transcription.feature` owns saved-audio processing: persistent FIFO jobs, one local worker, explicit cancellation/retry, TXT/SRT output, and restart semantics.
+- `tests\SoundRecorder.Core.Tests\Features\privacy-and-setup.feature` owns the offline Windows installation boundary, model lifecycle, accessibility, local-data policy, and network restrictions.
+- `tests\SoundRecorder.Core.Tests\Features\reliability.feature` owns failure honesty and recovery: prerequisites, interrupted/recovered states, storage failures, process/power interruption, minimization, and exit.
+- `tests\SoundRecorder.Core.Tests\Features\acceptance.feature` defines measurable release evidence and reference-machine thresholds. Keep benchmark/model selection explicitly separate from claims that acceptance has already been met.
+- `tests\SoundRecorder.Ui.Tests\Features\` owns UI interaction specifications exercised through FlaUI against the real window with isolated test adapters; it does not replace the product contract or release evidence.
 
-`SoundRecorder.Core` owns public state machines and remains independent of WPF, NAudio, Whisper, JSON, and Windows APIs. `SoundRecorder.Infrastructure` supplies those adapters. `SoundRecorder.Desktop` uses `MainViewModel` plus CommunityToolkit.Mvvm commands for asynchronous orchestration; code-behind is limited to dialogs, tray, and Windows lifecycle integration. The test project links the original `requirements\*.feature` files through MSBuild.
+`SoundRecorder.Core` owns public state machines and remains independent of WPF, NAudio, Whisper, JSON, and Windows APIs. `SoundRecorder.Infrastructure` supplies those adapters. `SoundRecorder.Desktop` uses `MainViewModel` plus CommunityToolkit.Mvvm commands for asynchronous orchestration; code-behind is limited to dialogs, tray, and Windows lifecycle integration. Reqnroll discovers the feature files directly within the test project's `Features` folder.
 
 Read the neighboring feature files when changing behavior: normal save/auto-queue connects capture, transcription, and reliability; model integrity and offline operation connect setup, transcription, and acceptance.
 

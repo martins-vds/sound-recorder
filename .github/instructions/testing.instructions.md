@@ -7,10 +7,11 @@ applyTo: "**/*.cs,**/*.csproj,**/*.feature,**/*.runsettings,**/stryker-config.*,
 ## C# and executable specifications
 
 - Write automated test implementations in C#. Use [Reqnroll](https://github.com/reqnroll/Reqnroll) with the existing xUnit runner for Gherkin behavior tests; use focused C# xUnit tests for lower-level edge cases.
-- Keep `requirements\*.feature` authoritative. Link those files into Reqnroll test projects, following the existing project pattern, rather than maintaining copied scenarios.
+- Keep `tests\SoundRecorder.Core.Tests\Features\*.feature` authoritative. Reqnroll discovers these project-local files automatically; maintain a single canonical copy of each scenario.
 - Keep bindings thin: exercise application behavior and assert observable results. Share scenario state through scenario-scoped context or dependency injection.
 - Use deterministic doubles for device, filesystem, clock, and model boundaries in unit tests. Use integration tests for real boundary behavior; doubles alone do not prove audio capture, persistence, offline operation, or performance requirements.
 - Undefined, pending, skipped, or unexecuted scenarios are incomplete evidence, not passing requirements.
+- Keep UI interaction scenarios under `tests\SoundRecorder.Ui.Tests\Features\`. Use FlaUI/UIA3 against the real `MainWindow` in the isolated `SoundRecorder.Ui.TestHost`; run serially on an unlocked interactive desktop without concurrent keyboard use. Keep real-device and release acceptance evidence separate from deterministic UI adapters.
 
 ## Red-green-refactor
 

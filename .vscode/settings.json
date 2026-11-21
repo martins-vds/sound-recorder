@@ -1,0 +1,5 @@
+{
+  "cucumber.glue": [
+    "tests/SoundRecorder.*.Tests/Steps/**/*.cs"
+  ]
+}
