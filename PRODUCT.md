@@ -28,6 +28,8 @@ All sound from the selected playback device may be captured, including calls, no
 
 The user requested valuable missing capabilities, clearer hierarchy, and fewer visible controls. Inline transcript review and library search are proposed concepts, not implemented product capabilities. No cloud, AI summary, speaker identification, audio playback, or real capture is implied by the prototype.
 
+The model-selection prototype must list only previously downloaded models in its selector, offer the full library-supported download catalog separately, and show download progress. The pinned Whisper.net 1.9.1 downloader enumerates 12 Whisper model families and 6 encodings (72 combinations). Custom compatible packages use import; auxiliary VAD and encoder files are not transcription-model options. Downloads, verification, selection, and language compatibility are demonstrated with synthetic in-memory state, not production implementation.
+
 ## Product Principles
 
 - Make meeting capture and transcript review the primary tasks.

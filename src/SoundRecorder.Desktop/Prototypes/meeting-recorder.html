@@ -67,6 +67,12 @@
   .live-dock{position:sticky;top:0;z-index:4;background:#fff;border-bottom:1px solid var(--line);padding:10px 24px}.live-dock .actions{margin:0}.live-dock .actions button{min-height:36px;padding:7px 14px}.live-time{font-variant-numeric:tabular-nums}
   .C .topbar{background:#fff9ed}.C{background:#f2eee4}.C .guided-main{border-color:#d6d0bd}.C .guided-aside .muted{color:#676653}
   progress{width:100%;height:6px;accent-color:var(--accent)}*{scrollbar-color:#809b8e #e8eeeb;scrollbar-width:thin}
+  .model-launch{max-width:230px;min-width:0;overflow-wrap:anywhere}.model-launch progress{display:block;margin-top:5px}.B .model-launch progress{accent-color:#b5e0cb}
+  #model-panel{display:grid;gap:16px}.model-catalog{max-height:360px;overflow:auto;padding-right:6px}.model-row{padding:14px 0;border-bottom:1px solid var(--line);display:grid;gap:9px}.model-row:first-child{padding-top:0}
+  .model-row select{min-width:0;flex:1}.model-row button{flex:none}.model-row .row{align-items:start}.download-status{background:var(--soft);padding:14px;border:1px solid var(--line);border-radius:5px;display:grid;gap:10px}
+  .download-percent{font-variant-numeric:tabular-nums}.model-source{color:var(--accent);text-underline-offset:3px}.model-filter{display:grid;gap:7px}.model-filter label{margin:0}
+  .model-page{max-width:760px}.model-page h1{margin:16px 0 22px}
+  @media(max-width:1000px){.topbar>.muted{display:none}}
   @media(max-width:1100px){.guided-shell{grid-template-columns:155px minmax(0,1fr);gap:20px}.guided-aside{grid-column:2}.guided-aside .meeting-list{display:grid;grid-template-columns:1fr 1fr;gap:16px}.topbar{gap:12px}.page{padding:24px}.capture-layout{gap:24px}.reading-pane{padding:24px}.workspace{grid-template-columns:235px minmax(0,1fr)}}
   @media(max-width:700px){.demo-banner{padding:8px 16px}.topbar{height:auto;min-height:64px;padding:14px 16px;flex-wrap:wrap}.topbar>.muted{display:none}.page{padding:20px 16px}.capture-layout,.library-layout,.workspace{grid-template-columns:1fr}.capture-main,.review{padding:20px}.library-rail{border-right:0;border-bottom:1px solid var(--line)}.library-rail .meeting-list{max-height:220px;overflow:auto}.reading-pane{padding:24px 20px}.record-dock{padding:16px}.record-dock .row{flex-wrap:wrap}.record-dock>.row>.grow{flex-basis:100%}.record-dock .setup{grid-template-columns:1fr}.record-dock .setup>*{grid-column:1}.guided-shell{padding:20px 16px;grid-template-columns:1fr}.steps{display:flex;flex-wrap:wrap;margin:0}.step{padding:8px;font-size:12px;gap:6px}.guided-aside{grid-column:1}.guided-aside .meeting-list{grid-template-columns:1fr}.state-details{margin:16px}.clock{font-size:48px}.field-grid{grid-template-columns:1fr}.switcher{bottom:12px;max-width:95vw;gap:8px}.switcher .label{min-width:160px}.app{padding-bottom:110px}}
   @media(max-height:650px){.capture-face{padding:12px 0}.capture-face .clock{font-size:44px}.capture-face .actions{margin-top:14px}.intro{margin-bottom:18px}}
@@ -76,7 +82,7 @@
 <body>
 <div class="demo-banner">
   <span><strong>Throwaway UX prototype.</strong> Synthetic meetings. No audio captured. Nothing sent or saved.</span>
-  <label class="row gap8">Demo scenario <select id="scenario"><option value="ready">Sample meetings</option><option value="no-model">No model installed</option><option value="empty">Empty library</option><option value="error">Capture device error</option></select></label>
+  <label class="row gap8">Demo scenario <select id="scenario"><option value="ready">Sample meetings</option><option value="no-model">No model installed</option><option value="empty">Empty library</option><option value="error">Capture device error</option><option value="download-error">Model download error</option></select></label>
 </div>
 <div id="app"></div>
 <div id="notice" role="status" aria-live="polite"></div>
@@ -84,6 +90,23 @@
 <script>
   const variants = ['A','B','C'];
   const names = {A:'Recording first',B:'Meeting workspace',C:'Guided capture'};
+  // Whisper.net 1.9.1: GgmlType and QuantizationType at commit c6821abbde5ae021e398ebe875c94dea9d66c9e1.
+  // Its v4 model mirror supplies every one of these 12 x 6 combinations. Custom GGML files use import.
+  const encodings = ['NoQuantization','Q4_0','Q4_1','Q5_0','Q5_1','Q8_0'];
+  const modelCatalog = [
+    {id:'tiny',name:'Tiny',englishOnly:false},{id:'tiny.en',name:'Tiny.en',englishOnly:true},
+    {id:'base',name:'Base',englishOnly:false},{id:'base.en',name:'Base.en',englishOnly:true},
+    {id:'small',name:'Small',englishOnly:false},{id:'small.en',name:'Small.en',englishOnly:true},
+    {id:'medium',name:'Medium',englishOnly:false},{id:'medium.en',name:'Medium.en',englishOnly:true},
+    {id:'large-v1',name:'Large v1',englishOnly:false},{id:'large-v2',name:'Large v2',englishOnly:false},
+    {id:'large-v3',name:'Large v3',englishOnly:false},{id:'large-v3-turbo',name:'Large v3 Turbo',englishOnly:false}
+  ];
+  const encodingLabel = encoding => encoding==='NoQuantization'?'Original (unquantized)':encoding;
+  function modelArtifact(key){
+    const [id,encoding]=key.split(':'),model=modelCatalog.find(m=>m.id===id);
+    if(!model||!encodings.includes(encoding))throw new Error('Unknown demo model artifact: '+key);
+    return {...model,key,encoding,label:`${model.name} / ${encodingLabel(encoding)}`};
+  }
   const icons = {
     audio:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke-linecap="round"/></svg>',
     left:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>',
@@ -103,18 +126,25 @@
   const state = {
     variant:variants.includes(new URLSearchParams(location.search).get('variant')) ? new URLSearchParams(location.search).get('variant') : 'A',
     page:'record',step:0,status:'Idle',seconds:0,source:'both',microphone:'Default microphone',playback:'Default playback device',
-    language:'English',title:'',destination:'C:\\Demo\\Sound Recorder',permission:false,model:true,modelUrl:'',
+    language:'English',title:'',destination:'C:\\Demo\\Sound Recorder',permission:false,
+    downloadedModels:['tiny:NoQuantization','base:NoQuantization'],selectedModel:'base:NoQuantization',
+    catalogEncodings:{},modelFilter:'all',download:null,
     selected:1,query:'',scenario:'ready',message:'',recordings:samples.map(r=>({...r})),jobs:[{id:3,title:'Revisao do projeto',status:'Queued'}],
     openDetails:new Set(),nextId:4
   };
   const esc = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const active = () => state.status !== 'Idle';
+  const selectedModel = () => state.selectedModel&&state.downloadedModels.includes(state.selectedModel)?modelArtifact(state.selectedModel):null;
+  const canTranscribe = language => !!selectedModel()&&(!selectedModel().englishOnly||language==='English');
+  const downloading = () => state.download&&['Downloading','Verifying'].includes(state.download.status);
   const duration = () => [Math.floor(state.seconds/3600),Math.floor(state.seconds/60)%60,state.seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
   const badge = status => `<span class="badge ${status==='Completed'?'ready':status==='Queued'||status==='Running'?'pending':''}">${esc(status)}</span>`;
   const button = (action,text,css='',extra='') => `<button type="button" data-action="${action}" class="${css}" ${extra}>${text}</button>`;
   function detail(id,label,content,open=false){return `<details data-detail="${id}" ${state.openDetails.has(id)||open?'open':''}><summary>${label}</summary><div class="inside">${content}</div></details>`}
   function header(){
-    return `<header class="topbar"><div class="brand">${icons.audio} Sound Recorder</div>${state.variant==='A'?`<nav class="tabs" aria-label="Main">${button('record-page','Record','quiet',state.page==='record'?'aria-current="page"':'')}${button('library-page','Library','quiet',state.page==='library'?'aria-current="page"':'')}</nav>`:''}<span class="grow"></span><span class="muted">Audio and transcription stay local</span>${button('model-settings',state.model?'Demo model ready':'Set up transcription','',`aria-label="Show local model setup"`)}</header>`;
+    const model=selectedModel(),download=state.download;
+    const label=downloading()?`${modelArtifact(download.key).name} / <span data-download-percent>${download.percent}%</span>`:model?`${model.name} / change model`:'Choose a local model';
+    return `<header class="topbar"><div class="brand">${icons.audio} Sound Recorder</div>${state.variant==='A'?`<nav class="tabs" aria-label="Main">${button('record-page','Record','quiet',state.page==='record'?'aria-current="page"':'')}${button('library-page','Library','quiet',state.page==='library'?'aria-current="page"':'')}</nav>`:''}<span class="grow"></span><span class="muted">Audio and transcription stay local</span>${button('model-settings',`<span>${downloading()?'Downloading: ':''}${label}</span>${downloading()?`<progress data-download-progress max="100" value="${download.percent}" aria-label="Model download progress"></progress>`:''}`,'model-launch',`aria-label="Show local model setup"`)}</header>`;
   }
   function sourceControls(){
     return `<div><label>What do you want to capture?</label><div class="source-buttons" role="group" aria-label="Audio source">${[['mic','Microphone'],['system','System audio'],['both','Both']].map(([v,n])=>button('source',n,'',`data-value="${v}" aria-pressed="${state.source===v}" ${active()?'disabled':''}`)).join('')}</div></div>`;
@@ -129,10 +159,22 @@
     return `<div><label for="title">Recording title <span class="muted">(optional)</span></label><input id="title" data-field="title" placeholder="e.g. Weekly team meeting" value="${esc(state.title)}" ${active()?'disabled':''}></div><div><label for="language">Spoken language</label><select id="language" data-field="language" ${active()?'disabled':''}>${['English','Brazilian Portuguese'].map(l=>`<option ${state.language===l?'selected':''}>${l}</option>`).join('')}</select></div>`;
   }
   function modelSettings(){
-    return `<div id="model-panel"><p>${state.model?'A compatible demo model is installed.':'No compatible model is installed. Recordings remain available for later transcription.'}</p><p class="muted">Model actions below are simulated. No package is read and no download is made.</p><div class="row wrap">${button('import-model','Import model package...')}${button('remove-model','Simulate no model','quiet',!state.model?'disabled':'')}</div><div><label for="model-url">Model package URL</label><input id="model-url" data-field="modelUrl" placeholder="https://example.com/model.zip" value="${esc(state.modelUrl)}"></div>${button('download-model','Download selected package')}${state.jobs.length?'<p class="muted">Installing a model does not run demo jobs automatically; use Retry to simulate transcription.</p>':''}</div>`;
+    const model=selectedModel();
+    const filtered=modelCatalog.filter(m=>state.modelFilter==='all'||(state.modelFilter==='english'?m.englishOnly:!m.englishOnly));
+    const catalog=`<p class="muted">All 12 Whisper.net 1.9.1 model families, with 6 downloadable encodings each (72 files). English-only models cannot transcribe Brazilian Portuguese.</p><div class="model-filter"><label for="model-filter">Catalog language support</label><select id="model-filter" data-field="modelFilter"><option value="all" ${state.modelFilter==='all'?'selected':''}>All models</option><option value="multilingual" ${state.modelFilter==='multilingual'?'selected':''}>Multilingual</option><option value="english" ${state.modelFilter==='english'?'selected':''}>English only</option></select></div><div class="model-catalog" role="region" aria-label="Available model downloads" tabindex="0">${filtered.map(m=>{
+      const encoding=state.catalogEncodings[m.id]||'NoQuantization',key=`${m.id}:${encoding}`,exists=state.downloadedModels.includes(key);
+      return `<div class="model-row" data-model-id="${m.id}"><div class="row spread"><span><strong>${m.name}</strong><br><small>${m.englishOnly?'English only':'Multilingual'}</small></span>${exists?badge('Downloaded'):''}</div><div class="row"><select data-encoding="${m.id}" aria-label="${m.name} encoding">${encodings.map(e=>`<option value="${e}" ${encoding===e?'selected':''}>${encodingLabel(e)}</option>`).join('')}</select>${exists?button('use-model','Use model','',`data-key="${key}" ${state.selectedModel===key?'disabled':''}`):button('download-model','Download','',`data-key="${key}" ${downloading()?'disabled':''}`)}</div></div>`;
+    }).join('')}</div><p class="muted">Original and quantized files are separate downloads. Only completed downloads enter your selector; downloading never switches the selected model.</p><a class="model-source" href="https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/Ggml/GgmlType.cs" target="_blank" rel="noopener noreferrer">Library model catalog source</a>`;
+    return `<div id="model-panel"><div><label for="downloaded-model">Downloaded models</label><select id="downloaded-model" data-field="selectedModel" ${!state.downloadedModels.length?'disabled':''}><option value="">${state.downloadedModels.length?'Choose a downloaded model':'No models downloaded yet'}</option>${state.downloadedModels.map(key=>{const m=modelArtifact(key);return `<option value="${key}" ${state.selectedModel===key?'selected':''}>${m.label} / ${m.englishOnly?'English only':'Multilingual'}</option>`}).join('')}</select></div><p class="muted">${model?`Selected: ${esc(model.label)}. Used for new transcription jobs.`:'Recordings remain available without a selected model. Download one, then choose it above.'}</p>${model&&!canTranscribe(state.language)?'<p class="warning">The selected model is English only. Choose a multilingual model for Brazilian Portuguese. Recording is still available.</p>':''}${downloadFeedback()}${detail('model-downloads','Download other models',catalog,!state.downloadedModels.length)}${detail('model-import','Import a previously downloaded package',`<p class="muted">Compatible custom GGML packages can be imported; they are not an enumerable library download catalog. This prototype import adds a synthetic Base package, without reading a file.</p><div class="row wrap">${button('import-model','Import model package...')}${button('remove-model','Clear downloaded models (demo)','quiet',downloading()?'disabled':'')}</div>`)}<p class="muted">Demo only: downloads, package verification, and disk storage are simulated. No model files are fetched.</p></div>`;
+  }
+  function downloadFeedback(){
+    const d=state.download;if(!d)return '';
+    const label=modelArtifact(d.key).label;
+    const message=d.status==='Downloading'?`Downloading ${label}`:d.status==='Verifying'?`Verifying ${label}`:d.status==='Completed'?`${label} downloaded. Choose it above to use it.`:d.status==='Failed'?`Download failed for ${label}. Existing downloaded models are unchanged. Retry when ready.`:`Download cancelled for ${label}. No new model was added.`;
+    return `<div class="download-status"><p role="status" aria-live="polite">${esc(message)}</p><div class="row spread"><span class="muted">Simulated progress</span><span class="download-percent" data-download-percent>${d.percent}%</span></div><progress data-download-progress max="100" value="${d.percent}" aria-label="${esc(label)} download progress"></progress>${downloading()?button('cancel-download','Cancel download'):d.status==='Failed'||d.status==='Cancelled'?button('download-model','Retry download','',`data-key="${d.key}"`):''}</div>`;
   }
   function advanced(){
-    return detail('advanced','Destination and local model',`<div><label for="destination">Local destination</label><div class="row"><input id="destination" data-field="destination" value="${esc(state.destination)}" ${active()?'disabled':''}>${button('choose-folder','Choose...','',active()?'disabled':'')}</div><p class="muted">Demo path only. Production uses a native folder picker.</p></div>${detail('model','Local transcription model',modelSettings())}`);
+    return detail('advanced','Destination and local model',`<div><label for="destination">Local destination</label><div class="row"><input id="destination" data-field="destination" value="${esc(state.destination)}" ${active()?'disabled':''}>${button('choose-folder','Choose...','',active()?'disabled':'')}</div><p class="muted">Demo path only. Production uses a native folder picker.</p></div>${state.variant==='B'?button('model-settings','Manage local transcription models'):detail('model','Local transcription model',modelSettings())}`);
   }
   function permission(){
     return `<div class="permission-block stack gap8"><label class="permission"><input id="permission" type="checkbox" data-field="permission" ${state.permission?'checked':''} ${active()?'disabled':''}><span>I have permission to record every person whose audio may be captured.</span></label><p class="muted">This confirmation is not a guarantee of legal compliance.</p></div>`;
@@ -164,21 +206,22 @@
   function review(){
     const r=state.recordings.find(r=>r.id===state.selected);
     if(!r)return `<div class="review empty"><h2>Your meeting, ready to revisit</h2><p>Select a recording to review its transcript.</p></div>`;
-    return `<article class="review"><div class="review-heading"><div class="row spread wrap">${badge(r.status)}<span class="concept">Inline review / concept</span></div><h2>${esc(r.title)}</h2><p class="muted">${esc(r.date)} / ${esc(r.duration)} / ${esc(r.language)}</p><div class="tools">${button('open-folder','Open output folder')}${button('retry-job','Transcribe again','',`data-id="${r.id}" ${!state.model||r.status==='Running'||r.status==='Queued'?'disabled':''}`)}${r.status==='Queued'||r.status==='Running'?button('cancel-job','Cancel job','',`data-id="${r.id}"`):''}</div></div><div class="rule"></div>${r.transcript.length?`<div class="row spread wrap"><h3>Transcript</h3><span class="muted">Synthetic sample / not an actual meeting</span></div><div class="transcript">${r.transcript.map(([time,text])=>`<div class="segment"><span class="timestamp">${time}</span><p>${esc(text)}</p></div>`).join('')}</div><div class="tools">${button('view-transcript','View transcript')}${button('output-txt','Transcript TXT')}${button('output-srt','Subtitles SRT')}</div>`:`<div class="empty"><h3>${r.status==='Saved'?'Audio saved. Transcribe when ready.':r.status==='Cancelled'?'Transcription cancelled. Your audio is safe.':'Your transcript is not ready yet.'}</h3><p>${!state.model?'Install a compatible local model to transcribe this recording.':r.status==='Running'?'Demo transcription is running.':'Use the job controls to retry or cancel.'}</p>${state.model&&r.status!=='Running'?button('retry-job','Retry transcription','',`data-id="${r.id}"`):!state.model?button('model-settings','Set up local model'):''}</div>`}</article>`;
+    return `<article class="review"><div class="review-heading"><div class="row spread wrap">${badge(r.status)}<span class="concept">Inline review / concept</span></div><h2>${esc(r.title)}</h2><p class="muted">${esc(r.date)} / ${esc(r.duration)} / ${esc(r.language)}</p><div class="tools">${button('open-folder','Open output folder')}${button('retry-job','Transcribe again','',`data-id="${r.id}" ${!canTranscribe(r.language)||r.status==='Running'||r.status==='Queued'?'disabled':''}`)}${r.status==='Queued'||r.status==='Running'?button('cancel-job','Cancel job','',`data-id="${r.id}"`):''}</div></div><div class="rule"></div>${r.transcript.length?`<div class="row spread wrap"><h3>Transcript</h3><span class="muted">Synthetic sample / not an actual meeting</span></div><div class="transcript">${r.transcript.map(([time,text])=>`<div class="segment"><span class="timestamp">${time}</span><p>${esc(text)}</p></div>`).join('')}</div><div class="tools">${button('view-transcript','View transcript')}${button('output-txt','Transcript TXT')}${button('output-srt','Subtitles SRT')}</div>`:`<div class="empty"><h3>${r.status==='Saved'?'Audio saved. Transcribe when ready.':r.status==='Cancelled'?'Transcription cancelled. Your audio is safe.':'Your transcript is not ready yet.'}</h3><p>${!canTranscribe(r.language)?'Choose a downloaded model that supports this recording language.':r.status==='Running'?'Demo transcription is running.':'Use the job controls to retry or cancel.'}</p>${canTranscribe(r.language)&&r.status!=='Running'?button('retry-job','Retry transcription','',`data-id="${r.id}"`):!canTranscribe(r.language)?button('model-settings','Set up local model'):''}</div>`}</article>`;
   }
   function VariantA(){
     if(state.page==='library')return `<main class="page"><div class="intro"><h1>Meeting library</h1><p class="muted">Find a recording. Read what was said. Keep everything local.</p></div><div class="library-layout"><aside>${search()}${meetings()}${detail('jobs','Transcription jobs',jobs())}</aside>${review()}</div></main>`;
-    return `<main class="page"><div class="intro"><h1>Record your next meeting</h1><p class="muted">Choose what to capture, confirm permission, and start.</p></div><div class="capture-layout"><section class="capture-main ${state.status}" aria-label="Capture"><div class="capture-title"><h2>${esc(state.title||'New recording')}</h2>${status()}</div><div class="capture-face">${clock()}${levels()}${actions()}</div><div class="rule"></div>${permission()}<p class="muted" style="margin-top:14px">Stopping saves the audio${state.model?' and queues local transcription':''}.</p></section><section aria-label="Recording setup">${setup().replace(permission(),'')}</section></div><section class="section"><div class="row spread section-title"><h2>Recent meetings</h2>${button('library-page','View library','quiet')}</div>${meetings(true)}</section>${detail('jobs','Transcription jobs',jobs())}</main>`;
+    return `<main class="page"><div class="intro"><h1>Record your next meeting</h1><p class="muted">Choose what to capture, confirm permission, and start.</p></div><div class="capture-layout"><section class="capture-main ${state.status}" aria-label="Capture"><div class="capture-title"><h2>${esc(state.title||'New recording')}</h2>${status()}</div><div class="capture-face">${clock()}${levels()}${actions()}</div><div class="rule"></div>${permission()}<p class="muted" style="margin-top:14px">Stopping saves the audio${canTranscribe(state.language)?' and queues local transcription':''}.</p></section><section aria-label="Recording setup">${setup().replace(permission(),'')}</section></div><section class="section"><div class="row spread section-title"><h2>Recent meetings</h2>${button('library-page','View library','quiet')}</div>${meetings(true)}</section>${detail('jobs','Transcription jobs',jobs())}</main>`;
   }
   function VariantB(){
-    return `<main><div class="workspace"><aside class="library-rail"><h2>Meetings</h2>${search()}${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside><div class="reading-pane">${review()}</div></div><section class="record-dock" aria-label="Persistent capture controls"><div class="row spread"><div class="grow"><h2>${esc(state.title||'New meeting')}</h2>${status()}</div>${clock()}${actions()}</div>${detail('dock','Recording setup and permission',setup(),!state.recordings.length&&!state.permission&&!active())}</section></main>`;
+    const content=state.page==='models'?`<section class="model-page">${button('library-page','Back to meeting','quiet')}<h1>Local transcription models</h1>${modelSettings()}</section>`:review();
+    return `<main><div class="workspace"><aside class="library-rail"><h2>Meetings</h2>${search()}${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside><div class="reading-pane">${content}</div></div><section class="record-dock" aria-label="Persistent capture controls"><div class="row spread"><div class="grow"><h2>${esc(state.title||'New meeting')}</h2>${status()}</div>${clock()}${actions()}</div>${detail('dock','Recording setup and permission',setup(),!state.recordings.length&&!state.permission&&!active())}</section></main>`;
   }
   function VariantC(){
     const stepNames=['Audio source','Meeting details','Record'];
     let content='';
     if(state.step===0)content=`<h1>What should we capture?</h1><p class="muted">Choose the inputs for this meeting.</p><div class="setup">${sourceControls()}${devices()}${captureWarning()}${detail('model','Local transcription model',modelSettings())}</div>`;
     if(state.step===1)content=`<h1>Make it easy to find later</h1><p class="muted">Add an optional title and select the spoken language.</p><div class="setup">${metadata()}${advanced()}</div>`;
-    if(state.step===2)content=`<div class="row spread wrap"><h1>${active()?'Your meeting is in progress':'Ready when you are'}</h1>${status()}</div><p class="muted">${esc(state.title||'Untitled recording')} / ${esc(state.language)} / ${state.source==='both'?'Microphone and system audio':state.source==='mic'?'Microphone only':'System audio only'}</p><div class="capture-face ${state.status}">${clock()}${levels()}${actions()}</div><div class="stack">${captureWarning()}${permission()}${!state.model?'<p class="warning">Recording works without a model. Transcription will need model setup later.</p>':''}</div>`;
+    if(state.step===2)content=`<div class="row spread wrap"><h1>${active()?'Your meeting is in progress':'Ready when you are'}</h1>${status()}</div><p class="muted">${esc(state.title||'Untitled recording')} / ${esc(state.language)} / ${state.source==='both'?'Microphone and system audio':state.source==='mic'?'Microphone only':'System audio only'}</p><div class="capture-face ${state.status}">${clock()}${levels()}${actions()}</div><div class="stack">${captureWarning()}${permission()}${!canTranscribe(state.language)?'<p class="warning">Recording is available. Choose a compatible downloaded model for transcription later.</p>':''}</div>`;
     return `<main class="guided-shell"><nav class="steps" aria-label="Recording setup steps">${stepNames.map((n,i)=>button('step',`<b>${i+1}</b><span>${n}</span>`,`step ${i<state.step?'done':''}`,`data-value="${i}" ${i===state.step?'aria-current="step"':''} ${active()?'disabled':''}`)).join('')}</nav><section class="guided-main">${content}<div class="step-controls">${state.step>0?button('back','Back','',active()?'disabled':''):'<span></span>'}${state.step<2?button('next','Continue','primary'):button('restart','Set up another recording','quiet',active()?'disabled':'')}</div></section><aside class="guided-aside"><h2>Recent meetings</h2><p class="muted" style="margin-bottom:12px">Select a meeting to review.</p>${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside>${state.page==='library'?`<div style="grid-column:1/-1">${review()}</div>`:''}</main>`;
   }
   function renderState(){
@@ -213,22 +256,24 @@
     document.querySelector(`[data-action="${offset<0?'previous':'next-variant'}"]`).focus();
   }
   function showModel(){
-    state.openDetails.add('model');state.openDetails.add('advanced');state.openDetails.add('dock');
+    state.openDetails.add('model');
+    if(state.variant==='B')state.page='models';
+    else {state.openDetails.add('advanced');state.openDetails.add('dock')}
     if(state.variant==='A')state.page='record';
     if(state.variant==='C'&&!active())state.step=0;
     render();
     const panel=document.getElementById('model-panel');
-    if(panel){panel.scrollIntoView({block:'center',behavior:'instant'});panel.querySelector('button').focus()}
+    if(panel){panel.scrollIntoView({block:'center',behavior:'instant'});(panel.querySelector('select:not(:disabled)')||panel.querySelector('summary')).focus()}
     else notify('Stop the demo recording before changing the local model.');
   }
   function retry(id){
     const recording=state.recordings.find(r=>r.id===id);
     if(!recording)return;
-    if(!state.model){showModel();notify('Install a compatible demo model before retrying.');return}
+    if(!canTranscribe(recording.language)){showModel();notify('Choose a downloaded model that supports '+recording.language+' before retrying.');return}
     if(state.jobs.some(j=>j.status==='Running')){notify('One local transcription runs at a time. Finish or cancel the running demo job first.');return}
     let job=state.jobs.find(j=>j.id===id);
     if(!job){job={id,title:recording.title,status:'Running'};state.jobs.push(job)}
-    job.status='Running';recording.status='Running';render();
+    job.status='Running';job.model=state.selectedModel;recording.status='Running';render();
     setTimeout(()=>{
       if(!state.jobs.includes(job)||job.status!=='Running')return;
       job.status='Completed';recording.status='Completed';
@@ -236,14 +281,43 @@
       render();notify('Demo transcript ready. No speech recognition was performed.');
     },3000);
   }
+  let downloadTimer;
+  function startDownload(key){
+    const artifact=modelArtifact(key);
+    if(downloading()){notify('Finish or cancel the current demo download first.');return}
+    if(state.downloadedModels.includes(key)){notify('This model is already downloaded. Select it to use it.');return}
+    state.download={key,percent:0,status:'Downloading'};render();
+    clearInterval(downloadTimer);
+    downloadTimer=setInterval(()=>{
+      const d=state.download;
+      if(d.status==='Verifying'){
+        clearInterval(downloadTimer);d.status='Completed';state.downloadedModels.push(key);render();
+        notify(artifact.label+' downloaded (demo). Choose it from Downloaded models; your selected model has not changed.');return;
+      }
+      d.percent=Math.min(100,d.percent+5);
+      if(state.scenario==='download-error'&&d.percent>=35){
+        clearInterval(downloadTimer);d.status='Failed';render();notify('Demo download failed. Existing models and selection are unchanged. Retry the download.');return;
+      }
+      if(d.percent===100){d.status='Verifying';render();return}
+      document.querySelectorAll('[data-download-progress]').forEach(el=>el.value=d.percent);
+      document.querySelectorAll('[data-download-percent]').forEach(el=>el.textContent=d.percent+'%');
+      renderState();
+    },350);
+  }
   document.addEventListener('click',event=>{
+    const summary=event.target.closest('summary');
+    if(summary?.parentElement.dataset.detail){
+      const details=summary.parentElement;
+      details.open?state.openDetails.delete(details.dataset.detail):state.openDetails.add(details.dataset.detail);
+      renderState();return;
+    }
     const target=event.target.closest('[data-action]');if(!target||target.disabled)return;
     const action=target.dataset.action,id=Number(target.dataset.id);
     if(action==='previous'||action==='next-variant'){changeVariant(action==='previous'?-1:1);return}
     if(action==='source')state.source=target.dataset.value;
     if(action==='record-page')state.page='record';
     if(action==='library-page')state.page='library';
-    if(action==='select'){state.selected=id;if(state.variant==='A')state.page='library';if(state.variant==='C')state.page='library'}
+    if(action==='select'){state.selected=id;state.page='library'}
     if(action==='step')state.step=Number(target.dataset.value);
     if(action==='next')state.step=Math.min(2,state.step+1);
     if(action==='back')state.step=Math.max(0,state.step-1);
@@ -263,11 +337,12 @@
     if(action==='resume')state.status='Recording';
     if(action==='stop'){
       state.status='Idle';
-      const r={id:state.nextId++,title:state.title.trim()||'Untitled meeting',date:'Just now / demo',duration:duration(),language:state.language,status:state.model?'Queued':'Saved',transcript:[]};
+      const compatible=canTranscribe(state.language);
+      const r={id:state.nextId++,title:state.title.trim()||'Untitled meeting',date:'Just now / demo',duration:duration(),language:state.language,status:compatible?'Queued':'Saved',transcript:[]};
       state.recordings.unshift(r);state.selected=r.id;state.permission=false;
-      if(state.model)state.jobs.push({id:r.id,title:r.title,status:'Queued'});
+      if(compatible)state.jobs.push({id:r.id,title:r.title,status:'Queued'});
       if(state.variant!=='A')state.page='library';
-      notify('Demo recording saved in memory only. '+(state.model?'Transcription queued; select Retry to simulate it.':'Set up a model to transcribe later.'));
+      notify('Demo recording saved in memory only. '+(compatible?'Transcription queued; select Retry to simulate it.':'Choose a compatible downloaded model to transcribe later.'));
     }
     if(action==='cancel-job'){
       const job=state.jobs.find(j=>j.id===id),r=state.recordings.find(r=>r.id===id);
@@ -275,13 +350,14 @@
       notify('Demo transcription cancelled. The synthetic recording remains available.');
     }
     if(action==='retry-job'){retry(id);return}
-    if(action==='import-model'){state.model=true;notify('Compatible demo model activated. No package was imported.')}
-    if(action==='remove-model'){state.model=false;notify('Demo model removed. Audio capture remains available.')}
-    if(action==='download-model'){
-      try{const url=new URL(state.modelUrl);if(!['http:','https:'].includes(url.protocol))throw new Error('protocol')}
-      catch{notify('Enter an HTTP or HTTPS package URL to simulate download.');document.getElementById('model-url').focus();return}
-      state.model=true;notify('Demo download completed. No network request was made.');
+    if(action==='import-model'){
+      if(!state.downloadedModels.includes('base:NoQuantization'))state.downloadedModels.push('base:NoQuantization');
+      notify('Synthetic Base package imported. Choose it from Downloaded models. No file was read.');
     }
+    if(action==='remove-model'){state.downloadedModels=[];state.selectedModel='';notify('Demo downloaded models cleared. Audio capture remains available.')}
+    if(action==='use-model'){state.selectedModel=target.dataset.key;notify(modelArtifact(state.selectedModel).label+' selected for new transcription jobs.')}
+    if(action==='download-model'){startDownload(target.dataset.key);return}
+    if(action==='cancel-download'){clearInterval(downloadTimer);state.download.status='Cancelled';notify('Demo download cancelled. No model was added; your selection is unchanged.')}
     if(action==='choose-folder'){document.getElementById('destination').focus();notify('Edit the demo destination field. No real folder picker or filesystem access.');return}
     if(action==='open-folder')notify(`Demo folder: ${state.destination}. Explorer is not opened.`);
     if(action==='output-txt'||action==='output-srt')notify(`Demo output: ${state.destination}\\meeting.${action==='output-txt'?'txt':'srt'}. No file is written.`);
@@ -293,22 +369,33 @@
     }
   });
   document.addEventListener('input',event=>{
+    if(event.target.dataset.encoding){
+      const id=event.target.dataset.encoding,scroll=document.querySelector('.model-catalog').scrollTop;
+      state.catalogEncodings[id]=event.target.value;render();
+      document.querySelector('.model-catalog').scrollTop=scroll;document.querySelector(`[data-encoding="${id}"]`).focus({preventScroll:true});return;
+    }
     const field=event.target.dataset.field;if(!field)return;
     state[field]=event.target.type==='checkbox'?event.target.checked:event.target.value;
-    if(field==='query'){
+    if(['selectedModel','modelFilter','language'].includes(field)){
+      render();
+      document.querySelector(`[data-field="${field}"]`)?.focus();
+    }else if(field==='query'){
       const input=event.target,position=input.selectionStart;render();
       const next=document.getElementById('search');next.focus();next.setSelectionRange(position,position);
     }else renderState();
   });
   document.addEventListener('toggle',event=>{
-    const id=event.target.dataset.detail;if(!id)return;
+    const id=event.target.dataset.detail;if(!id||!event.target.isConnected)return;
     event.target.open?state.openDetails.add(id):state.openDetails.delete(id);renderState();
   },true);
   document.getElementById('scenario').addEventListener('change',event=>{
+    clearInterval(downloadTimer);state.download=null;
     state.scenario=event.target.value;state.status='Idle';state.seconds=0;state.permission=false;state.query='';state.step=0;
     state.recordings=state.scenario==='empty'?[]:samples.map(r=>({...r}));
     state.jobs=state.scenario==='empty'?[]:[{id:3,title:'Revisao do projeto',status:'Queued'}];
-    state.selected=state.scenario==='empty'?null:1;state.model=state.scenario!=='no-model';render();
+    state.selected=state.scenario==='empty'?null:1;
+    state.downloadedModels=state.scenario==='no-model'?[]:['tiny:NoQuantization','base:NoQuantization'];
+    state.selectedModel=state.scenario==='no-model'?'':'base:NoQuantization';state.modelFilter='all';state.catalogEncodings={};render();
     notify('Demo scenario changed. All sample state is in memory.');
   });
   document.addEventListener('keydown',event=>{
