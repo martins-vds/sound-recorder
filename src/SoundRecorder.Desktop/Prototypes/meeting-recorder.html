@@ -1,7 +1,8 @@
 <!doctype html>
 <!-- THROWAWAY: Three meeting-recorder layouts on one browser route, switchable via ?variant=A|B|C.
      Question: which hierarchy best supports meeting capture and transcript review?
-     No WPF changes, real audio, network model downloads, or persistent application state. -->
+     No WPF changes, live capture, network model downloads, or persistent application state.
+     Playback uses the repository's existing synthetic speech fixture. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -72,6 +73,13 @@
   .model-row select{min-width:0;flex:1}.model-row button{flex:none}.model-row .row{align-items:start}.download-status{background:var(--soft);padding:14px;border:1px solid var(--line);border-radius:5px;display:grid;gap:10px}
   .download-percent{font-variant-numeric:tabular-nums}.model-source{color:var(--accent);text-underline-offset:3px}.model-filter{display:grid;gap:7px}.model-filter label{margin:0}
   .model-page{max-width:760px}.model-page h1{margin:16px 0 22px}
+  .playback-panel{position:sticky;top:0;z-index:2;background:#fff;padding:8px 0 10px;border-bottom:1px solid var(--line);display:grid;gap:6px}.playback-panel audio{display:block;width:100%;min-width:0}
+  .job{display:grid;gap:10px}.job-controls{display:flex;flex-wrap:wrap;gap:6px}.job-controls button{font-size:12px;padding:6px 10px;min-height:32px}.job-progress{display:grid;gap:8px}.job-progress-text{font-size:12px;line-height:1.5;color:var(--muted)}
+  .library-rail>[data-action=jobs-page]{width:100%;margin-bottom:12px}
+  .jobs-page{max-width:850px}.jobs-page h1{margin:12px 0 18px}.job-notes{font-size:12px;line-height:1.6;color:var(--muted);margin:12px 0}.job-percent{font-variant-numeric:tabular-nums}
+  dialog{max-width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto;border:1px solid var(--line);border-radius:10px;padding:26px;background:#fff;color:inherit;box-shadow:0 12px 48px rgba(0,0,0,.2)}dialog::backdrop{background:rgba(0,0,0,.4)}
+  dialog h2{font-size:23px;margin-bottom:12px}dialog fieldset{border:0;padding:0;margin:20px 0;display:grid;gap:16px}dialog legend{font-weight:600;margin-bottom:14px}dialog label{display:flex;gap:10px;align-items:start;font-weight:400;line-height:1.5}
+  dialog input[type=radio]{width:18px;min-height:18px;accent-color:var(--accent);margin-top:3px;flex:none}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px;flex-wrap:wrap}
   @media(max-width:1000px){.topbar>.muted{display:none}}
   @media(max-width:1100px){.guided-shell{grid-template-columns:155px minmax(0,1fr);gap:20px}.guided-aside{grid-column:2}.guided-aside .meeting-list{display:grid;grid-template-columns:1fr 1fr;gap:16px}.topbar{gap:12px}.page{padding:24px}.capture-layout{gap:24px}.reading-pane{padding:24px}.workspace{grid-template-columns:235px minmax(0,1fr)}}
   @media(max-width:700px){.demo-banner{padding:8px 16px}.topbar{height:auto;min-height:64px;padding:14px 16px;flex-wrap:wrap}.topbar>.muted{display:none}.page{padding:20px 16px}.capture-layout,.library-layout,.workspace{grid-template-columns:1fr}.capture-main,.review{padding:20px}.library-rail{border-right:0;border-bottom:1px solid var(--line)}.library-rail .meeting-list{max-height:220px;overflow:auto}.reading-pane{padding:24px 20px}.record-dock{padding:16px}.record-dock .row{flex-wrap:wrap}.record-dock>.row>.grow{flex-basis:100%}.record-dock .setup{grid-template-columns:1fr}.record-dock .setup>*{grid-column:1}.guided-shell{padding:20px 16px;grid-template-columns:1fr}.steps{display:flex;flex-wrap:wrap;margin:0}.step{padding:8px;font-size:12px;gap:6px}.guided-aside{grid-column:1}.guided-aside .meeting-list{grid-template-columns:1fr}.state-details{margin:16px}.clock{font-size:48px}.field-grid{grid-template-columns:1fr}.switcher{bottom:12px;max-width:95vw;gap:8px}.switcher .label{min-width:160px}.app{padding-bottom:110px}}
@@ -82,15 +90,16 @@
 <body>
 <div class="demo-banner">
   <span><strong>Throwaway UX prototype.</strong> Synthetic meetings. No audio captured. Nothing sent or saved.</span>
-  <label class="row gap8">Demo scenario <select id="scenario"><option value="ready">Sample meetings</option><option value="no-model">No model installed</option><option value="empty">Empty library</option><option value="error">Capture device error</option><option value="download-error">Model download error</option></select></label>
+  <label class="row gap8">Demo scenario <select id="scenario"><option value="ready">Sample meetings</option><option value="no-model">No model installed</option><option value="empty">Empty library</option><option value="error">Capture device error</option><option value="download-error">Model download error</option><option value="job-progress-unavailable">Worker without progress</option></select></label>
 </div>
 <div id="app"></div>
 <div id="notice" role="status" aria-live="polite"></div>
 <div id="switcher"></div>
+<dialog id="delete-dialog" aria-labelledby="delete-heading"></dialog>
 <script>
   const variants = ['A','B','C'];
   const names = {A:'Recording first',B:'Meeting workspace',C:'Guided capture'};
-  // Whisper.net 1.9.1: GgmlType and QuantizationType at commit c6821abbde5ae021e398ebe875c94dea9d66c9e1.
+  // Whisper.net 1.9.1: GgmlType and QuantizationType at release commit 98278acc38ae23590cdfa9859f78f089abae52a7.
   // Its v4 model mirror supplies every one of these 12 x 6 combinations. Custom GGML files use import.
   const encodings = ['NoQuantization','Q4_0','Q4_1','Q5_0','Q5_1','Q8_0'];
   const modelCatalog = [
@@ -119,19 +128,33 @@
     ['02:16','For the next review, bring the revised screens and a list of open questions. We will decide on the direction together.']
   ];
   const samples = [
-    {id:1,title:'Launch review',date:'Today, 09:00',duration:'24:18',language:'English',status:'Completed',transcript:sampleTranscript},
-    {id:2,title:'Design handover',date:'Yesterday, 14:30',duration:'38:42',language:'English',status:'Completed',transcript:[['00:00','This synthetic meeting covers the design handover. The next step is to compare the proposed layouts with the team.'],['00:45','Please keep the current recording and local transcription capabilities available.']]},
-    {id:3,title:'Revisao do projeto',date:'Yesterday, 10:15',duration:'16:05',language:'Brazilian Portuguese',status:'Queued',transcript:[]}
+    {id:1,title:'Launch review',date:'Today, 09:00',duration:'24:18',language:'English',status:'Completed',artifacts:{audio:true,txt:true,srt:true},transcript:sampleTranscript},
+    {id:2,title:'Design handover',date:'Yesterday, 14:30',duration:'38:42',language:'English',status:'Completed',artifacts:{audio:true,txt:true,srt:true},transcript:[['00:00','This synthetic meeting covers the design handover. The next step is to compare the proposed layouts with the team.'],['00:45','Please keep the current recording and local transcription capabilities available.']]},
+    {id:3,title:'Revisao do projeto',date:'Yesterday, 10:15',duration:'16:05',language:'Brazilian Portuguese',status:'Queued',artifacts:{audio:true,txt:false,srt:false},transcript:[]}
   ];
+  const sampleRecordings = () => samples.map(r=>({...r,artifacts:{...r.artifacts}}));
+  const sampleJobs = () => samples.map(r=>({id:r.id,title:r.title,status:r.status,phase:r.status==='Completed'?'Finished':'Queued',progress:null}));
   const state = {
     variant:variants.includes(new URLSearchParams(location.search).get('variant')) ? new URLSearchParams(location.search).get('variant') : 'A',
     page:'record',step:0,status:'Idle',seconds:0,source:'both',microphone:'Default microphone',playback:'Default playback device',
     language:'English',title:'',destination:'C:\\Demo\\Sound Recorder',permission:false,
     downloadedModels:['tiny:NoQuantization','base:NoQuantization'],selectedModel:'base:NoQuantization',
     catalogEncodings:{},modelFilter:'all',download:null,
-    selected:1,query:'',scenario:'ready',message:'',recordings:samples.map(r=>({...r})),jobs:[{id:3,title:'Revisao do projeto',status:'Queued'}],
+    selected:1,query:'',scenario:'ready',message:'',recordings:sampleRecordings(),jobs:sampleJobs(),
+    playback:{recordingId:null,playing:false,currentTime:0,duration:0},pendingDelete:null,
     openDetails:new Set(),nextId:4
   };
+  const demoAudio=document.createElement('audio');
+  demoAudio.controls=true;demoAudio.preload='metadata';demoAudio.src='demo-recording.wav';
+  for(const event of ['loadedmetadata','timeupdate','play','pause','ended']){
+    demoAudio.addEventListener(event,()=>{
+      state.playback.playing=!demoAudio.paused;
+      state.playback.currentTime=Math.round(demoAudio.currentTime*10)/10;
+      state.playback.duration=Number.isFinite(demoAudio.duration)?demoAudio.duration:0;
+      renderState();
+    });
+  }
+  demoAudio.addEventListener('error',()=>notify('The local synthetic playback clip could not be loaded. Check that demo-recording.wav is served next to the prototype.'));
   const esc = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const active = () => state.status !== 'Idle';
   const selectedModel = () => state.selectedModel&&state.downloadedModels.includes(state.selectedModel)?modelArtifact(state.selectedModel):null;
@@ -200,29 +223,53 @@
   function search(){
     return `<label for="search" class="row spread"><span>Search meetings</span><span class="concept">Concept</span></label><input id="search" data-field="query" type="search" placeholder="Title or transcript phrase" value="${esc(state.query)}">`;
   }
+  function jobProgress(job){
+    if(!['Running','Stopping'].includes(job.status))return '';
+    const known=job.phase==='Recognizing'&&job.progress!==null;
+    const label=job.phase==='Recognizing'?(known?'Whisper recognition estimate':'Recognizing / percentage unavailable'):job.phase==='Writing'?'Recognition finished. Writing TXT/SRT':job.phase==='Loading'?'Loading model and preparing audio':'Releasing worker';
+    return `<div class="job-progress"><div class="row spread"><span class="job-progress-text">${label}</span>${known?`<span class="job-percent" data-job-percent="${job.id}">${job.progress}%</span>`:''}</div><progress data-job-progress="${job.id}" max="100" ${known?`value="${job.progress}"`:''} aria-label="${esc(job.title)} transcription progress"></progress></div>`;
+  }
+  function jobControls(job){
+    const running=job.status==='Running',busy=['Running','Stopping','Queued'].includes(job.status);
+    const recording=state.recordings.find(r=>r.id===job.id),canRetry=recording?.artifacts.audio&&canTranscribe(recording.language);
+    return `<div class="job-controls">${running||job.status==='Stopping'?`${button('pause-job','Pause','','disabled title="Whisper.net 1.9.1 has no safe pause/resume API"')}${button('stop-job','Stop','',`data-id="${job.id}" ${!running?'disabled':''} title="Interrupt this job; restarting begins from the start"`)}`:''}${running||job.status==='Queued'?button('cancel-job','Cancel','',`data-id="${job.id}"`):''}${button('retry-job',job.status==='Queued'?'Start':'Restart','',`data-id="${job.id}" ${!canRetry||running||job.status==='Stopping'?'disabled':''}`)}${button('delete-job','Delete job','',`data-id="${job.id}" ${busy?'disabled title="Stop or cancel before deleting job history"':''}`)}</div>`;
+  }
+  function jobRow(job){
+    const busy=['Running','Stopping'].includes(job.status),previous=state.recordings.find(r=>r.id===job.id)?.artifacts.txt;
+    return `<div class="job" data-job-id="${job.id}"><div class="row spread"><strong class="grow">${esc(job.title)}</strong>${badge(job.status)}</div>${jobProgress(job)}${jobControls(job)}${busy?`<p class="job-progress-text">Pause is unavailable; restarting cannot resume mid-job.${previous?' The visible transcript is the previously completed output, not this attempt.':''}</p>`:''}${job.status==='Stopped'?'<p class="job-progress-text">Interrupted. Existing outputs are kept; restarting begins at the start.</p>':job.status==='Cancelled'?'<p class="job-progress-text">Cancelled. Audio and previously completed outputs are kept.</p>':''}</div>`;
+  }
   function jobs(){
-    return `<div class="jobs">${state.jobs.length?state.jobs.map(j=>`<div class="job"><span class="grow"><strong>${esc(j.title)}</strong><br><span class="muted">Local transcription</span></span>${badge(j.status)}${j.status==='Queued'||j.status==='Running'?button('cancel-job','Cancel','',`data-id="${j.id}"`):button('retry-job','Retry','',`data-id="${j.id}"`)}</div>`).join(''):'<p class="muted">No transcription jobs.</p>'}</div>`;
+    const priority={Running:0,Stopping:0,Queued:1,Stopped:2,Cancelled:2,Completed:3};
+    const ordered=[...state.jobs].sort((a,b)=>priority[a.status]-priority[b.status]);
+    return `<p class="job-notes">Pause is unavailable. Stop/Cancel keep completed outputs; Delete removes only job history.</p><div class="jobs">${ordered.length?ordered.map(jobRow).join(''):'<p class="muted">No transcription jobs. Audio and completed transcripts may still be in your library.</p>'}</div>${detail('job-support','Progress and control limitations','<p class="job-notes">Whisper.net 1.9.1 has no safe pause/resume API. Stop interrupts one running job; Cancel also handles queued work. Both discard this attempt and keep previously completed outputs. Restart begins from the start. Stop or cancel before deleting job history.</p><p class="job-notes">Progress is a coarse audio-position estimate from <a class="model-source" href="https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/WhisperProcessorBuilder.cs#L462" target="_blank" rel="noopener noreferrer">WithProgressHandler</a>, not total processing time. Loading and output writing are indeterminate. The current application worker does not forward recognition progress yet; this is a simulated integration concept.</p>')}`;
+  }
+  function jobsPage(){
+    return `<section class="jobs-page">${button('library-page','Back to library','quiet')}<h1>Transcription jobs</h1>${jobs()}</section>`;
   }
   function review(){
     const r=state.recordings.find(r=>r.id===state.selected);
     if(!r)return `<div class="review empty"><h2>Your meeting, ready to revisit</h2><p>Select a recording to review its transcript.</p></div>`;
-    return `<article class="review"><div class="review-heading"><div class="row spread wrap">${badge(r.status)}<span class="concept">Inline review / concept</span></div><h2>${esc(r.title)}</h2><p class="muted">${esc(r.date)} / ${esc(r.duration)} / ${esc(r.language)}</p><div class="tools">${button('open-folder','Open output folder')}${button('retry-job','Transcribe again','',`data-id="${r.id}" ${!canTranscribe(r.language)||r.status==='Running'||r.status==='Queued'?'disabled':''}`)}${r.status==='Queued'||r.status==='Running'?button('cancel-job','Cancel job','',`data-id="${r.id}"`):''}</div></div><div class="rule"></div>${r.transcript.length?`<div class="row spread wrap"><h3>Transcript</h3><span class="muted">Synthetic sample / not an actual meeting</span></div><div class="transcript">${r.transcript.map(([time,text])=>`<div class="segment"><span class="timestamp">${time}</span><p>${esc(text)}</p></div>`).join('')}</div><div class="tools">${button('view-transcript','View transcript')}${button('output-txt','Transcript TXT')}${button('output-srt','Subtitles SRT')}</div>`:`<div class="empty"><h3>${r.status==='Saved'?'Audio saved. Transcribe when ready.':r.status==='Cancelled'?'Transcription cancelled. Your audio is safe.':'Your transcript is not ready yet.'}</h3><p>${!canTranscribe(r.language)?'Choose a downloaded model that supports this recording language.':r.status==='Running'?'Demo transcription is running.':'Use the job controls to retry or cancel.'}</p>${canTranscribe(r.language)&&r.status!=='Running'?button('retry-job','Retry transcription','',`data-id="${r.id}"`):!canTranscribe(r.language)?button('model-settings','Set up local model'):''}</div>`}</article>`;
+    const job=state.jobs.find(j=>j.id===r.id),busy=job&&['Running','Stopping'].includes(job.status);
+    const playback=r.artifacts.audio?`<section class="playback-panel" aria-label="Recording playback"><h3>Listen while you read</h3><div id="playback-slot"></div><p class="muted">7-second synthetic speech clip; not this transcript.</p></section>`:`<p class="warning">Audio deleted. ${r.artifacts.txt||r.artifacts.srt?'Retained transcript and subtitle outputs remain available.':'No completed transcript or subtitles exist for this entry.'} Playback and retranscription are unavailable.</p>`;
+    return `<article class="review"><div class="review-heading"><div class="row spread wrap">${badge(r.status)}<span class="concept">Inline review / concept</span></div><h2>${esc(r.title)}</h2><p class="muted">${esc(r.date)} / ${esc(r.duration)} / ${esc(r.language)}</p><div class="tools">${button('open-folder','Open output folder')}${button('retry-job','Transcribe again','',`data-id="${r.id}" ${!r.artifacts.audio||!canTranscribe(r.language)||busy?'disabled':''}`)}${button('delete-recording',r.artifacts.audio?'Delete recording...':'Delete retained artifacts...','',`data-id="${r.id}"`)}</div></div>${playback}${job?detail('selected-job','Transcription job',jobRow(job),['Running','Stopping','Queued'].includes(job.status)):''}<div class="rule"></div>${r.transcript.length?`<div class="row spread wrap"><h3>Transcript</h3><span class="muted">Synthetic sample / not an actual meeting</span></div><div class="transcript">${r.transcript.map(([time,text])=>`<div class="segment"><span class="timestamp">${time}</span><p>${esc(text)}</p></div>`).join('')}</div><div class="tools">${button('view-transcript','View transcript')}${button('output-txt','Transcript TXT','',!r.artifacts.txt?'disabled':'')}${button('output-srt','Subtitles SRT','',!r.artifacts.srt?'disabled':'')}</div>`:`<div class="empty"><h3>${r.artifacts.audio?'Your transcript is not ready yet.':'No audio or transcript is available for this entry.'}</h3><p>${busy?'Demo transcription is in progress.':!r.artifacts.audio?'Delete the retained entry if you no longer need its history.':'Start or restart a transcription job when ready.'}</p></div>`}</article>`;
   }
   function VariantA(){
-    if(state.page==='library')return `<main class="page"><div class="intro"><h1>Meeting library</h1><p class="muted">Find a recording. Read what was said. Keep everything local.</p></div><div class="library-layout"><aside>${search()}${meetings()}${detail('jobs','Transcription jobs',jobs())}</aside>${review()}</div></main>`;
+    if(state.page==='jobs')return `<main class="page">${jobsPage()}</main>`;
+    if(state.page==='library')return `<main class="page"><div class="intro"><h1>Meeting library</h1><p class="muted">Find a recording. Read what was said. Keep everything local.</p></div><div class="library-layout"><aside>${search()}${meetings()}${button('jobs-page','View transcription jobs')}${detail('jobs','Transcription jobs',jobs())}</aside>${review()}</div></main>`;
     return `<main class="page"><div class="intro"><h1>Record your next meeting</h1><p class="muted">Choose what to capture, confirm permission, and start.</p></div><div class="capture-layout"><section class="capture-main ${state.status}" aria-label="Capture"><div class="capture-title"><h2>${esc(state.title||'New recording')}</h2>${status()}</div><div class="capture-face">${clock()}${levels()}${actions()}</div><div class="rule"></div>${permission()}<p class="muted" style="margin-top:14px">Stopping saves the audio${canTranscribe(state.language)?' and queues local transcription':''}.</p></section><section aria-label="Recording setup">${setup().replace(permission(),'')}</section></div><section class="section"><div class="row spread section-title"><h2>Recent meetings</h2>${button('library-page','View library','quiet')}</div>${meetings(true)}</section>${detail('jobs','Transcription jobs',jobs())}</main>`;
   }
   function VariantB(){
-    const content=state.page==='models'?`<section class="model-page">${button('library-page','Back to meeting','quiet')}<h1>Local transcription models</h1>${modelSettings()}</section>`:review();
-    return `<main><div class="workspace"><aside class="library-rail"><h2>Meetings</h2>${search()}${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside><div class="reading-pane">${content}</div></div><section class="record-dock" aria-label="Persistent capture controls"><div class="row spread"><div class="grow"><h2>${esc(state.title||'New meeting')}</h2>${status()}</div>${clock()}${actions()}</div>${detail('dock','Recording setup and permission',setup(),!state.recordings.length&&!state.permission&&!active())}</section></main>`;
+    const content=state.page==='models'?`<section class="model-page">${button('library-page','Back to meeting','quiet')}<h1>Local transcription models</h1>${modelSettings()}</section>`:state.page==='jobs'?jobsPage():review();
+    return `<main><div class="workspace"><aside class="library-rail"><h2>Meetings</h2>${search()}${button('jobs-page','View transcription jobs')}${meetings(true)}</aside><div class="reading-pane">${content}</div></div><section class="record-dock" aria-label="Persistent capture controls"><div class="row spread"><div class="grow"><h2>${esc(state.title||'New meeting')}</h2>${status()}</div>${clock()}${actions()}</div>${detail('dock','Recording setup and permission',setup(),!state.recordings.length&&!state.permission&&!active())}</section></main>`;
   }
   function VariantC(){
+    if(state.page==='jobs')return `<main class="page">${jobsPage()}</main>`;
     const stepNames=['Audio source','Meeting details','Record'];
     let content='';
     if(state.step===0)content=`<h1>What should we capture?</h1><p class="muted">Choose the inputs for this meeting.</p><div class="setup">${sourceControls()}${devices()}${captureWarning()}${detail('model','Local transcription model',modelSettings())}</div>`;
     if(state.step===1)content=`<h1>Make it easy to find later</h1><p class="muted">Add an optional title and select the spoken language.</p><div class="setup">${metadata()}${advanced()}</div>`;
     if(state.step===2)content=`<div class="row spread wrap"><h1>${active()?'Your meeting is in progress':'Ready when you are'}</h1>${status()}</div><p class="muted">${esc(state.title||'Untitled recording')} / ${esc(state.language)} / ${state.source==='both'?'Microphone and system audio':state.source==='mic'?'Microphone only':'System audio only'}</p><div class="capture-face ${state.status}">${clock()}${levels()}${actions()}</div><div class="stack">${captureWarning()}${permission()}${!canTranscribe(state.language)?'<p class="warning">Recording is available. Choose a compatible downloaded model for transcription later.</p>':''}</div>`;
-    return `<main class="guided-shell"><nav class="steps" aria-label="Recording setup steps">${stepNames.map((n,i)=>button('step',`<b>${i+1}</b><span>${n}</span>`,`step ${i<state.step?'done':''}`,`data-value="${i}" ${i===state.step?'aria-current="step"':''} ${active()?'disabled':''}`)).join('')}</nav><section class="guided-main">${content}<div class="step-controls">${state.step>0?button('back','Back','',active()?'disabled':''):'<span></span>'}${state.step<2?button('next','Continue','primary'):button('restart','Set up another recording','quiet',active()?'disabled':'')}</div></section><aside class="guided-aside"><h2>Recent meetings</h2><p class="muted" style="margin-bottom:12px">Select a meeting to review.</p>${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside>${state.page==='library'?`<div style="grid-column:1/-1">${review()}</div>`:''}</main>`;
+    return `<main class="guided-shell"><nav class="steps" aria-label="Recording setup steps">${stepNames.map((n,i)=>button('step',`<b>${i+1}</b><span>${n}</span>`,`step ${i<state.step?'done':''}`,`data-value="${i}" ${i===state.step?'aria-current="step"':''} ${active()?'disabled':''}`)).join('')}</nav><section class="guided-main">${content}<div class="step-controls">${state.step>0?button('back','Back','',active()?'disabled':''):'<span></span>'}${state.step<2?button('next','Continue','primary'):button('restart','Set up another recording','quiet',active()?'disabled':'')}</div></section><aside class="guided-aside"><h2>Recent meetings</h2><p class="muted" style="margin-bottom:12px">Select a meeting to review.</p>${meetings(true)}${button('jobs-page','View transcription jobs')}${detail('jobs','Transcription jobs',jobs())}</aside>${state.page==='library'?`<div style="grid-column:1/-1">${review()}</div>`:''}</main>`;
   }
   function renderState(){
     const output=document.getElementById('state-output');
@@ -231,13 +278,26 @@
   function PrototypeSwitcher(){
     return `<nav class="switcher" aria-label="Prototype variants">${button('previous',icons.left,'','aria-label="Previous variant"')}<span class="label"><strong>${state.variant} / ${names[state.variant]}</strong><small>Compare layouts / left and right keys</small></span>${button('next-variant',icons.right,'','aria-label="Next variant"')}</nav>`;
   }
+  let lastView;
   function render(){
+    const view=`${state.variant}:${state.page}:${state.selected}`,scroll=lastView===view?document.querySelector('.reading-pane')?.scrollTop:0;
+    let wasPlaying=!demoAudio.paused;
+    demoAudio.remove();
     const app=document.getElementById('app');
     app.className=`app ${state.variant}`;
     const liveDock=active()&&state.variant!=='B'?`<section class="live-dock row spread wrap" aria-label="Persistent capture controls">${status()}<span class="live-time">${duration()}</span>${actions()}</section>`:'';
     app.innerHTML=header()+liveDock+({A:VariantA,B:VariantB,C:VariantC}[state.variant])()+detail('state','Prototype state / in memory only','<pre id="state-output"></pre>');
     app.lastElementChild.classList.add('state-details');
     document.getElementById('switcher').innerHTML=PrototypeSwitcher();
+    const slot=document.getElementById('playback-slot');
+    if(slot){
+      if(state.playback.recordingId!==state.selected){demoAudio.pause();demoAudio.currentTime=0;state.playback.recordingId=state.selected;wasPlaying=false}
+      demoAudio.setAttribute('aria-label','Recording playback / synthetic speech demo');
+      slot.append(demoAudio);
+      if(wasPlaying&&demoAudio.paused)demoAudio.play().catch(error=>notify('Playback could not resume: '+error.message));
+    }else demoAudio.pause();
+    if(scroll)document.querySelector('.reading-pane').scrollTop=scroll;
+    lastView=view;
     renderState();
   }
   let noticeTimer;
@@ -266,20 +326,88 @@
     if(panel){panel.scrollIntoView({block:'center',behavior:'instant'});(panel.querySelector('select:not(:disabled)')||panel.querySelector('summary')).focus()}
     else notify('Stop the demo recording before changing the local model.');
   }
+  let jobTimer;
   function retry(id){
     const recording=state.recordings.find(r=>r.id===id);
     if(!recording)return;
+    if(!recording.artifacts.audio){notify('Audio was deleted. This entry cannot be transcribed again.');return}
     if(!canTranscribe(recording.language)){showModel();notify('Choose a downloaded model that supports '+recording.language+' before retrying.');return}
-    if(state.jobs.some(j=>j.status==='Running')){notify('One local transcription runs at a time. Finish or cancel the running demo job first.');return}
+    if(state.jobs.some(j=>['Running','Stopping'].includes(j.status))){notify('One local transcription runs at a time. Wait for the running worker to finish or stop.');return}
     let job=state.jobs.find(j=>j.id===id);
     if(!job){job={id,title:recording.title,status:'Running'};state.jobs.push(job)}
-    job.status='Running';job.model=state.selectedModel;recording.status='Running';render();
-    setTimeout(()=>{
-      if(!state.jobs.includes(job)||job.status!=='Running')return;
-      job.status='Completed';recording.status='Completed';
-      if(!recording.transcript.length)recording.transcript=recording.language==='Brazilian Portuguese'?[['00:00','Esta e uma transcricao sintetica para avaliar a interface. Nenhum audio foi capturado.']]:[['00:00','This is a synthetic transcript for reviewing the interface. No audio was captured.']];
-      render();notify('Demo transcript ready. No speech recognition was performed.');
-    },3000);
+    job.status='Running';job.phase='Loading';job.progress=null;job.model=state.selectedModel;recording.status='Running';render();
+    let tick=0;
+    const estimates=[0,18,37,61,84,99];
+    clearInterval(jobTimer);
+    jobTimer=setInterval(()=>{
+      if(!state.jobs.includes(job)||job.status!=='Running'||!recording.artifacts.audio){clearInterval(jobTimer);return}
+      tick++;
+      if(tick===2){job.phase='Recognizing';job.progress=state.scenario==='job-progress-unavailable'?null:0;render()}
+      if(tick>=2&&tick<14){
+        if(state.scenario!=='job-progress-unavailable')job.progress=estimates[Math.floor((tick-2)/2)];
+        document.querySelectorAll(`[data-job-progress="${id}"]`).forEach(el=>{if(job.progress!==null)el.value=job.progress});
+        document.querySelectorAll(`[data-job-percent="${id}"]`).forEach(el=>el.textContent=job.progress+'%');
+        renderState();
+      }
+      if(tick===14){job.phase='Writing';render()}
+      if(tick===16){
+        clearInterval(jobTimer);job.status='Completed';job.phase='Finished';recording.status='Completed';
+        if(!recording.transcript.length)recording.transcript=recording.language==='Brazilian Portuguese'?[['00:00','Esta e uma transcricao sintetica para avaliar a interface. Nenhum audio foi capturado.']]:[['00:00','This is a synthetic transcript for reviewing the interface. No audio was captured.']];
+        recording.artifacts.txt=true;recording.artifacts.srt=true;
+        render();notify('Demo transcript and subtitles ready. No speech recognition or output-file writing was performed.');
+      }
+    },350);
+  }
+  function interruptJob(id,outcome){
+    const job=state.jobs.find(j=>j.id===id),recording=state.recordings.find(r=>r.id===id);
+    if(!job||!['Running','Queued'].includes(job.status)){notify('Only queued or running jobs can be cancelled, and only running jobs can be stopped.');return}
+    if(outcome==='Stopped'&&job.status!=='Running'){notify('This job is not running. Use Cancel to remove queued work.');return}
+    const finish=()=>{
+      if(!state.jobs.includes(job))return;
+      job.status=outcome;job.phase=outcome;
+      if(recording?.artifacts.audio)recording.status=outcome;
+      render();notify(`Demo job ${outcome.toLowerCase()}. Existing audio and completed outputs are kept. Restart begins from the start.`);
+    };
+    if(job.status==='Queued'){finish();return}
+    clearInterval(jobTimer);job.status='Stopping';job.phase='Releasing worker';render();
+    setTimeout(()=>{if(job.status==='Stopping')finish()},450);
+  }
+  function openDelete(kind,id){
+    const recording=state.recordings.find(r=>r.id===id),job=state.jobs.find(j=>j.id===id);
+    if(kind==='job'&&(!job||['Running','Stopping','Queued'].includes(job.status))){notify('Stop or cancel the job before deleting its history.');return}
+    if(kind==='recording'&&!recording){notify('This recording is no longer in the library.');return}
+    demoAudio.pause();
+    state.pendingDelete={kind,id,scope:recording?.artifacts.audio?'audio':'all'};
+    const dialog=document.getElementById('delete-dialog');
+    const name=esc(kind==='job'?job.title:recording.title);
+    dialog.innerHTML=`<h2 id="delete-heading">${kind==='job'?'Delete job history?':'Delete recording artifacts?'}</h2><p><strong>${name}</strong></p>${kind==='job'?'<p class="muted">Only this job-history entry will be removed. Audio, transcript TXT, subtitle SRT, and the recording library entry are kept.</p>':`<fieldset><legend>What should be deleted?</legend><label><input type="radio" name="delete-scope" data-delete-scope value="audio" ${recording.artifacts.audio?'checked':'disabled'}><span><strong>Just the audio recording</strong><br><small>Keep the transcript, subtitles, and library/job history. Playback and retranscription will no longer be available.</small></span></label><label><input type="radio" name="delete-scope" data-delete-scope value="all" ${!recording.artifacts.audio?'checked':''}><span><strong>Audio and all generated artifacts</strong><br><small>Remove audio, transcript TXT, subtitle SRT, transcript content, and associated library/job history. Downloaded models are kept.</small></span></label></fieldset><p class="warning">Any queued or running transcription for this recording will be cancelled before deletion.</p>`}<p class="muted" style="margin-top:12px">Prototype only: this changes in-memory demo state. No real files will be deleted.</p><div class="dialog-actions">${button('dismiss-delete','Keep it')}${button('confirm-delete',kind==='job'?'Delete job history':recording.artifacts.audio?'Delete audio only':'Delete all artifacts','stop','id="delete-confirm"')}</div>`;
+    dialog.showModal();renderState();
+  }
+  function confirmDelete(){
+    const pending=state.pendingDelete;if(!pending)return;
+    if(pending.kind==='job'){
+      state.jobs=state.jobs.filter(j=>j.id!==pending.id);
+      notify('Demo job history deleted. Audio and generated outputs are kept.');
+    }else{
+      const recording=state.recordings.find(r=>r.id===pending.id);
+      if(!recording){notify('This recording was already removed.');return}
+      const job=state.jobs.find(j=>j.id===pending.id);
+      if(job&&['Running','Stopping'].includes(job.status))clearInterval(jobTimer);
+      if(job&&['Running','Stopping','Queued'].includes(job.status)){job.status='Cancelled';job.phase='Cancelled'}
+      if(state.playback.recordingId===pending.id){demoAudio.pause();demoAudio.currentTime=0;state.playback.recordingId=null}
+      if(pending.scope==='audio'){
+        recording.artifacts.audio=false;
+        recording.status=recording.transcript.length?'Transcript only':'Audio deleted';
+        notify('Demo audio deleted. Transcript, subtitles, and library/job history are kept.');
+      }else{
+        state.jobs=state.jobs.filter(j=>j.id!==pending.id);state.recordings=state.recordings.filter(r=>r.id!==pending.id);
+        if(state.selected===pending.id)state.selected=state.recordings[0]?.id??null;
+        notify('Demo recording and all its generated artifacts deleted. Downloaded models are unchanged.');
+      }
+    }
+    state.pendingDelete=null;document.getElementById('delete-dialog').close();render();
+    const heading=document.querySelector('.review h2,.jobs-page h1');
+    if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true})}
   }
   let downloadTimer;
   function startDownload(key){
@@ -317,12 +445,17 @@
     if(action==='source')state.source=target.dataset.value;
     if(action==='record-page')state.page='record';
     if(action==='library-page')state.page='library';
+    if(action==='jobs-page')state.page='jobs';
     if(action==='select'){state.selected=id;state.page='library'}
     if(action==='step')state.step=Number(target.dataset.value);
     if(action==='next')state.step=Math.min(2,state.step+1);
     if(action==='back')state.step=Math.max(0,state.step-1);
     if(action==='restart'){state.step=0;state.title='';state.permission=false;state.seconds=0}
     if(action==='model-settings'){showModel();return}
+    if(action==='delete-recording'||action==='delete-job'){openDelete(action==='delete-job'?'job':'recording',id);return}
+    if(action==='dismiss-delete'){state.pendingDelete=null;document.getElementById('delete-dialog').close();renderState();return}
+    if(action==='confirm-delete'){confirmDelete();return}
+    if(action==='stop-job'||action==='cancel-job'){interruptJob(id,action==='stop-job'?'Stopped':'Cancelled');return}
     if(action==='start'){
       if(!state.permission){
         state.openDetails.add('dock');render();
@@ -338,16 +471,11 @@
     if(action==='stop'){
       state.status='Idle';
       const compatible=canTranscribe(state.language);
-      const r={id:state.nextId++,title:state.title.trim()||'Untitled meeting',date:'Just now / demo',duration:duration(),language:state.language,status:compatible?'Queued':'Saved',transcript:[]};
+      const r={id:state.nextId++,title:state.title.trim()||'Untitled meeting',date:'Just now / demo',duration:duration(),language:state.language,status:compatible?'Queued':'Saved',artifacts:{audio:true,txt:false,srt:false},transcript:[]};
       state.recordings.unshift(r);state.selected=r.id;state.permission=false;
-      if(compatible)state.jobs.push({id:r.id,title:r.title,status:'Queued'});
+      if(compatible)state.jobs.push({id:r.id,title:r.title,status:'Queued',phase:'Queued',progress:null});
       if(state.variant!=='A')state.page='library';
       notify('Demo recording saved in memory only. '+(compatible?'Transcription queued; select Retry to simulate it.':'Choose a compatible downloaded model to transcribe later.'));
-    }
-    if(action==='cancel-job'){
-      const job=state.jobs.find(j=>j.id===id),r=state.recordings.find(r=>r.id===id);
-      if(job)job.status='Cancelled';if(r)r.status='Cancelled';
-      notify('Demo transcription cancelled. The synthetic recording remains available.');
     }
     if(action==='retry-job'){retry(id);return}
     if(action==='import-model'){
@@ -360,15 +488,23 @@
     if(action==='cancel-download'){clearInterval(downloadTimer);state.download.status='Cancelled';notify('Demo download cancelled. No model was added; your selection is unchanged.')}
     if(action==='choose-folder'){document.getElementById('destination').focus();notify('Edit the demo destination field. No real folder picker or filesystem access.');return}
     if(action==='open-folder')notify(`Demo folder: ${state.destination}. Explorer is not opened.`);
-    if(action==='output-txt'||action==='output-srt')notify(`Demo output: ${state.destination}\\meeting.${action==='output-txt'?'txt':'srt'}. No file is written.`);
+    if(action==='output-txt'||action==='output-srt')notify(`Retained demo output: ${state.destination}\\meeting-${state.selected}.${action==='output-txt'?'txt':'srt'}. No file is written.`);
     if(action==='view-transcript')notify('Inline transcript review is a proposed replacement for the production transcript viewer.');
     render();
+    if(action==='select'){
+      const heading=document.querySelector('.review h2');
+      if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});heading.scrollIntoView({block:'start'})}
+    }
     if(['step','next','back','restart'].includes(action)){
       const heading=document.querySelector('.guided-main h1');
       if(heading){heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'})}
     }
   });
   document.addEventListener('input',event=>{
+    if(event.target.hasAttribute('data-delete-scope')){
+      state.pendingDelete.scope=event.target.value;
+      document.getElementById('delete-confirm').textContent=event.target.value==='audio'?'Delete audio only':'Delete all artifacts';renderState();return;
+    }
     if(event.target.dataset.encoding){
       const id=event.target.dataset.encoding,scroll=document.querySelector('.model-catalog').scrollTop;
       state.catalogEncodings[id]=event.target.value;render();
@@ -389,20 +525,21 @@
     event.target.open?state.openDetails.add(id):state.openDetails.delete(id);renderState();
   },true);
   document.getElementById('scenario').addEventListener('change',event=>{
-    clearInterval(downloadTimer);state.download=null;
+    clearInterval(downloadTimer);clearInterval(jobTimer);state.download=null;demoAudio.pause();demoAudio.currentTime=0;state.playback.recordingId=null;
     state.scenario=event.target.value;state.status='Idle';state.seconds=0;state.permission=false;state.query='';state.step=0;
-    state.recordings=state.scenario==='empty'?[]:samples.map(r=>({...r}));
-    state.jobs=state.scenario==='empty'?[]:[{id:3,title:'Revisao do projeto',status:'Queued'}];
+    state.recordings=state.scenario==='empty'?[]:sampleRecordings();
+    state.jobs=state.scenario==='empty'?[]:sampleJobs();
     state.selected=state.scenario==='empty'?null:1;
     state.downloadedModels=state.scenario==='no-model'?[]:['tiny:NoQuantization','base:NoQuantization'];
     state.selectedModel=state.scenario==='no-model'?'':'base:NoQuantization';state.modelFilter='all';state.catalogEncodings={};render();
     notify('Demo scenario changed. All sample state is in memory.');
   });
   document.addEventListener('keydown',event=>{
-    if(event.defaultPrevented||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.target.closest('input,textarea,select,[contenteditable],summary'))return;
+    if(event.defaultPrevented||state.pendingDelete||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.target.closest('input,textarea,select,audio,[contenteditable],summary'))return;
     if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();changeVariant(event.key==='ArrowLeft'?-1:1)}
   });
   addEventListener('popstate',()=>{const v=new URLSearchParams(location.search).get('variant');state.variant=variants.includes(v)?v:'A';render()});
+  document.getElementById('delete-dialog').addEventListener('cancel',()=>{state.pendingDelete=null;renderState()});
   setInterval(()=>{if(state.status==='Recording'){state.seconds++;const clockNode=document.getElementById('clock');if(clockNode)clockNode.textContent=duration();document.querySelectorAll('.live-time').forEach(node=>node.textContent=duration());renderState()}},1000);
   render();
 </script>
