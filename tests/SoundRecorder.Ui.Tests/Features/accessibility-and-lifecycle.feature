@@ -3,6 +3,18 @@ Feature: Access desktop controls and close active work explicitly
   Tests use the Windows accessibility tree in an interactive desktop session.
   Notification-area integration and real power interruptions are outside this fixture suite.
 
+  Scenario Outline: Keep model setup usable at supported window sizes
+    Given the isolated recorder UI is open with "no model" fixtures
+    When the user resizes the recorder to <width> by <height>
+    And the user scrolls to model setup
+    Then the model package URL and download action fit inside the window
+    And the "Start recording" button is disabled
+
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
+
   Scenario: Expose input labels and live status regions to automation
     Given the isolated recorder UI is open with "no model" fixtures
     Then these input controls have accessible names

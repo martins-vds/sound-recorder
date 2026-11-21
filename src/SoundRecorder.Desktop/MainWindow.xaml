@@ -6,199 +6,212 @@
         Width="980"
         Height="720"
         MinWidth="760"
-        MinHeight="560">
-    <Grid Margin="16">
+        MinHeight="560"
+        Style="{DynamicResource RecorderWindow}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/RecorderTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Grid Margin="{StaticResource PageInset}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="12" BorderBrush="#DDD" BorderThickness="1" CornerRadius="4">
+        <Border Grid.Row="0" Padding="0,0,0,16" Margin="0,0,0,16"
+                BorderThickness="0,0,0,1"
+                BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}">
             <StackPanel>
-                <TextBlock Text="New recording" FontSize="20" FontWeight="SemiBold"/>
-                <UniformGrid Columns="3" Margin="0,8,0,0">
-                    <StackPanel Margin="4">
-                        <Label Target="{Binding ElementName=SourceCombo}" Content="Audio source"/>
-                        <ComboBox x:Name="SourceCombo"
-                                  automation:AutomationProperties.Name="Audio source"
-                                  ItemsSource="{Binding AudioSources}"
-                                  DisplayMemberPath="DisplayName"
-                                  SelectedValuePath="Value"
-                                  SelectedValue="{Binding AudioSource}"/>
-                        <TextBlock x:Name="SystemAudioScopeText"
-                                   Text="{Binding SystemAudioExplanation}"
-                                   TextWrapping="Wrap"
-                                   Foreground="#555"/>
-                    </StackPanel>
-                    <StackPanel Margin="4">
-                        <Label Target="{Binding ElementName=MicrophoneCombo}" Content="Microphone"/>
-                        <ComboBox x:Name="MicrophoneCombo"
-                                  automation:AutomationProperties.Name="Microphone"
-                                  ItemsSource="{Binding Microphones}"
-                                  DisplayMemberPath="Name"
-                                  SelectedValuePath="Id"
-                                  SelectedValue="{Binding SelectedMicrophoneId}"
-                                  IsEnabled="{Binding UsesMicrophone}"/>
-                        <Label Target="{Binding ElementName=PlaybackCombo}" Content="Playback device"/>
-                        <ComboBox x:Name="PlaybackCombo"
-                                  automation:AutomationProperties.Name="Playback device"
-                                  ItemsSource="{Binding PlaybackDevices}"
-                                  DisplayMemberPath="Name"
-                                  SelectedValuePath="Id"
-                                  SelectedValue="{Binding SelectedPlaybackDeviceId}"
-                                  IsEnabled="{Binding UsesPlayback}"/>
-                    </StackPanel>
-                    <StackPanel Margin="4">
-                        <Label Target="{Binding ElementName=LanguageCombo}" Content="Spoken language"/>
-                        <ComboBox x:Name="LanguageCombo"
-                                  automation:AutomationProperties.Name="Spoken language"
-                                  ItemsSource="{Binding Languages}"
-                                  SelectedItem="{Binding Language}"/>
-                        <Label Target="{Binding ElementName=TitleBox}" Content="Optional recording title"/>
-                        <TextBox x:Name="TitleBox"
-                                 automation:AutomationProperties.Name="Optional recording title"
-                                 Text="{Binding Title}"/>
-                    </StackPanel>
-                </UniformGrid>
-                <Grid Margin="4">
+                <TextBlock Text="New recording" FontSize="24" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Label Target="{Binding ElementName=DestinationBox}" Content="Local destination"/>
-                    <TextBox Grid.Column="1" x:Name="DestinationBox"
-                             automation:AutomationProperties.Name="Local destination folder"
-                             Text="{Binding DestinationFolder}"/>
-                    <Button Grid.Column="2" Content="Choose..." Click="ChooseDestination_Click"/>
-                </Grid>
-                <CheckBox x:Name="PermissionCheckBox"
-                          automation:AutomationProperties.Name="Permission to record confirmed"
-                          Margin="4"
-                          IsChecked="{Binding PermissionConfirmed}"
-                          IsEnabled="{Binding IsIdle}"
-                          Content="I have permission to record every person whose audio may be captured."/>
-                <TextBlock Margin="4,0"
-                           Foreground="#666"
-                           TextWrapping="Wrap"
-                           Text="This confirmation is not a guarantee of legal compliance. When system audio is selected, all audio from the selected playback device may be captured, including calls, notifications, and other applications."/>
-                <WrapPanel Margin="0,8,0,0">
-                    <Button x:Name="StartButton" Content="Start recording" Command="{Binding StartCommand}"/>
-                    <Button x:Name="PauseButton" Content="Pause" Command="{Binding PauseCommand}"/>
-                    <Button x:Name="ResumeButton" Content="Resume" Command="{Binding ResumeCommand}"/>
-                    <Button x:Name="StopButton" Content="Stop" Command="{Binding StopCommand}"/>
-                    <TextBlock x:Name="StatusText"
-                               Margin="12,0"
-                               VerticalAlignment="Center"
-                               automation:AutomationProperties.LiveSetting="Assertive"
-                               Text="{Binding Status}"
-                               FontWeight="SemiBold"/>
-                    <TextBlock x:Name="DurationText"
-                               Text="{Binding CapturedDuration}"
-                               Margin="8,0"
-                               VerticalAlignment="Center"/>
-                </WrapPanel>
-                <Grid Margin="4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="Microphone level" VerticalAlignment="Center"/>
-                    <ProgressBar x:Name="MicrophoneLevel" Grid.Column="1" Height="18" Margin="6"
-                                 Minimum="0" Maximum="1"
-                                 Value="{Binding MicrophoneLevel}"
-                                 automation:AutomationProperties.Name="Microphone audio level"/>
-                    <TextBlock Grid.Column="2" Text="System level" VerticalAlignment="Center"/>
-                    <ProgressBar x:Name="SystemLevel" Grid.Column="3" Height="18" Margin="6"
-                                 Minimum="0" Maximum="1"
-                                 Value="{Binding SystemAudioLevel}"
-                                 automation:AutomationProperties.Name="System audio level"/>
+                    <WrapPanel VerticalAlignment="Center">
+                        <Button x:Name="StartButton" Content="Start recording" Command="{Binding StartCommand}"
+                                Style="{StaticResource PrimaryButton}"/>
+                        <Button x:Name="PauseButton" Content="Pause" Command="{Binding PauseCommand}"/>
+                        <Button x:Name="ResumeButton" Content="Resume" Command="{Binding ResumeCommand}"/>
+                        <Button x:Name="StopButton" Content="Stop" Command="{Binding StopCommand}"/>
+                    </WrapPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                        <TextBlock x:Name="StatusText" Text="{Binding Status}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"
+                                   automation:AutomationProperties.LiveSetting="Assertive"/>
+                        <TextBlock x:Name="DurationText" Text="{Binding CapturedDuration}"
+                                   FontFamily="Consolas" FontSize="22" VerticalAlignment="Center"/>
+                    </StackPanel>
                 </Grid>
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,10,0,0" Padding="12" BorderBrush="#DDD" BorderThickness="1" CornerRadius="4">
+        <ScrollViewer x:Name="ContentScroll" Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      CanContentScroll="False" Padding="0,0,8,0">
             <StackPanel>
-                <TextBlock Text="Local transcription model" FontSize="16" FontWeight="SemiBold"/>
-                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                    <TextBlock x:Name="ModelStatusText"
-                               Text="{Binding ModelStatus}"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"/>
-                    <Button Content="Import model package..." Click="ImportModel_Click"/>
-                    <TextBox x:Name="ModelUrlBox" Width="360"
-                             automation:AutomationProperties.Name="Model package URL"
-                             Text="{Binding ModelUrl, UpdateSourceTrigger=PropertyChanged}"/>
-                    <Button Content="Download selected package" Command="{Binding DownloadModelCommand}"/>
+                <StackPanel Margin="{StaticResource SectionGap}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Margin="0,0,16,0">
+                            <Label Target="{Binding ElementName=SourceCombo}" Content="Audio source"/>
+                            <ComboBox x:Name="SourceCombo" automation:AutomationProperties.Name="Audio source"
+                                      ItemsSource="{Binding AudioSources}" DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="Value" SelectedValue="{Binding AudioSource}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                            <Label Target="{Binding ElementName=MicrophoneCombo}" Content="Microphone"/>
+                            <ComboBox x:Name="MicrophoneCombo" automation:AutomationProperties.Name="Microphone"
+                                      ItemsSource="{Binding Microphones}" DisplayMemberPath="Name"
+                                      SelectedValuePath="Id" SelectedValue="{Binding SelectedMicrophoneId}"
+                                      IsEnabled="{Binding UsesMicrophone}"/>
+                            <Label Target="{Binding ElementName=PlaybackCombo}" Content="Playback device" Margin="0,12,0,0"/>
+                            <ComboBox x:Name="PlaybackCombo" automation:AutomationProperties.Name="Playback device"
+                                      ItemsSource="{Binding PlaybackDevices}" DisplayMemberPath="Name"
+                                      SelectedValuePath="Id" SelectedValue="{Binding SelectedPlaybackDeviceId}"
+                                      IsEnabled="{Binding UsesPlayback}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <Label Target="{Binding ElementName=LanguageCombo}" Content="Spoken language"/>
+                            <ComboBox x:Name="LanguageCombo" automation:AutomationProperties.Name="Spoken language"
+                                      ItemsSource="{Binding Languages}" SelectedItem="{Binding Language}"/>
+                            <Label Target="{Binding ElementName=TitleBox}" Content="Optional recording title" Margin="0,12,0,0"/>
+                            <TextBox x:Name="TitleBox" automation:AutomationProperties.Name="Optional recording title"
+                                     Text="{Binding Title}"/>
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock x:Name="SystemAudioScopeText" Text="{Binding SystemAudioExplanation}"
+                               Style="{StaticResource HelperText}" Margin="0,12,0,0"/>
+                    <Grid Margin="0,16,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Label Target="{Binding ElementName=DestinationBox}" Content="Local destination"/>
+                        <TextBox Grid.Row="1" x:Name="DestinationBox"
+                                 automation:AutomationProperties.Name="Local destination folder"
+                                 Text="{Binding DestinationFolder}"/>
+                        <Button Grid.Row="1" Grid.Column="1" Content="Choose..." Click="ChooseDestination_Click" Margin="8,0,0,0"/>
+                    </Grid>
+                    <CheckBox x:Name="PermissionCheckBox" Margin="0,16,0,8"
+                              automation:AutomationProperties.Name="Permission to record confirmed"
+                              IsChecked="{Binding PermissionConfirmed}" IsEnabled="{Binding IsIdle}">
+                        <TextBlock TextWrapping="Wrap"
+                                   Text="I have permission to record every person whose audio may be captured."/>
+                    </CheckBox>
+                    <TextBlock Style="{StaticResource HelperText}"
+                               Text="This confirmation is not a guarantee of legal compliance. When system audio is selected, all audio from the selected playback device may be captured, including calls, notifications, and other applications."/>
+                    <Grid Margin="0,16,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Margin="0,0,16,0">
+                            <TextBlock Text="Microphone level" Style="{StaticResource HelperText}" Margin="0,0,0,6"/>
+                            <ProgressBar x:Name="MicrophoneLevel" Height="6" Minimum="0" Maximum="1"
+                                         Value="{Binding MicrophoneLevel}"
+                                         automation:AutomationProperties.Name="Microphone audio level"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="System level" Style="{StaticResource HelperText}" Margin="0,0,0,6"/>
+                            <ProgressBar x:Name="SystemLevel" Height="6" Minimum="0" Maximum="1"
+                                         Value="{Binding SystemAudioLevel}"
+                                         automation:AutomationProperties.Name="System audio level"/>
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
-            </StackPanel>
-        </Border>
 
-        <TabControl Grid.Row="2" Margin="0,10,0,0">
-            <TabItem Header="Recording history">
-                <DockPanel>
-                    <WrapPanel DockPanel.Dock="Top">
-                        <Button Content="Open output folder" Click="OpenOutputFolder_Click"/>
-                        <Button Content="Transcribe again" Command="{Binding RetryTranscriptionCommand}"/>
-                    </WrapPanel>
-                    <ListView x:Name="HistoryList"
-                              automation:AutomationProperties.Name="Local recording history"
-                              ItemsSource="{Binding Recordings}"
-                              SelectedItem="{Binding SelectedRecording}"
-                              SelectionMode="Single">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="Recorded" DisplayMemberBinding="{Binding Id}" Width="250"/>
-                                <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Language}" Width="140"/>
-                                <GridViewColumn Header="State" DisplayMemberBinding="{Binding Outcome}" Width="100"/>
-                                <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding AudioPath}" Width="360"/>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
-                </DockPanel>
-            </TabItem>
-            <TabItem Header="Transcription jobs">
-                <DockPanel>
-                    <WrapPanel DockPanel.Dock="Top">
-                        <Button Content="Cancel selected job" Command="{Binding CancelJobCommand}"/>
-                        <Button Content="Retry selected recording" Command="{Binding RetryTranscriptionCommand}"/>
-                        <Button Content="View transcript" Click="ViewTranscript_Click"/>
-                    </WrapPanel>
-                    <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
-                        <TextBlock Text="{Binding SelectedJob.Outputs.TextPath, StringFormat=Transcript TXT: {0}}"
-                                   TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding SelectedJob.Outputs.SubtitlePath, StringFormat=Subtitles SRT: {0}}"
-                                   TextWrapping="Wrap"/>
+                <Border BorderThickness="0,1,0,0" Padding="0,20,0,0" Margin="{StaticResource SectionGap}"
+                        BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}">
+                    <StackPanel>
+                        <TextBlock Text="Local transcription model" Style="{StaticResource SectionHeading}"/>
+                        <TextBlock x:Name="ModelStatusText" Text="{Binding ModelStatus}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Content="Import model package..." Click="ImportModel_Click"/>
+                            <TextBox Grid.Column="1" x:Name="ModelUrlBox" MinWidth="160" Margin="0,0,8,0"
+                                     automation:AutomationProperties.Name="Model package URL"
+                                     Text="{Binding ModelUrl, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Button Grid.Column="2" Content="Download selected package"
+                                    Command="{Binding DownloadModelCommand}" Margin="0"/>
+                        </Grid>
                     </StackPanel>
-                    <ListView x:Name="JobsList"
-                              automation:AutomationProperties.Name="Transcription job status"
-                              ItemsSource="{Binding Jobs}"
-                              SelectedItem="{Binding SelectedJob}"
-                              SelectionMode="Single">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="Created" DisplayMemberBinding="{Binding CreatedAt}" Width="160"/>
-                                <GridViewColumn Header="Status" DisplayMemberBinding="{Binding Status}" Width="100"/>
-                                <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Recording.Language}" Width="130"/>
-                                <GridViewColumn Header="Error" DisplayMemberBinding="{Binding Error}" Width="280"/>
-                                <GridViewColumn Header="Transcript (TXT)" DisplayMemberBinding="{Binding Outputs.TextPath}" Width="390"/>
-                                <GridViewColumn Header="Subtitles (SRT)" DisplayMemberBinding="{Binding Outputs.SubtitlePath}" Width="390"/>
-                                <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding Recording.AudioPath}" Width="390"/>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
-                </DockPanel>
-            </TabItem>
-        </TabControl>
+                </Border>
 
-        <Border Grid.Row="3" Margin="0,10,0,0" Padding="8" Background="#F7F7F7">
-            <TextBlock x:Name="MessageText"
-                       TextWrapping="Wrap"
-                       Text="{Binding Message}"
+                <TabControl Height="280">
+                    <TabItem Header="Recording history">
+                        <DockPanel Margin="8">
+                            <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                                <Button Content="Open output folder" Click="OpenOutputFolder_Click"/>
+                                <Button Content="Transcribe again" Command="{Binding RetryTranscriptionCommand}"/>
+                            </WrapPanel>
+                            <ListView x:Name="HistoryList" automation:AutomationProperties.Name="Local recording history"
+                                      ItemsSource="{Binding Recordings}" SelectedItem="{Binding SelectedRecording}"
+                                      SelectionMode="Single">
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Recorded" DisplayMemberBinding="{Binding Id}" Width="250"/>
+                                        <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Language}" Width="140"/>
+                                        <GridViewColumn Header="State" DisplayMemberBinding="{Binding Outcome}" Width="100"/>
+                                        <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding AudioPath}" Width="360"/>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </TabItem>
+                    <TabItem Header="Transcription jobs">
+                        <DockPanel Margin="8">
+                            <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                                <Button Content="Cancel selected job" Command="{Binding CancelJobCommand}"/>
+                                <Button Content="Retry selected recording" Command="{Binding RetryTranscriptionCommand}"/>
+                                <Button Content="View transcript" Click="ViewTranscript_Click"/>
+                            </WrapPanel>
+                            <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                                <TextBlock Text="{Binding SelectedJob.Outputs.TextPath, StringFormat=Transcript TXT: {0}}"
+                                           Style="{StaticResource HelperText}"/>
+                                <TextBlock Text="{Binding SelectedJob.Outputs.SubtitlePath, StringFormat=Subtitles SRT: {0}}"
+                                           Style="{StaticResource HelperText}"/>
+                            </StackPanel>
+                            <ListView x:Name="JobsList" automation:AutomationProperties.Name="Transcription job status"
+                                      ItemsSource="{Binding Jobs}" SelectedItem="{Binding SelectedJob}"
+                                      SelectionMode="Single">
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="Created" DisplayMemberBinding="{Binding CreatedAt}" Width="160"/>
+                                        <GridViewColumn Header="Status" DisplayMemberBinding="{Binding Status}" Width="100"/>
+                                        <GridViewColumn Header="Language" DisplayMemberBinding="{Binding Recording.Language}" Width="130"/>
+                                        <GridViewColumn Header="Error" DisplayMemberBinding="{Binding Error}" Width="280"/>
+                                        <GridViewColumn Header="Transcript (TXT)" DisplayMemberBinding="{Binding Outputs.TextPath}" Width="390"/>
+                                        <GridViewColumn Header="Subtitles (SRT)" DisplayMemberBinding="{Binding Outputs.SubtitlePath}" Width="390"/>
+                                        <GridViewColumn Header="Audio" DisplayMemberBinding="{Binding Recording.AudioPath}" Width="390"/>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </TabItem>
+                </TabControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" Margin="0,12,0,0" Padding="8"
+                Background="{DynamicResource {x:Static SystemColors.ControlBrushKey}}">
+            <TextBlock x:Name="MessageText" TextWrapping="Wrap" Text="{Binding Message}"
                        automation:AutomationProperties.LiveSetting="Assertive"/>
         </Border>
     </Grid>

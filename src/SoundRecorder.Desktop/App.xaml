@@ -1,16 +1,4 @@
 <Application x:Class="SoundRecorder.Desktop.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <Application.Resources>
-        <Style TargetType="Button">
-            <Setter Property="Margin" Value="4"/>
-            <Setter Property="Padding" Value="10,5"/>
-        </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="Margin" Value="2,4"/>
-        </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Margin" Value="2,4"/>
-        </Style>
-    </Application.Resources>
 </Application>

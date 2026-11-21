@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -17,6 +18,7 @@ public sealed class DesktopUiSteps
     private Application? _application;
     private Window? _window;
     private DirectoryInfo? _directory;
+    private string? _size;
 
     [Given("the isolated recorder UI is open with {string} fixtures")]
     public void OpenRecorder(string fixtures)
@@ -58,6 +60,80 @@ public sealed class DesktopUiSteps
     [Then("the {string} button is enabled")]
     public void ButtonEnabled(string name) =>
         WaitUntil(() => Button(name).IsEnabled, $"Expected '{name}' to be enabled.");
+
+    [When(@"^the user resizes the recorder to (\d+) by (\d+)$")]
+    public void ResizeRecorder(int width, int height)
+    {
+        var previous = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        Assert.NotEqual(IntPtr.Zero, previous);
+        try
+        {
+            var dpi = GetDpiForWindow(new IntPtr(_window!.Properties.NativeWindowHandle.Value));
+            Assert.NotEqual(0u, dpi);
+            var scale = dpi / 96d;
+            _window.Patterns.Transform.Pattern.Resize(width * scale, height * scale);
+            _size = $"{width}x{height}";
+            WaitUntil(() => Math.Abs(_window.BoundingRectangle.Width - width * scale) < 2 &&
+                Math.Abs(_window.BoundingRectangle.Height - height * scale) < 2, "The recorder did not reach the requested size.",
+                () => _window.BoundingRectangle.ToString());
+            _window.Patterns.Transform.Pattern.Move(20, 20);
+            _window.SetForeground();
+            Thread.Sleep(300);
+            CaptureLayout("recording");
+        }
+        finally
+        {
+            SetThreadDpiAwarenessContext(previous);
+        }
+    }
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern uint GetDpiForWindow(IntPtr window);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+
+    [When("the user scrolls to model setup")]
+    public void ScrollToModel()
+    {
+        var scroll = Element("ContentScroll").Patterns.Scroll.Pattern;
+        if (scroll.VerticallyScrollable.Value)
+        {
+            scroll.SetScrollPercent(-1, 50);
+        }
+    }
+
+    [Then("the model package URL and download action fit inside the window")]
+    public void ModelControlsFit()
+    {
+        var previous = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        Assert.NotEqual(IntPtr.Zero, previous);
+        try
+        {
+            CaptureLayout("model");
+            var window = _window!.BoundingRectangle;
+            foreach (var control in new AutomationElement[] { Element("ModelUrlBox"), Button("Download selected package") })
+            {
+                var bounds = control.BoundingRectangle;
+                Assert.False(control.Properties.IsOffscreen.Value, $"{control.Name} is offscreen at {_size}.");
+                Assert.False(bounds.IsEmpty, $"{control.Name} has no visible bounds.");
+                Assert.True(bounds.Left >= window.Left && bounds.Right <= window.Right &&
+                    bounds.Top >= window.Top && bounds.Bottom <= window.Bottom,
+                    $"{control.Name} is clipped at {_size}: {bounds} outside {window}.");
+            }
+        }
+        finally
+        {
+            SetThreadDpiAwarenessContext(previous);
+        }
+    }
+
+    private void CaptureLayout(string section)
+    {
+        var screenshots = Path.Combine(AppContext.BaseDirectory, "TestResults", "Layout");
+        Directory.CreateDirectory(screenshots);
+        _window!.CaptureToFile(Path.Combine(screenshots, $"{_size}-{section}.png"));
+    }
 
     [When("the user confirms recording permission")]
     public void ConfirmPermission() =>

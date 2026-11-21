@@ -73,6 +73,8 @@ dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj
 
 The four feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover recording controls and validation, model setup and errors, history and transcription jobs, accessible labels/live regions, keyboard activation, minimization/restoration, and explicit close choices. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
 
+`MainWindow` loads the shared native WPF styles from `src\SoundRecorder.Desktop\Themes\RecorderTheme.xaml`, so the desktop app and isolated host use the same typography, spacing, and controls. Colors use dynamic Windows system brushes. Recording actions, status, captured duration, and feedback stay visible while setup and history scroll; model controls use the available width rather than a fixed URL field. The layout scenarios check the 760 x 560 and 980 x 720 window sizes using DPI-aware bounds and save local screenshots under the UI test output's `TestResults\Layout\` folder.
+
 Capture, recognition, package selection, notification-area, clipboard, and Explorer effects use test adapters. Model package compatibility/SHA-256 validation and local history/job/transcript persistence use the real adapters. A small fixture window raises the notification-area restore event without touching the real system tray. No microphone, user recording/history, native transcription model, download, or system clipboard is used. These tests verify UI wiring, not real-device audio integrity, native recognition, screen-reader behavior, or release acceptance thresholds.
 
 ## Quality gates
