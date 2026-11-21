@@ -1,0 +1,323 @@
+<!doctype html>
+<!-- THROWAWAY: Three meeting-recorder layouts on one browser route, switchable via ?variant=A|B|C.
+     Question: which hierarchy best supports meeting capture and transcript review?
+     No WPF changes, real audio, network model downloads, or persistent application state. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound Recorder / UX prototype</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{font-family:"Segoe UI",Arial,sans-serif;color:#182d31;background:#edf2f1;font-size:14px;--accent:#17604f;--muted:#53686c;--line:#ccd8d5;--soft:#e8f1ed;--red:#ad263a}
+  *{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button,a,input,select,summary{touch-action:manipulation}
+  button{cursor:pointer;min-height:36px;padding:8px 13px;border:1px solid var(--line);border-radius:6px;background:white;color:inherit;font-weight:600}
+  button:hover{background:var(--soft);border-color:var(--accent)}button:disabled{cursor:not-allowed;opacity:.5}button.primary{background:var(--accent);border-color:var(--accent);color:white}
+  button.primary:hover{background:#104737}button.stop{background:var(--red);border-color:var(--red);color:white}button.quiet{border-color:transparent;background:transparent}
+  :focus-visible{outline:3px solid #27816e;outline-offset:3px}::selection{background:#b6ddce;color:#102b24}
+  input,select{width:100%;min-height:38px;border:1px solid #aebeb9;border-radius:5px;background:white;padding:8px 10px;caret-color:var(--accent)}
+  input::placeholder{color:#5c6e70}input[type=checkbox]{width:18px;min-height:18px;accent-color:var(--accent);flex:none;margin:3px 0}
+  h1,h2,h3,p{margin:0}h1{font-size:28px;line-height:1.2;letter-spacing:-.025em}h2{font-size:19px;line-height:1.35}h3{font-size:14px}
+  p{line-height:1.55}small,.muted{color:var(--muted);line-height:1.5}.muted{font-size:13px}label{display:block;font-size:13px;font-weight:600;margin-bottom:7px}
+  .row{display:flex;align-items:center;gap:10px}.spread{justify-content:space-between}.wrap{flex-wrap:wrap}.stack{display:grid;gap:16px}.gap8{gap:8px}.grow{flex:1;min-width:0}
+  .demo-banner{padding:8px 24px;background:#dfeae5;color:#304c43;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  .demo-banner select{width:auto;min-height:28px;padding:3px 24px 3px 6px;font-size:12px}.demo-banner label{margin:0}
+  .app{max-width:1440px;margin:auto;min-height:calc(100vh - 46px);padding-bottom:110px}.topbar{height:68px;padding:0 28px;border-bottom:1px solid var(--line);background:#fff;display:flex;align-items:center;gap:24px}
+  .brand{font-size:17px;font-weight:650;display:flex;gap:10px;align-items:center;white-space:nowrap}.brand svg{color:var(--accent)}svg{flex:none}
+  .tabs{display:flex;gap:6px}.tabs button[aria-current=page]{background:var(--soft);color:var(--accent)}
+  .badge{font-size:12px;border:1px solid var(--line);padding:3px 8px;border-radius:4px;white-space:nowrap;background:#f5f8f6}.badge.ready{background:#e3f2e9;color:#265844;border-color:#bad6c6}
+  .badge.pending{background:#fff1d5;color:#75450b;border-color:#e2ccaa}.concept{font-size:11px;color:#614816;background:#f7ead0;padding:3px 6px;border-radius:3px;font-weight:600}
+  .page{padding:30px 32px}.intro{margin-bottom:24px}.intro p{margin-top:7px}.section{margin-top:28px}.section-title{margin-bottom:14px}
+  .capture-layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(290px,1fr);gap:32px}
+  .capture-main{background:white;border:1px solid var(--line);border-radius:10px;padding:28px}.capture-title{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .capture-face{text-align:center;padding:26px 0 24px}.clock{font-size:58px;line-height:1.3;font-variant-numeric:tabular-nums;letter-spacing:-.025em;font-weight:350}
+  .status{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600}.dot{width:8px;height:8px;background:#638079;border-radius:50%}.Recording .dot{background:var(--red)}.Paused .dot{background:#9d6d17}
+  .levels{height:50px;display:flex;gap:3px;align-items:center;justify-content:center;margin:16px 0 8px}.levels i{width:4px;height:var(--bar);background:#8aa99c;border-radius:2px}
+  .Recording .levels i{background:var(--accent)}.actions{justify-content:center;margin-top:22px}.actions button{min-height:44px;padding:10px 22px}
+  .setup{display:grid;gap:18px}.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.source-buttons{display:flex;gap:6px}.source-buttons button{flex:1;font-size:12px;padding:10px 5px}
+  .source-buttons [aria-pressed=true]{border-color:var(--accent);background:var(--soft);color:var(--accent)}
+  details{border-top:1px solid var(--line);padding-top:14px}summary{font-weight:600;cursor:pointer;line-height:1.4;padding:4px 0}details .inside{margin-top:15px;display:grid;gap:14px}
+  .permission{display:flex;gap:10px;align-items:flex-start;font-weight:400;font-size:13px;margin:0;line-height:1.5}.permission span{max-width:70ch}
+  .warning{background:#fff0dc;color:#6c4011;padding:12px 14px;border-radius:5px;font-size:12px;line-height:1.55}.rule{height:1px;background:var(--line);margin:20px 0}
+  .meeting-list{display:grid;gap:0}.meeting{width:100%;display:flex;align-items:center;text-align:left;gap:14px;border:0;border-radius:0;border-bottom:1px solid var(--line);background:transparent;padding:15px 4px;font-weight:400}
+  .meeting .name{font-weight:600;display:block;margin-bottom:3px}.meeting .meta{font-size:12px;color:var(--muted)}.meeting.selected{background:var(--soft)}
+  .meeting svg{color:#456e60}.empty{padding:28px 10px;text-align:center;color:var(--muted);line-height:1.6}
+  .review{background:#fff;padding:28px;border:1px solid var(--line);border-radius:8px}.review-heading{margin-bottom:20px}.review-heading h2{font-size:24px;margin-top:12px}.transcript{max-width:70ch;display:grid;gap:22px;margin-top:24px}
+  .segment{display:grid;grid-template-columns:55px 1fr;gap:14px}.timestamp{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;line-height:1.9}.segment p{font-size:15px;line-height:1.75}
+  .tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}.jobs{margin-top:18px;display:grid;gap:10px}.job{padding:12px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .library-layout{display:grid;grid-template-columns:310px minmax(0,1fr);gap:28px}.library-layout input{margin-bottom:14px}
+  .workspace{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:500px;background:#fff;border-bottom:1px solid var(--line)}
+  .library-rail{background:#e3ece8;padding:24px 18px;border-right:1px solid var(--line)}.library-rail h2{margin-bottom:14px}.library-rail input{margin-bottom:14px}.library-rail .meeting{padding:15px 8px;align-items:flex-start}.library-rail .meeting .badge{display:none}
+  .reading-pane{padding:30px 38px;min-width:0}.reading-pane .review{padding:0;border:0;border-radius:0}.reading-pane .transcript{max-width:65ch}
+  .record-dock{background:#fff;padding:18px 28px;border-bottom:1px solid var(--line)}.record-dock .clock{font-size:26px;min-width:140px}.record-dock .actions{margin:0;justify-content:flex-end}.record-dock .actions button{min-height:38px;padding:8px 16px}
+  .record-dock .setup{margin-top:20px;grid-template-columns:1fr 1fr;column-gap:30px}.record-dock .permission-block{grid-column:1/-1}.record-dock .setup details{grid-column:1/-1}
+  .guided-shell{display:grid;grid-template-columns:190px minmax(0,1fr) 250px;gap:28px;padding:32px}.steps{display:grid;gap:6px;align-content:start;margin-top:15px}
+  .step{display:flex;gap:12px;align-items:center;padding:13px 8px;background:transparent;border-color:transparent;text-align:left}.step b{width:28px;height:28px;border:1px solid #98aaa3;border-radius:50%;display:grid;place-items:center;font-size:12px}
+  .step[aria-current=step]{background:#dbe9e2;color:#164f40}.step[aria-current=step] b{background:var(--accent);color:white;border-color:var(--accent)}.step.done b{background:#dbe9e2}
+  .guided-main{background:#fff;border:1px solid var(--line);border-radius:8px;padding:28px}.guided-main h1{margin-bottom:9px}.guided-main .setup{margin-top:24px}.guided-main .actions{justify-content:flex-end}
+  .guided-aside h2{margin-bottom:14px}.guided-aside .meeting{align-items:flex-start}.guided-aside .meeting .badge{display:none}
+  .step-controls{display:flex;justify-content:space-between;margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}.state-details{max-width:1376px;margin:16px 32px 0;font-size:12px}
+  .state-details pre{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#e2eae6;line-height:1.5;max-height:240px;overflow:auto}
+  .switcher{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;background:#173d34;color:#fff;border:1px solid #42645a;border-radius:10px;padding:8px 10px;box-shadow:0 8px 26px rgba(0,0,0,.15);z-index:5}
+  .switcher button{background:transparent;border-color:#698b7f;color:white;display:grid;place-items:center;padding:8px}.switcher button:hover{background:#2b5548}.switcher .label{min-width:180px;text-align:center;font-size:13px}.switcher small{display:block;font-size:11px;color:#c5d9d0;margin-top:3px}
+  .toast{position:fixed;bottom:95px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid #98b4a5;box-shadow:0 6px 24px rgba(0,0,0,.12);border-radius:7px;padding:13px 18px;z-index:6;max-width:min(560px,90vw);font-size:13px}
+  .B .topbar{background:#174c3d;color:#fff;border-color:#174c3d}.B .brand svg{color:#b5e0cb}.B .topbar .muted{color:#cee1d8}.B .topbar button{background:transparent;color:#fff;border-color:#648779}
+  .B main{display:flex;flex-direction:column;height:calc(100dvh - 206px);min-height:300px}.B .workspace{flex:1;min-height:100px;overflow:hidden}.B .reading-pane,.B .library-rail{overflow:auto}
+  .B .record-dock{flex:none;max-height:45vh;overflow:auto}.B .record-dock>.row{position:sticky;top:-18px;background:white;z-index:1;padding:8px 0}
+  .live-dock{position:sticky;top:0;z-index:4;background:#fff;border-bottom:1px solid var(--line);padding:10px 24px}.live-dock .actions{margin:0}.live-dock .actions button{min-height:36px;padding:7px 14px}.live-time{font-variant-numeric:tabular-nums}
+  .C .topbar{background:#fff9ed}.C{background:#f2eee4}.C .guided-main{border-color:#d6d0bd}.C .guided-aside .muted{color:#676653}
+  progress{width:100%;height:6px;accent-color:var(--accent)}*{scrollbar-color:#809b8e #e8eeeb;scrollbar-width:thin}
+  @media(max-width:1100px){.guided-shell{grid-template-columns:155px minmax(0,1fr);gap:20px}.guided-aside{grid-column:2}.guided-aside .meeting-list{display:grid;grid-template-columns:1fr 1fr;gap:16px}.topbar{gap:12px}.page{padding:24px}.capture-layout{gap:24px}.reading-pane{padding:24px}.workspace{grid-template-columns:235px minmax(0,1fr)}}
+  @media(max-width:700px){.demo-banner{padding:8px 16px}.topbar{height:auto;min-height:64px;padding:14px 16px;flex-wrap:wrap}.topbar>.muted{display:none}.page{padding:20px 16px}.capture-layout,.library-layout,.workspace{grid-template-columns:1fr}.capture-main,.review{padding:20px}.library-rail{border-right:0;border-bottom:1px solid var(--line)}.library-rail .meeting-list{max-height:220px;overflow:auto}.reading-pane{padding:24px 20px}.record-dock{padding:16px}.record-dock .row{flex-wrap:wrap}.record-dock>.row>.grow{flex-basis:100%}.record-dock .setup{grid-template-columns:1fr}.record-dock .setup>*{grid-column:1}.guided-shell{padding:20px 16px;grid-template-columns:1fr}.steps{display:flex;flex-wrap:wrap;margin:0}.step{padding:8px;font-size:12px;gap:6px}.guided-aside{grid-column:1}.guided-aside .meeting-list{grid-template-columns:1fr}.state-details{margin:16px}.clock{font-size:48px}.field-grid{grid-template-columns:1fr}.switcher{bottom:12px;max-width:95vw;gap:8px}.switcher .label{min-width:160px}.app{padding-bottom:110px}}
+  @media(max-height:650px){.capture-face{padding:12px 0}.capture-face .clock{font-size:44px}.capture-face .actions{margin-top:14px}.intro{margin-bottom:18px}}
+  @media(prefers-reduced-motion:no-preference){.Recording .levels i{animation:level 900ms ease-out infinite alternate;animation-delay:calc(var(--i)*-70ms)}@keyframes level{to{height:calc(var(--bar)*.45)}}}
+</style>
+</head>
+<body>
+<div class="demo-banner">
+  <span><strong>Throwaway UX prototype.</strong> Synthetic meetings. No audio captured. Nothing sent or saved.</span>
+  <label class="row gap8">Demo scenario <select id="scenario"><option value="ready">Sample meetings</option><option value="no-model">No model installed</option><option value="empty">Empty library</option><option value="error">Capture device error</option></select></label>
+</div>
+<div id="app"></div>
+<div id="notice" role="status" aria-live="polite"></div>
+<div id="switcher"></div>
+<script>
+  const variants = ['A','B','C'];
+  const names = {A:'Recording first',B:'Meeting workspace',C:'Guided capture'};
+  const icons = {
+    audio:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke-linecap="round"/></svg>',
+    left:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>',
+    right:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg>'
+  };
+  const sampleTranscript = [
+    ['00:00','Let us start with the launch review. We have two items to work through today: the revised schedule and the handover between the design and engineering teams.'],
+    ['00:24','The prototype is ready for review. Before we commit to the layout, we should make sure recording controls remain visible and that people can find their transcripts without navigating through setup.'],
+    ['01:08','Agreed. Let us compare the options with a few representative meetings, then collect feedback on the capture flow and the reading experience.'],
+    ['02:16','For the next review, bring the revised screens and a list of open questions. We will decide on the direction together.']
+  ];
+  const samples = [
+    {id:1,title:'Launch review',date:'Today, 09:00',duration:'24:18',language:'English',status:'Completed',transcript:sampleTranscript},
+    {id:2,title:'Design handover',date:'Yesterday, 14:30',duration:'38:42',language:'English',status:'Completed',transcript:[['00:00','This synthetic meeting covers the design handover. The next step is to compare the proposed layouts with the team.'],['00:45','Please keep the current recording and local transcription capabilities available.']]},
+    {id:3,title:'Revisao do projeto',date:'Yesterday, 10:15',duration:'16:05',language:'Brazilian Portuguese',status:'Queued',transcript:[]}
+  ];
+  const state = {
+    variant:variants.includes(new URLSearchParams(location.search).get('variant')) ? new URLSearchParams(location.search).get('variant') : 'A',
+    page:'record',step:0,status:'Idle',seconds:0,source:'both',microphone:'Default microphone',playback:'Default playback device',
+    language:'English',title:'',destination:'C:\\Demo\\Sound Recorder',permission:false,model:true,modelUrl:'',
+    selected:1,query:'',scenario:'ready',message:'',recordings:samples.map(r=>({...r})),jobs:[{id:3,title:'Revisao do projeto',status:'Queued'}],
+    openDetails:new Set(),nextId:4
+  };
+  const esc = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const active = () => state.status !== 'Idle';
+  const duration = () => [Math.floor(state.seconds/3600),Math.floor(state.seconds/60)%60,state.seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+  const badge = status => `<span class="badge ${status==='Completed'?'ready':status==='Queued'||status==='Running'?'pending':''}">${esc(status)}</span>`;
+  const button = (action,text,css='',extra='') => `<button type="button" data-action="${action}" class="${css}" ${extra}>${text}</button>`;
+  function detail(id,label,content,open=false){return `<details data-detail="${id}" ${state.openDetails.has(id)||open?'open':''}><summary>${label}</summary><div class="inside">${content}</div></details>`}
+  function header(){
+    return `<header class="topbar"><div class="brand">${icons.audio} Sound Recorder</div>${state.variant==='A'?`<nav class="tabs" aria-label="Main">${button('record-page','Record','quiet',state.page==='record'?'aria-current="page"':'')}${button('library-page','Library','quiet',state.page==='library'?'aria-current="page"':'')}</nav>`:''}<span class="grow"></span><span class="muted">Audio and transcription stay local</span>${button('model-settings',state.model?'Demo model ready':'Set up transcription','',`aria-label="Show local model setup"`)}</header>`;
+  }
+  function sourceControls(){
+    return `<div><label>What do you want to capture?</label><div class="source-buttons" role="group" aria-label="Audio source">${[['mic','Microphone'],['system','System audio'],['both','Both']].map(([v,n])=>button('source',n,'',`data-value="${v}" aria-pressed="${state.source===v}" ${active()?'disabled':''}`)).join('')}</div></div>`;
+  }
+  function devices(){
+    return `<div class="field-grid"><div><label for="microphone">Microphone</label><select id="microphone" data-field="microphone" ${state.source==='system'||active()?'disabled':''}>${['Default microphone','Demo USB microphone'].map(d=>`<option ${state.microphone===d?'selected':''}>${d}</option>`).join('')}</select></div><div><label for="playback">Playback device</label><select id="playback" data-field="playback" ${state.source==='mic'||active()?'disabled':''}>${['Default playback device','Demo USB headphones'].map(d=>`<option ${state.playback===d?'selected':''}>${d}</option>`).join('')}</select></div></div>`;
+  }
+  function captureWarning(){
+    return state.source==='mic'?'<p class="muted">Microphone input is saved as mono.</p>':`<p class="warning">All sound from the selected playback device may be captured, including calls, notifications, and other applications. Sound from only one call or application cannot be guaranteed. ${state.source==='both'?'Use headphones for combined capture. Echo cancellation is not guaranteed.':''}</p>`;
+  }
+  function metadata(){
+    return `<div><label for="title">Recording title <span class="muted">(optional)</span></label><input id="title" data-field="title" placeholder="e.g. Weekly team meeting" value="${esc(state.title)}" ${active()?'disabled':''}></div><div><label for="language">Spoken language</label><select id="language" data-field="language" ${active()?'disabled':''}>${['English','Brazilian Portuguese'].map(l=>`<option ${state.language===l?'selected':''}>${l}</option>`).join('')}</select></div>`;
+  }
+  function modelSettings(){
+    return `<div id="model-panel"><p>${state.model?'A compatible demo model is installed.':'No compatible model is installed. Recordings remain available for later transcription.'}</p><p class="muted">Model actions below are simulated. No package is read and no download is made.</p><div class="row wrap">${button('import-model','Import model package...')}${button('remove-model','Simulate no model','quiet',!state.model?'disabled':'')}</div><div><label for="model-url">Model package URL</label><input id="model-url" data-field="modelUrl" placeholder="https://example.com/model.zip" value="${esc(state.modelUrl)}"></div>${button('download-model','Download selected package')}${state.jobs.length?'<p class="muted">Installing a model does not run demo jobs automatically; use Retry to simulate transcription.</p>':''}</div>`;
+  }
+  function advanced(){
+    return detail('advanced','Destination and local model',`<div><label for="destination">Local destination</label><div class="row"><input id="destination" data-field="destination" value="${esc(state.destination)}" ${active()?'disabled':''}>${button('choose-folder','Choose...','',active()?'disabled':'')}</div><p class="muted">Demo path only. Production uses a native folder picker.</p></div>${detail('model','Local transcription model',modelSettings())}`);
+  }
+  function permission(){
+    return `<div class="permission-block stack gap8"><label class="permission"><input id="permission" type="checkbox" data-field="permission" ${state.permission?'checked':''} ${active()?'disabled':''}><span>I have permission to record every person whose audio may be captured.</span></label><p class="muted">This confirmation is not a guarantee of legal compliance.</p></div>`;
+  }
+  function setup(){
+    return `<div class="setup">${sourceControls()}${devices()}${captureWarning()}<div class="field-grid">${metadata()}</div>${advanced()}${permission()}</div>`;
+  }
+  function status(){
+    return `<span class="status ${state.status}" role="status" aria-live="polite"><span class="dot"></span><span>${state.status==='Idle'?'Ready to record':state.status==='Recording'?'Recording / simulated':'Paused / simulated'}</span></span>`;
+  }
+  function actions(){
+    return `<div class="row actions">${state.status==='Idle'?button('start',`${icons.audio}<span>Start recording</span>`,'primary row'):`${button(state.status==='Paused'?'resume':'pause',state.status==='Paused'?'Resume':'Pause')}${button('stop','Stop and save','stop')}`}</div>`;
+  }
+  function clock(){return `<div class="clock" id="clock" role="timer" aria-label="Captured duration">${duration()}</div>`}
+  function levels(){
+    if(!active())return '<p class="muted" style="margin:12px 0">Audio levels appear during capture</p>';
+    return `<div class="levels" aria-hidden="true">${Array.from({length:45},(_,i)=>`<i style="--bar:${8+((i*17)%36)}px;--i:${i}"></i>`).join('')}</div><p class="muted">Simulated audio levels / not a live input</p><div class="field-grid" style="margin-top:12px"><div><label for="mic-level">Microphone level</label><progress id="mic-level" max="1" value="${state.source==='system'||state.status==='Paused'?0:.4}"></progress></div><div><label for="system-level">System level</label><progress id="system-level" max="1" value="${state.source==='mic'||state.status==='Paused'?0:.6}"></progress></div></div>`;
+  }
+  function meetings(compact=false){
+    const matches = state.recordings.filter(r=>`${r.title} ${r.language} ${r.transcript.map(t=>t[1]).join(' ')}`.toLowerCase().includes(state.query.toLowerCase()));
+    return `<div class="meeting-list">${matches.length?matches.map(r=>`<button class="meeting ${state.selected===r.id?'selected':''}" data-action="select" data-id="${r.id}" ${state.selected===r.id?'aria-current="true"':''}>${icons.audio}<span class="grow"><span class="name">${esc(r.title)}</span><span class="meta">${esc(r.date)} / ${esc(r.duration)}${compact?'':` / ${esc(r.language)}`}</span></span>${badge(r.status)}</button>`).join(''):`<div class="empty">${state.recordings.length?'No matching meetings. Try another title or phrase.':'No recordings yet.<br>Your first meeting will appear here.'}</div>`}</div>`;
+  }
+  function search(){
+    return `<label for="search" class="row spread"><span>Search meetings</span><span class="concept">Concept</span></label><input id="search" data-field="query" type="search" placeholder="Title or transcript phrase" value="${esc(state.query)}">`;
+  }
+  function jobs(){
+    return `<div class="jobs">${state.jobs.length?state.jobs.map(j=>`<div class="job"><span class="grow"><strong>${esc(j.title)}</strong><br><span class="muted">Local transcription</span></span>${badge(j.status)}${j.status==='Queued'||j.status==='Running'?button('cancel-job','Cancel','',`data-id="${j.id}"`):button('retry-job','Retry','',`data-id="${j.id}"`)}</div>`).join(''):'<p class="muted">No transcription jobs.</p>'}</div>`;
+  }
+  function review(){
+    const r=state.recordings.find(r=>r.id===state.selected);
+    if(!r)return `<div class="review empty"><h2>Your meeting, ready to revisit</h2><p>Select a recording to review its transcript.</p></div>`;
+    return `<article class="review"><div class="review-heading"><div class="row spread wrap">${badge(r.status)}<span class="concept">Inline review / concept</span></div><h2>${esc(r.title)}</h2><p class="muted">${esc(r.date)} / ${esc(r.duration)} / ${esc(r.language)}</p><div class="tools">${button('open-folder','Open output folder')}${button('retry-job','Transcribe again','',`data-id="${r.id}" ${!state.model||r.status==='Running'||r.status==='Queued'?'disabled':''}`)}${r.status==='Queued'||r.status==='Running'?button('cancel-job','Cancel job','',`data-id="${r.id}"`):''}</div></div><div class="rule"></div>${r.transcript.length?`<div class="row spread wrap"><h3>Transcript</h3><span class="muted">Synthetic sample / not an actual meeting</span></div><div class="transcript">${r.transcript.map(([time,text])=>`<div class="segment"><span class="timestamp">${time}</span><p>${esc(text)}</p></div>`).join('')}</div><div class="tools">${button('view-transcript','View transcript')}${button('output-txt','Transcript TXT')}${button('output-srt','Subtitles SRT')}</div>`:`<div class="empty"><h3>${r.status==='Saved'?'Audio saved. Transcribe when ready.':r.status==='Cancelled'?'Transcription cancelled. Your audio is safe.':'Your transcript is not ready yet.'}</h3><p>${!state.model?'Install a compatible local model to transcribe this recording.':r.status==='Running'?'Demo transcription is running.':'Use the job controls to retry or cancel.'}</p>${state.model&&r.status!=='Running'?button('retry-job','Retry transcription','',`data-id="${r.id}"`):!state.model?button('model-settings','Set up local model'):''}</div>`}</article>`;
+  }
+  function VariantA(){
+    if(state.page==='library')return `<main class="page"><div class="intro"><h1>Meeting library</h1><p class="muted">Find a recording. Read what was said. Keep everything local.</p></div><div class="library-layout"><aside>${search()}${meetings()}${detail('jobs','Transcription jobs',jobs())}</aside>${review()}</div></main>`;
+    return `<main class="page"><div class="intro"><h1>Record your next meeting</h1><p class="muted">Choose what to capture, confirm permission, and start.</p></div><div class="capture-layout"><section class="capture-main ${state.status}" aria-label="Capture"><div class="capture-title"><h2>${esc(state.title||'New recording')}</h2>${status()}</div><div class="capture-face">${clock()}${levels()}${actions()}</div><div class="rule"></div>${permission()}<p class="muted" style="margin-top:14px">Stopping saves the audio${state.model?' and queues local transcription':''}.</p></section><section aria-label="Recording setup">${setup().replace(permission(),'')}</section></div><section class="section"><div class="row spread section-title"><h2>Recent meetings</h2>${button('library-page','View library','quiet')}</div>${meetings(true)}</section>${detail('jobs','Transcription jobs',jobs())}</main>`;
+  }
+  function VariantB(){
+    return `<main><div class="workspace"><aside class="library-rail"><h2>Meetings</h2>${search()}${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside><div class="reading-pane">${review()}</div></div><section class="record-dock" aria-label="Persistent capture controls"><div class="row spread"><div class="grow"><h2>${esc(state.title||'New meeting')}</h2>${status()}</div>${clock()}${actions()}</div>${detail('dock','Recording setup and permission',setup(),!state.recordings.length&&!state.permission&&!active())}</section></main>`;
+  }
+  function VariantC(){
+    const stepNames=['Audio source','Meeting details','Record'];
+    let content='';
+    if(state.step===0)content=`<h1>What should we capture?</h1><p class="muted">Choose the inputs for this meeting.</p><div class="setup">${sourceControls()}${devices()}${captureWarning()}${detail('model','Local transcription model',modelSettings())}</div>`;
+    if(state.step===1)content=`<h1>Make it easy to find later</h1><p class="muted">Add an optional title and select the spoken language.</p><div class="setup">${metadata()}${advanced()}</div>`;
+    if(state.step===2)content=`<div class="row spread wrap"><h1>${active()?'Your meeting is in progress':'Ready when you are'}</h1>${status()}</div><p class="muted">${esc(state.title||'Untitled recording')} / ${esc(state.language)} / ${state.source==='both'?'Microphone and system audio':state.source==='mic'?'Microphone only':'System audio only'}</p><div class="capture-face ${state.status}">${clock()}${levels()}${actions()}</div><div class="stack">${captureWarning()}${permission()}${!state.model?'<p class="warning">Recording works without a model. Transcription will need model setup later.</p>':''}</div>`;
+    return `<main class="guided-shell"><nav class="steps" aria-label="Recording setup steps">${stepNames.map((n,i)=>button('step',`<b>${i+1}</b><span>${n}</span>`,`step ${i<state.step?'done':''}`,`data-value="${i}" ${i===state.step?'aria-current="step"':''} ${active()?'disabled':''}`)).join('')}</nav><section class="guided-main">${content}<div class="step-controls">${state.step>0?button('back','Back','',active()?'disabled':''):'<span></span>'}${state.step<2?button('next','Continue','primary'):button('restart','Set up another recording','quiet',active()?'disabled':'')}</div></section><aside class="guided-aside"><h2>Recent meetings</h2><p class="muted" style="margin-bottom:12px">Select a meeting to review.</p>${meetings(true)}${detail('jobs','Transcription jobs',jobs())}</aside>${state.page==='library'?`<div style="grid-column:1/-1">${review()}</div>`:''}</main>`;
+  }
+  function renderState(){
+    const output=document.getElementById('state-output');
+    if(output)output.textContent=JSON.stringify({...state,openDetails:[...state.openDetails],recordings:state.recordings.map(({transcript,...r})=>({...r,transcriptSegments:transcript.length}))},null,2);
+  }
+  function PrototypeSwitcher(){
+    return `<nav class="switcher" aria-label="Prototype variants">${button('previous',icons.left,'','aria-label="Previous variant"')}<span class="label"><strong>${state.variant} / ${names[state.variant]}</strong><small>Compare layouts / left and right keys</small></span>${button('next-variant',icons.right,'','aria-label="Next variant"')}</nav>`;
+  }
+  function render(){
+    const app=document.getElementById('app');
+    app.className=`app ${state.variant}`;
+    const liveDock=active()&&state.variant!=='B'?`<section class="live-dock row spread wrap" aria-label="Persistent capture controls">${status()}<span class="live-time">${duration()}</span>${actions()}</section>`:'';
+    app.innerHTML=header()+liveDock+({A:VariantA,B:VariantB,C:VariantC}[state.variant])()+detail('state','Prototype state / in memory only','<pre id="state-output"></pre>');
+    app.lastElementChild.classList.add('state-details');
+    document.getElementById('switcher').innerHTML=PrototypeSwitcher();
+    renderState();
+  }
+  let noticeTimer;
+  function notify(message){
+    state.message=message;
+    clearTimeout(noticeTimer);
+    const notice=document.getElementById('notice');
+    notice.className='toast';notice.textContent=message;
+    renderState();
+    noticeTimer=setTimeout(()=>{notice.className='';notice.textContent=''},6000);
+  }
+  function changeVariant(offset){
+    state.variant=variants[(variants.indexOf(state.variant)+offset+variants.length)%variants.length];
+    const url=new URL(location.href);url.searchParams.set('variant',state.variant);history.replaceState(null,'',url);
+    render();
+    document.querySelector(`[data-action="${offset<0?'previous':'next-variant'}"]`).focus();
+  }
+  function showModel(){
+    state.openDetails.add('model');state.openDetails.add('advanced');state.openDetails.add('dock');
+    if(state.variant==='A')state.page='record';
+    if(state.variant==='C'&&!active())state.step=0;
+    render();
+    const panel=document.getElementById('model-panel');
+    if(panel){panel.scrollIntoView({block:'center',behavior:'instant'});panel.querySelector('button').focus()}
+    else notify('Stop the demo recording before changing the local model.');
+  }
+  function retry(id){
+    const recording=state.recordings.find(r=>r.id===id);
+    if(!recording)return;
+    if(!state.model){showModel();notify('Install a compatible demo model before retrying.');return}
+    if(state.jobs.some(j=>j.status==='Running')){notify('One local transcription runs at a time. Finish or cancel the running demo job first.');return}
+    let job=state.jobs.find(j=>j.id===id);
+    if(!job){job={id,title:recording.title,status:'Running'};state.jobs.push(job)}
+    job.status='Running';recording.status='Running';render();
+    setTimeout(()=>{
+      if(!state.jobs.includes(job)||job.status!=='Running')return;
+      job.status='Completed';recording.status='Completed';
+      if(!recording.transcript.length)recording.transcript=recording.language==='Brazilian Portuguese'?[['00:00','Esta e uma transcricao sintetica para avaliar a interface. Nenhum audio foi capturado.']]:[['00:00','This is a synthetic transcript for reviewing the interface. No audio was captured.']];
+      render();notify('Demo transcript ready. No speech recognition was performed.');
+    },3000);
+  }
+  document.addEventListener('click',event=>{
+    const target=event.target.closest('[data-action]');if(!target||target.disabled)return;
+    const action=target.dataset.action,id=Number(target.dataset.id);
+    if(action==='previous'||action==='next-variant'){changeVariant(action==='previous'?-1:1);return}
+    if(action==='source')state.source=target.dataset.value;
+    if(action==='record-page')state.page='record';
+    if(action==='library-page')state.page='library';
+    if(action==='select'){state.selected=id;if(state.variant==='A')state.page='library';if(state.variant==='C')state.page='library'}
+    if(action==='step')state.step=Number(target.dataset.value);
+    if(action==='next')state.step=Math.min(2,state.step+1);
+    if(action==='back')state.step=Math.max(0,state.step-1);
+    if(action==='restart'){state.step=0;state.title='';state.permission=false;state.seconds=0}
+    if(action==='model-settings'){showModel();return}
+    if(action==='start'){
+      if(!state.permission){
+        state.openDetails.add('dock');render();
+        const checkbox=document.getElementById('permission');checkbox?.scrollIntoView({block:'center'});checkbox?.focus();
+        notify('Confirm permission to record before starting the demo.');return;
+      }
+      if(state.scenario==='error'){notify('Demo device error: the selected microphone is unavailable. Choose the Sample meetings scenario to retry.');return}
+      if(!state.destination.trim()){state.openDetails.add('advanced');state.openDetails.add('dock');render();document.getElementById('destination')?.focus();notify('Choose a local destination before starting.');return}
+      state.status='Recording';state.seconds=0;notify('Simulated capture started. No microphone or playback device is accessed.');
+    }
+    if(action==='pause')state.status='Paused';
+    if(action==='resume')state.status='Recording';
+    if(action==='stop'){
+      state.status='Idle';
+      const r={id:state.nextId++,title:state.title.trim()||'Untitled meeting',date:'Just now / demo',duration:duration(),language:state.language,status:state.model?'Queued':'Saved',transcript:[]};
+      state.recordings.unshift(r);state.selected=r.id;state.permission=false;
+      if(state.model)state.jobs.push({id:r.id,title:r.title,status:'Queued'});
+      if(state.variant!=='A')state.page='library';
+      notify('Demo recording saved in memory only. '+(state.model?'Transcription queued; select Retry to simulate it.':'Set up a model to transcribe later.'));
+    }
+    if(action==='cancel-job'){
+      const job=state.jobs.find(j=>j.id===id),r=state.recordings.find(r=>r.id===id);
+      if(job)job.status='Cancelled';if(r)r.status='Cancelled';
+      notify('Demo transcription cancelled. The synthetic recording remains available.');
+    }
+    if(action==='retry-job'){retry(id);return}
+    if(action==='import-model'){state.model=true;notify('Compatible demo model activated. No package was imported.')}
+    if(action==='remove-model'){state.model=false;notify('Demo model removed. Audio capture remains available.')}
+    if(action==='download-model'){
+      try{const url=new URL(state.modelUrl);if(!['http:','https:'].includes(url.protocol))throw new Error('protocol')}
+      catch{notify('Enter an HTTP or HTTPS package URL to simulate download.');document.getElementById('model-url').focus();return}
+      state.model=true;notify('Demo download completed. No network request was made.');
+    }
+    if(action==='choose-folder'){document.getElementById('destination').focus();notify('Edit the demo destination field. No real folder picker or filesystem access.');return}
+    if(action==='open-folder')notify(`Demo folder: ${state.destination}. Explorer is not opened.`);
+    if(action==='output-txt'||action==='output-srt')notify(`Demo output: ${state.destination}\\meeting.${action==='output-txt'?'txt':'srt'}. No file is written.`);
+    if(action==='view-transcript')notify('Inline transcript review is a proposed replacement for the production transcript viewer.');
+    render();
+    if(['step','next','back','restart'].includes(action)){
+      const heading=document.querySelector('.guided-main h1');
+      if(heading){heading.tabIndex=-1;heading.focus();heading.scrollIntoView({block:'start'})}
+    }
+  });
+  document.addEventListener('input',event=>{
+    const field=event.target.dataset.field;if(!field)return;
+    state[field]=event.target.type==='checkbox'?event.target.checked:event.target.value;
+    if(field==='query'){
+      const input=event.target,position=input.selectionStart;render();
+      const next=document.getElementById('search');next.focus();next.setSelectionRange(position,position);
+    }else renderState();
+  });
+  document.addEventListener('toggle',event=>{
+    const id=event.target.dataset.detail;if(!id)return;
+    event.target.open?state.openDetails.add(id):state.openDetails.delete(id);renderState();
+  },true);
+  document.getElementById('scenario').addEventListener('change',event=>{
+    state.scenario=event.target.value;state.status='Idle';state.seconds=0;state.permission=false;state.query='';state.step=0;
+    state.recordings=state.scenario==='empty'?[]:samples.map(r=>({...r}));
+    state.jobs=state.scenario==='empty'?[]:[{id:3,title:'Revisao do projeto',status:'Queued'}];
+    state.selected=state.scenario==='empty'?null:1;state.model=state.scenario!=='no-model';render();
+    notify('Demo scenario changed. All sample state is in memory.');
+  });
+  document.addEventListener('keydown',event=>{
+    if(event.defaultPrevented||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.target.closest('input,textarea,select,[contenteditable],summary'))return;
+    if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();changeVariant(event.key==='ArrowLeft'?-1:1)}
+  });
+  addEventListener('popstate',()=>{const v=new URLSearchParams(location.search).get('variant');state.variant=variants.includes(v)?v:'A';render()});
+  setInterval(()=>{if(state.status==='Recording'){state.seconds++;const clockNode=document.getElementById('clock');if(clockNode)clockNode.textContent=duration();document.querySelectorAll('.live-time').forEach(node=>node.textContent=duration());renderState()}},1000);
+  render();
+</script>
+</body>
+</html>

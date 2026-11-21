@@ -2,6 +2,21 @@
 
 Offline Windows 11 x64 desktop recorder for microphone and system audio, with local Whisper transcription.
 
+## Throwaway meeting UX prototype
+
+This branch compares three browser layouts without changing the production WPF application:
+
+```powershell
+.\scripts\prototype-ui.ps1
+```
+
+Requires Python 3. Open `http://127.0.0.1:18761/meeting-recorder.html?variant=A`.
+Use the floating arrows or left/right keys to compare **A: Recording first**, **B: Meeting workspace**, and **C: Guided capture**. Keys do not switch variants while editing controls.
+
+The prototype lives next to the desktop UI in `src\SoundRecorder.Desktop\Prototypes\meeting-recorder.html`. All meetings, capture, levels, models, jobs, and outputs are simulated. No microphone, playback device, network model download, clipboard, Explorer, or application storage is accessed. State resets on reload; only the variant is retained in the URL. Use the demo scenario selector to explore missing models, an empty library, or a capture-device error. After stopping, use Retry to run a simulated transcription.
+
+Search and inline transcript review are proposed capabilities, not production features. The open question is which hierarchy best supports meeting capture and transcript review. A prioritizes capture, B prioritizes finding and reading past meetings with a persistent capture dock, and C prioritizes guided setup. No winner has been selected; native WPF implementation and an implementation-issue decision pointer are deferred until selection.
+
 ## Build
 
 ```powershell
