@@ -95,7 +95,7 @@ Feature: Transcribe saved recordings locally
     And the user is offered an explicit retry of the interrupted job
     And the interrupted job is not silently restarted
 
-  @meeting_workspace @planned
+  @meeting_workspace
   Scenario: Keep a local recording history with explicit artifact deletion
     Given recordings and transcription jobs exist
     When the app restarts
@@ -106,7 +106,7 @@ Feature: Transcribe saved recordings locally
     And missing files are not silently recreated
     And recordings and transcripts are deleted only after an explicit confirmed deletion request
 
-  @meeting_workspace @planned
+  @meeting_workspace
   Scenario: Keep unapproved transcription capabilities outside scope
     Then version one does not require live transcription
     And version one does not require importing existing audio files

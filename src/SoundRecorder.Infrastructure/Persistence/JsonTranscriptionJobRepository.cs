@@ -45,7 +45,9 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
                 state.CreatedAt,
                 state.Status,
                 state.Outputs,
-                state.Error))
+                state.Error,
+                state.ModelId,
+                state.InterruptionReason))
             .ToArray();
         InfrastructureLog.TranscriptionJobsLoaded(_logger, jobs.Length);
         return jobs;
@@ -69,7 +71,9 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
                         job.Status,
                         job.CreatedAt,
                         job.Outputs,
-                        job.Error))
+                        job.Error,
+                        job.ModelId,
+                        job.InterruptionReason))
                     .ToArray();
                 await JsonSerializer.SerializeAsync(stream, states, JsonOptions, cancellationToken);
             }
@@ -89,5 +93,7 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
         TranscriptionJobStatus Status,
         DateTimeOffset CreatedAt,
         TranscriptOutputs? Outputs,
-        string? Error);
+        string? Error,
+        string? ModelId = null,
+        string? InterruptionReason = null);
 }

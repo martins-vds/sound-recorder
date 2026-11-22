@@ -2,36 +2,25 @@
 
 Offline Windows 11 x64 desktop recorder for microphone and system audio, with local Whisper transcription.
 
-## Throwaway meeting UX prototype
+## Native meeting workspace
 
-Prototype **B (Meeting workspace)** was approved on 2026-11-21. The browser reference is preserved without changing the production WPF application:
+The WPF workspace follows approved prototype **B**: a searchable meeting library on the left, transcript review on the right, and persistent capture controls below. Search covers saved titles and retained transcript text. Capture setup and permission remain independent of the selected meeting.
 
-```powershell
-.\scripts\prototype-ui.ps1
-```
+Playback opens the selected real WAV only when requested, supports pause/seek/volume, and pauses when leaving review. Completed TXT/SRT remain available after job-history or audio-only deletion; another attempt's recognition progress does not replace the completed transcript.
 
-Requires Python 3. Open `http://127.0.0.1:18761/meeting-recorder.html?variant=A`.
-Select `?variant=B` for the approved layout. A and C remain historical alternatives; keys do not switch variants while editing controls.
+**Downloaded models** contains only complete, locally verified artifacts. **Download other models** offers all 12 Whisper.net 1.9.1 model families and six encodings: 72 choices. Downloads use pinned-revision metadata and SHA-256 verification, show real transferred-byte progress or an indeterminate state, and expose verification separately. Progress remains in the header after leaving settings. Import/download registration never changes selection; selecting a model is explicit. English-only choices stay listed but are not silently substituted for Brazilian Portuguese transcription.
 
-The prototype lives next to the desktop UI in `src\SoundRecorder.Desktop\Prototypes\meeting-recorder.html`. All meetings, capture, levels, models, jobs, and outputs are simulated. No microphone or device-capture access, network model download, clipboard, Explorer, or application storage is used. State resets on reload; only the variant is retained in the URL. Use the demo scenario selector to explore missing models, an empty library, or a capture-device error. After stopping, use Start/Restart to run a simulated transcription.
+Each new job snapshots its model and language at enqueue. **Stop** interrupts a running attempt; **Cancel** also handles queued work. Restart creates a new attempt from the beginning and preserves earlier outputs. Pause/resume transcription is unavailable. Recognition percentages are coarse audio-position estimates, not elapsed time or whole-job completion; preparation and output writing remain indeterminate. Both final output files must be published before Completed.
 
-Use the model button in any layout to choose from **Downloaded models** (initially synthetic Tiny and Base). **Download other models** offers all 12 model families and all 6 encodings in the pinned Whisper.net 1.9.1 downloader: 72 model files, including English-only variants. Sources: [GgmlType](https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/Ggml/GgmlType.cs), [QuantizationType](https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/Ggml/QuantizationType.cs), and the [v4 model mirror](https://huggingface.co/sandrohanea/whisper.net/tree/v4). Custom compatible GGML packages remain an import concept; auxiliary VAD models and platform-specific encoder bundles are not transcription-model choices.
+**Delete recording** confirms either audio-only removal or removal of audio, all owned transcript/subtitle pairs, and associated history. Related workers and playback handles are released first. Partial deletion remains actionable and retryable rather than being reported as complete. **Delete job** removes terminal history only, retaining audio and owned outputs. Downloaded models and unrelated recordings are untouched.
 
-Downloads show simulated percentage progress both in the model section and in the header, can be cancelled, and enter the downloaded selector only after simulated verification. They never change the selected model automatically. Choose **Model download error** to demonstrate failure/retry without losing existing models. English-only models remain listed but cannot be used for Brazilian Portuguese transcription. Recording remains available without a compatible selected model. Existing running jobs keep their original model selection. No real model management or downloads are implemented.
-
-Recording review includes functional native audio controls while the transcript remains readable. The local `demo-recording.wav` is a copy of the repository's existing Windows-SAPI-generated test fixture: a 7-second synthetic speech clip, not the illustrative meeting/transcript. Audio plays only when requested; no speech alignment is implied. Playback is paused when leaving review or confirming deletion.
-
-**Delete recording** opens a confirmation with two scopes: audio only (retain TXT, SRT, transcript content, and library/job history; disable playback/retranscription), or audio and all associated generated artifacts/history. Related queued/running work is cancelled before removal; downloaded models are untouched. **Delete job** removes only terminal job history, keeping audio and completed outputs. Running/queued jobs must be stopped or cancelled first. Deletion is in-memory only; no actual file is deleted.
-
-**View transcription jobs** exposes Start/Restart, Stop, Cancel, and Delete. Stop interrupts one running job; Cancel also handles queued work. Both discard the current attempt, retain previously completed outputs, and restart from the beginning. Pause is visibly disabled because Whisper.net 1.9.1 has no safe pause/resume or checkpoint API. The library's [`WithProgressHandler(OnProgressHandler)`](https://github.com/sandrohanea/whisper.net/blob/1.9.1/Whisper.net/WhisperProcessorBuilder.cs#L462) reports coarse integer, audio-position-based recognition percentages; it does not report model loading, preprocessing, or output writing. The prototype shows indeterminate loading/writing, coarse recognition estimates below 100, and success only after simulated output writing. **Worker without progress** demonstrates an indeterminate fallback without fabricated percentages. The production worker currently forwards start/result messages, not progress; real progress/control wiring is not implemented here.
-
-The frozen reference is branch `prototype/approved-meeting-workspace-b` at commit `8410c7782506313510ae917d3f160a08f47e769e`. Its B layout prioritizes finding and reading meetings with a persistent capture dock. Keep the prototype and its simulations off the production branch.
+The implementation is not release-certified until the strict quality, full visual matrix, and native/device acceptance gates are complete. The frozen browser reference remains on `prototype/approved-meeting-workspace-b` at `8410c7782506313510ae917d3f160a08f47e769e`; its synthetic media and simulations are not production behavior. See the implementation plan for opening its separate reference worktree.
 
 ## Approved implementation plan and specifications
 
 Follow the [meeting workspace implementation plan](requirements/meeting-workspace-implementation-plan.md). It includes the frozen-reference worktree/preview command, approved public test seams, migration and ownership requirements, dependency-ordered vertical slices, and mandatory side-by-side prototype checks before editing, after the first runnable change, and before every UI-slice commit.
 
-The Core and native UI Gherkin files are discoverable and unignored, tagged `@meeting_workspace @planned`. This is planning only: new bindings and behavior are not implemented, and undefined/unexecuted scenarios are incomplete evidence, not passing tests. The full suites may not pass until those scenarios are implemented. Add bindings and implementation one red-green slice at a time; preserve existing regression behavior while adopting B's navigation.
+The Core and native UI Gherkin files are executable and discoverable. Completed workspace scenarios are unignored; remaining `@planned` markers are tracking metadata, not skip instructions. Undefined, skipped, or unexecuted scenarios remain incomplete evidence. Native/device release acceptance is separate from the deterministic workspace tests.
 
 Each new transcription job retains its model and language at enqueue; later selection changes affect only new jobs. During implementation, keep [the scoped visual-reference instructions](.github/instructions/approved-meeting-workspace.instructions.md) active and record repeated comparison evidence as required by the plan.
 
@@ -104,11 +93,11 @@ Run the FlaUI/UIA3 scenarios on an unlocked Windows interactive desktop. Do not 
 dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj
 ```
 
-The four feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover recording controls and validation, model setup and errors, history and transcription jobs, accessible labels/live regions, keyboard activation, minimization/restoration, and explicit close choices. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
+The six feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover workspace navigation/search, recording controls, playback/artifact deletion, model setup/progress, transcription jobs, accessibility, and lifecycle. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
 
 `MainWindow` loads the shared native WPF styles from `src\SoundRecorder.Desktop\Themes\RecorderTheme.xaml`, so the desktop app and isolated host use the same typography, spacing, and controls. Colors use dynamic Windows system brushes. Recording actions, status, captured duration, and feedback stay visible while setup and history scroll; model controls use the available width rather than a fixed URL field. The layout scenarios check the 760 x 560 and 980 x 720 window sizes using DPI-aware bounds and save local screenshots under the UI test output's `TestResults\Layout\` folder.
 
-Capture, recognition, package selection, notification-area, clipboard, and Explorer effects use test adapters. Model package compatibility/SHA-256 validation and local history/job/transcript persistence use the real adapters. A small fixture window raises the notification-area restore event without touching the real system tray. No microphone, user recording/history, native transcription model, download, or system clipboard is used. These tests verify UI wiring, not real-device audio integrity, native recognition, screen-reader behavior, or release acceptance thresholds.
+Capture, recognition, audio output, package selection, notification-area, clipboard, and Explorer effects use controlled adapters. WAV/TXT/SRT files, package/inventory validation, owned-artifact deletion, and history persistence are real. Model-download cases use an in-memory HTTP handler with tiny synthetic GGML bytes, actual staging/SHA-256 checks, and controlled transfer/verification gates. No microphone, user recording/history, physical audio output, real network download, or system clipboard is used. These tests verify UI wiring, not real-device audio integrity, native recognition, screen-reader behavior, or release acceptance thresholds.
 
 ## Quality gates
 
@@ -116,7 +105,7 @@ Capture, recognition, package selection, notification-area, clipboard, and Explo
 dotnet tool restore
 Push-Location .\tests\SoundRecorder.Core.Tests
 try {
-    dotnet tool run dotnet-stryker --config-file ..\..\stryker-config.json
+    dotnet stryker --config-file ..\..\stryker-config.json --project SoundRecorder.Core.csproj
 } finally {
     Pop-Location
 }

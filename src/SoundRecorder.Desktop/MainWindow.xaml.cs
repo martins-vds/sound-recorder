@@ -122,14 +122,16 @@ public partial class MainWindow : Window
         var jobRepository = new JsonTranscriptionJobRepository(
             Path.Combine(root, "jobs.json"),
             loggerFactory.CreateLogger<JsonTranscriptionJobRepository>());
+        var history = new JsonRecordingHistory(
+            Path.Combine(root, "history.json"),
+            loggerFactory.CreateLogger<JsonRecordingHistory>());
         var queue = new TranscriptionQueue(
             transcriber,
             writer,
             jobRepository,
-            loggerFactory.CreateLogger<TranscriptionQueue>());
-        var history = new JsonRecordingHistory(
-            Path.Combine(root, "history.json"),
-            loggerFactory.CreateLogger<JsonRecordingHistory>());
+            loggerFactory.CreateLogger<TranscriptionQueue>(),
+            modelManager,
+            history);
         var recorder = new RecorderApplication(
             recordingEngine,
             queue,
@@ -141,6 +143,16 @@ public partial class MainWindow : Window
                 Path.Combine(root, "capture"),
                 loggerFactory.CreateLogger<LocalRecoveryStorage>()),
             loggerFactory.CreateLogger<RecoveryManager>());
+        var playback = new WindowsRecordingPlayback();
+        var library = new RecordingLibrary(history, jobRepository, loggerFactory.CreateLogger<RecordingLibrary>(),
+            queue.CancelRecordingAsync, queue.DeleteJobAsync, (recordingId, token) =>
+                Dispatcher.InvokeAsync(() =>
+                {
+                    if (playback.RecordingId == recordingId)
+                    {
+                        playback.Close();
+                    }
+                }, DispatcherPriority.Normal, token).Task);
         _viewModel = new MainViewModel(
             recorder,
             recordingEngine,
@@ -149,7 +161,9 @@ public partial class MainWindow : Window
             history,
             recovery,
             devices,
-            loggerFactory.CreateLogger<MainViewModel>());
+            loggerFactory.CreateLogger<MainViewModel>(),
+            library,
+            playback);
         _dialogs = dialogs();
         _environment = environment();
         _lifecycleEvents = lifecycleEvents(recordingEngine);
@@ -210,6 +224,54 @@ public partial class MainWindow : Window
         ChooseDestination();
     }
 
+    private void HistoryList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs args)
+    {
+        if (args.AddedItems.OfType<SavedRecording>().FirstOrDefault() is { } recording)
+        {
+            _viewModel.SelectedRecording = recording;
+            _viewModel.ShowLibraryCommand.Execute(null);
+        }
+    }
+
+    private async void DeleteRecording_Click(object sender, RoutedEventArgs args)
+    {
+        var recording = DeletableRecording();
+        if (recording is null)
+        {
+            await _viewModel.DeleteRecordingAsync(false);
+            return;
+        }
+        await ConfirmRecordingDeletionAsync(recording);
+        DeleteRecordingButton.Focus();
+    }
+
+    private SavedRecording? DeletableRecording() => _viewModel.CanDeleteRecording ? _viewModel.SelectedRecording : null;
+
+    private async Task ConfirmRecordingDeletionAsync(SavedRecording recording)
+    {
+        var dialog = new RecordingDeletionDialog(_viewModel.SelectedRecordingTitle, recording.AudioDeleted)
+        {
+            Owner = this,
+            DataContext = _viewModel,
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            await _viewModel.DeleteRecordingAsync(dialog.DeleteAllArtifacts);
+        }
+    }
+
+    private void StartButton_Click(object sender, RoutedEventArgs args)
+    {
+        if (!_viewModel.PermissionConfirmed)
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                PermissionCheckBox.BringIntoView();
+                PermissionCheckBox.Focus();
+            }, DispatcherPriority.Loaded);
+        }
+    }
+
     /// <summary>Changes the output destination only after a folder has been selected.</summary>
     public void ChooseDestination()
     {
@@ -240,7 +302,11 @@ public partial class MainWindow : Window
 
     private async void ViewTranscript_Click(object sender, RoutedEventArgs args)
     {
-        await ViewTranscriptAsync();
+        await _viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+        if (_viewModel.Transcript is not null)
+        {
+            _viewModel.ShowLibraryCommand.Execute(null);
+        }
     }
 
     /// <summary>Offers the selected transcript for viewing and explicit copying.</summary>
@@ -262,14 +328,47 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenOutputFolder_Click(object sender, RoutedEventArgs args)
+    private void CopyTranscript_Click(object sender, RoutedEventArgs args)
     {
-        OpenOutputFolder(HistoryList.SelectedItem as SavedRecording);
+        if (_viewModel.CanCopyTranscript && _viewModel.Transcript is { } text)
+        {
+            _environment.CopyTranscript(text);
+        }
+        else
+        {
+            _logger.LogWarning("Transcript copying requested without an available completed transcript");
+            ShowMessage("Select an available completed transcript before copying.");
+        }
     }
 
-    /// <summary>Reveals an existing recording, reporting an externally missing file instead of recreating it.</summary>
+    private async void DeleteJobHistory_Click(object sender, RoutedEventArgs args)
+    {
+        if (!_viewModel.CanDeleteSelectedJob)
+        {
+            await _viewModel.DeleteSelectedJobHistoryAsync();
+            return;
+        }
+        if (_dialogs.Show("Audio and completed outputs will be kept. Delete only this job-history entry?",
+                "Delete transcription job history?", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                MessageBoxResult.No) == MessageBoxResult.Yes)
+        {
+            await _viewModel.DeleteSelectedJobHistoryAsync();
+        }
+    }
+
+    private void OpenOutputFolder_Click(object sender, RoutedEventArgs args)
+    {
+        OpenOutputFolder(_viewModel.SelectedRecording);
+    }
+
+    /// <summary>Reveals existing audio or an owned output retained after intentional audio deletion.</summary>
     public void OpenOutputFolder(SavedRecording? recording)
     {
+        if (recording is { AudioDeleted: true })
+        {
+            RevealRetainedOutput(recording);
+            return;
+        }
         if (recording is not null && File.Exists(recording.AudioPath))
         {
             _environment.OpenRecordingFolder(recording.AudioPath);
@@ -279,6 +378,22 @@ public partial class MainWindow : Window
         if (recording is not null)
         {
             ShowMessage($"The recording file is missing: {recording.AudioPath}");
+        }
+    }
+
+    private void RevealRetainedOutput(SavedRecording recording)
+    {
+        var output = recording.TranscriptOutputs.Reverse()
+            .SelectMany(item => new[] { item.Outputs.TextPath, item.Outputs.SubtitlePath })
+            .FirstOrDefault(File.Exists);
+        if (output is not null)
+        {
+            _environment.OpenRecordingFolder(output);
+        }
+        else
+        {
+            _logger.LogWarning("Retained output files unavailable for recording {RecordingId}", recording.Id);
+            ShowMessage("No retained output file is available. Check the recording's output files.");
         }
     }
 
@@ -438,12 +553,21 @@ public partial class MainWindow : Window
             }
             await _viewModel.StopActiveWorkAsync();
         }
+        await _viewModel.PrepareViewCloseAsync();
         _allowClose = true;
         Close();
     }
 
     protected override async void OnClosing(CancelEventArgs args)
     {
+        if (ShouldDrainViewBeforeClosing())
+        {
+            args.Cancel = true;
+            await _viewModel.PrepareViewCloseAsync();
+            _allowClose = true;
+            Close();
+            return;
+        }
         if (_allowClose || !_viewModel.HasActiveWork())
         {
             _allowClose = true;
@@ -469,6 +593,9 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool ShouldDrainViewBeforeClosing() =>
+        !_allowClose && !_viewModel.HasActiveWork() && _viewModel.HasPendingViewWork;
+
     private async Task StopAndCloseAsync()
     {
         try
@@ -481,6 +608,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            await _viewModel.PrepareViewCloseAsync();
             _allowClose = true;
             Close();
         }
@@ -508,6 +636,7 @@ public partial class MainWindow : Window
 
     private void DisposeWindowServices()
     {
+        _viewModel.ReleaseViewResources();
         _environment.Dispose();
         _captureLifetime?.Dispose();
         if (_lifecycleEvents is not null)

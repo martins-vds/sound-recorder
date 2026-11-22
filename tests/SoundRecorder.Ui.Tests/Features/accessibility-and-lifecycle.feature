@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Access desktop controls and close active work explicitly
   Tests use the Windows accessibility tree in an interactive desktop session.
   Notification-area integration and real power interruptions are outside this fixture suite.

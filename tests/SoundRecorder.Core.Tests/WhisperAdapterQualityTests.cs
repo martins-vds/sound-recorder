@@ -8,6 +8,41 @@ public sealed class WhisperAdapterQualityTests : IDisposable
 {
     private readonly string _directory = Directory.CreateTempSubdirectory("recorder-whisper-tests-").FullName;
 
+    [Fact]
+    public async Task TranscribeAsync_ExplicitPinnedPathBypassesSelectionAndReportsRealPreparationAndRecognition()
+    {
+        var recording = Recording();
+        var original = await File.ReadAllBytesAsync(recording.AudioPath);
+        var seen = new List<TranscriptionProgress>();
+        var logger = new RecordingLogger<WhisperLocalTranscriber>();
+        string? processing = null;
+        var transcriber = new WhisperLocalTranscriber(new RejectModelLookup(), logger, (model, language, audio, _) =>
+        {
+            Assert.Equal("explicit-pinned.bin", model);
+            Assert.Equal("en", language);
+            processing = Assert.IsType<FileStream>(audio).Name;
+            return Task.FromResult<IReadOnlyList<TranscriptSegment>>([new(TimeSpan.Zero, TimeSpan.FromSeconds(.5), "speech")]);
+        });
+
+        var document = await transcriber.TranscribeAsync(new(Guid.NewGuid(), recording, "base-original", "explicit-pinned.bin"),
+            new TranscriptionProgressProtocolTests.Reporter(value => seen.Add(value)), default);
+
+        Assert.Equal(new TranscriptionProgress[] { new(TranscriptionPhase.Preparing), new(TranscriptionPhase.Recognizing) }, seen);
+        Assert.Equal("speech", Assert.Single(document.Segments).Text);
+        Assert.Contains(700, logger.EventIds);
+        Assert.Contains(701, logger.EventIds);
+        Assert.NotNull(processing);
+        Assert.False(File.Exists(processing));
+        Assert.Equal(original, await File.ReadAllBytesAsync(recording.AudioPath));
+    }
+
+    private sealed class RejectModelLookup : ITranscriptionModelStore
+    {
+        public bool HasCompatibleModel(string language) => throw new InvalidOperationException("An explicit path must not consult selection.");
+        public string? GetModelPath(string language) => throw new InvalidOperationException("An explicit path must not consult selection.");
+        public string? GetModelPath(string language, string? modelId) => throw new InvalidOperationException("An explicit path must not be substituted.");
+    }
+
     [Theory]
     [InlineData("English", "en")]
     [InlineData("Brazilian Portuguese", "pt")]
@@ -24,6 +59,7 @@ public sealed class WhisperAdapterQualityTests : IDisposable
             using var wave = new WaveFileReader(audio);
             Assert.Equal(16_000, wave.WaveFormat.SampleRate);
             Assert.Equal(1, wave.WaveFormat.Channels);
+            Assert.InRange(wave.TotalTime.TotalMilliseconds, 990, 1010);
             return Task.FromResult<IReadOnlyList<TranscriptSegment>>(
             [
                 new(TimeSpan.Zero, TimeSpan.FromSeconds(.5), "  hello  "),

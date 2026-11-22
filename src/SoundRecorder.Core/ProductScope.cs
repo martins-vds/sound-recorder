@@ -9,9 +9,9 @@ public static class ProductScope
     public const bool GuaranteesMixedLanguageAccuracy = false;
     public const bool IdentifiesSpeakers = false;
     public const bool EditsTranscripts = false;
-    public const bool PlaysAudioInApp = false;
-    public const bool SearchesRecordings = false;
-    public const bool DeletesRecordingsInApp = false;
+    public const bool PlaysAudioInApp = true;
+    public const bool SearchesRecordings = true;
+    public const bool DeletesRecordingsInApp = true;
     public const bool StartsRecordingOnAppLaunch = false;
     public const bool ProvidesGlobalRecordingHotkeys = false;
 }

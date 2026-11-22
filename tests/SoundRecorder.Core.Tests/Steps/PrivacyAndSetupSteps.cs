@@ -65,7 +65,7 @@ public sealed class PrivacyAndSetupSteps
     public void ThenTheInitialUserInterfaceIsInEnglish()
     {
         Assert.Equal("English", InstallationPolicy.InitialUiLanguage);
-        Assert.Contains("New recording", File.ReadAllText(GetDesktopFile("MainWindow.xaml")));
+        Assert.Contains("New meeting", File.ReadAllText(GetDesktopFile("MainWindow.xaml")));
     }
 
     [Given("the user has internet access")]
@@ -125,6 +125,13 @@ public sealed class PrivacyAndSetupSteps
         _installedPackage = await _models!.ImportAsync(
             _packagePath!,
             CancellationToken.None);
+    }
+
+    [When("the user selects the verified imported model for new jobs")]
+    public async Task WhenTheUserSelectsTheVerifiedImportedModel()
+    {
+        await _models!.SelectAsync(_installedPackage!.Id, CancellationToken.None);
+        Assert.Equal(_installedPackage.Id, _models.SelectedModelId);
     }
 
     [Then("recording and local transcription become available without network access")]

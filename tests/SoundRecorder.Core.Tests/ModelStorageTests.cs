@@ -14,6 +14,48 @@ public sealed class ModelStorageTests : IDisposable
     private readonly HttpClient _client = new(new RejectNetworkHandler());
     private static readonly byte[] ModelBytes = [12, 34, 56, 78];
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(8)]
+    public async Task ImportAsync_RepeatedFreshPublicationReleasesPackageAndArtifactHandles(int concurrency)
+    {
+        for (var batch = 0; batch < 25; batch++)
+        {
+            var start = batch * concurrency;
+            await Task.WhenAll(Enumerable.Range(start, concurrency).Select(Publish));
+        }
+
+        async Task Publish(int attempt)
+        {
+            var models = _directory.PathFor($"publication-{attempt}");
+            var logger = new PublicationLogger();
+            var manager = new LocalTranscriptionModelManager(models, _client, logger);
+            var package = Package(Manifest());
+            var failure = await Record.ExceptionAsync(() => manager.ImportAsync(package, default));
+            Assert.True(failure is null,
+                $"Publication {attempt}: {failure}; HRESULT {failure?.HResult:X}; {string.Join("; ", logger.Messages)}");
+            var model = Assert.IsType<string>(manager.GetModelPath("English"));
+            using (File.Open(package, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            using (File.Open(model, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            using (File.Open(Path.Combine(Path.GetDirectoryName(model)!, "manifest.json"),
+                       FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            using (File.Open(Path.Combine(models, "current.json"),
+                       FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            Assert.Equal(ModelBytes, await File.ReadAllBytesAsync(model));
+            Assert.Empty(Directory.GetDirectories(models, ".staging-*"));
+        }
+    }
+
+    private sealed class PublicationLogger : Microsoft.Extensions.Logging.ILogger<LocalTranscriptionModelManager>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel level, Microsoft.Extensions.Logging.EventId id,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
+    }
+
     [Fact]
     public async Task ImportAsync_ValidPackage_ActivatesPersistsAndReloadsWithoutNetwork()
     {

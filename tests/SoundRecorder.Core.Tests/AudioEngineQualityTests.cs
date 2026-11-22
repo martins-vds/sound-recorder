@@ -59,6 +59,7 @@ public sealed class AudioEngineQualityTests : IDisposable
 
         Assert.Equal(id, recording.Id);
         Assert.Equal(request.Language, recording.Language);
+        Assert.Equal("quality", recording.Title);
         Assert.Equal(RecordingOutcome.Complete, recording.Outcome);
         Assert.Equal(TimeSpan.FromMilliseconds(100), recording.CapturedDuration);
         Assert.Contains("quality", Path.GetFileName(recording.AudioPath));

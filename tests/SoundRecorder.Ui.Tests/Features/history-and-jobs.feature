@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Use recording history and transcription jobs through the desktop UI
   Saved recordings and jobs are local fixtures.
   Transcription uses a deterministic worker rather than a native model.
@@ -46,8 +46,9 @@ Feature: Use recording history and transcription jobs through the desktop UI
     Then the transcription job list has 2 rows
     And the job list contains language "Brazilian Portuguese"
 
-  Scenario: Stop a job without promising pause or resume
+  Scenario Outline: Stop a job without promising pause or resume
     Given the isolated recorder UI is open with "controlled running job" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user opens the transcription jobs view
     Then Pause is unavailable and its limitation is explained
     When the user stops the running job
@@ -58,8 +59,14 @@ Feature: Use recording history and transcription jobs through the desktop UI
     And restarting creates a new attempt from the beginning
     And previous completed outputs remain available
 
-  Scenario: Show coarse recognition progress and preserve phase distinctions
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
+
+  Scenario Outline: Show coarse recognition progress and preserve phase distinctions
     Given the isolated recorder UI is open with "controlled running job" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user opens the transcription jobs view
     And the worker reports recognition percentages 0, 37, and 84
     Then the job view shows those recognition estimates for that job
@@ -68,6 +75,11 @@ Feature: Use recording history and transcription jobs through the desktop UI
     Then the job shows indeterminate writing progress rather than Completed
     When both final output files are published
     Then the job shows Completed
+
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
 
   Scenario Outline: Show indeterminate progress when the worker has no reporter
     Given the isolated recorder UI is open with "worker without progress" fixtures
@@ -102,3 +114,14 @@ Feature: Use recording history and transcription jobs through the desktop UI
     When the user selects Small Q5_1 and Brazilian Portuguese for new jobs
     Then the queued job's details still show Base original and English
     And only new jobs use Small Q5_1 and Brazilian Portuguese
+
+  Scenario: Finish capture but defer new transcription while model selection is pending
+    Given the isolated recorder UI is open with "queued model-pinned job" fixtures
+    And model selection verification is held by the fixture
+    When the user selects Small Q5_1 while verification is pending
+    Then new transcription actions are unavailable until selection completes
+    And recording remains available during selection
+    When the user records and saves audio during pending selection
+    Then the audio is saved without queuing against the previous model
+    When model selection verification is released
+    Then the saved recording is queued with Small Q5_1

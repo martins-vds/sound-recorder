@@ -1,4 +1,4 @@
-@requirements @meeting_workspace @planned
+@requirements @meeting_workspace
 Feature: Manage distinct transcription attempts and recognition progress
   A job snapshots its model and language when queued.
   Progress is optional and is not a signal that final outputs have been saved.

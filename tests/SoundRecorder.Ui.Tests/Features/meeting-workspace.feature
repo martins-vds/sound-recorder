@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Use the approved meeting workspace
   These scenarios exercise native WPF, not the browser prototype.
   Automated layout checks supplement the recurring manual comparison with prototype B.
@@ -46,7 +46,7 @@ Feature: Use the approved meeting workspace
     And scrolling the reader does not pause or stop capture
 
   Scenario: Use model and job views without leaving the workspace
-    Given the isolated recorder UI is open with "meeting workspace" fixtures
+    Given the isolated recorder UI is open with "workspace with mixed job history" fixtures
     When the user opens local transcription models
     Then model management occupies the reader work area
     And the library and capture dock remain available

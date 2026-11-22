@@ -1,9 +1,10 @@
-@requirements @meeting_workspace @planned
+@requirements @meeting_workspace
 Feature: Review recordings and manage their owned artifacts
   A library entry can outlive its audio.
   Artifacts belong to a recording independently of transcription job history.
   Storage and playback fixtures never use a user's recordings or destination.
 
+  @type:IntegrationTests
   Scenario: Search recording titles and completed transcript content locally
     Given the library contains recordings "Planning" and "Review"
     And only the completed transcript for "Review" contains "handover"
@@ -22,6 +23,7 @@ Feature: Review recordings and manage their owned artifacts
     And the completed transcript remains available for review
     And no transcription job is started by playback
 
+  @type:IntegrationTests
   Scenario: Report externally missing audio while retaining transcript review
     Given a library entry has an audio file and a completed TXT and SRT pair
     And an external operation removes only its audio file
@@ -58,6 +60,7 @@ Feature: Review recordings and manage their owned artifacts
     Then the WAV and that job's TXT and SRT pair are removed
     And no orphan output from the deleted job history remains
 
+  @type:IntegrationTests
   Scenario: Release related work before removing audio
     Given a recording is being played and transcribed
     And another recording session is capturing audio
@@ -67,6 +70,7 @@ Feature: Review recordings and manage their owned artifacts
     And the unrelated recording session keeps capturing
     And late progress or results from the cancelled attempt do not recreate artifacts
 
+  @type:IntegrationTests
   Scenario: Refuse deletion while a related worker cannot be released
     Given a related transcription worker cannot be released within the existing worker-release deadline
     When the user confirms deletion of the recording's audio
@@ -103,6 +107,7 @@ Feature: Review recordings and manage their owned artifacts
     And the output pair is associated with its library entry
     And no unknown historical model choice is fabricated
 
+  @type:IntegrationTests
   Scenario: Reject an artifact reference that does not belong to the recording
     Given a recording's artifact metadata includes an unrelated file reference
     When deletion of all recording artifacts is requested

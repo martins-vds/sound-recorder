@@ -30,7 +30,7 @@ public sealed class DesktopViewModelTests
         Assert.Equal("Idle", viewModel.Status);
         Assert.Equal("00:00:00", viewModel.CapturedDuration);
         Assert.False(viewModel.PermissionConfirmed);
-        Assert.False(viewModel.StartCommand.CanExecute(null));
+        Assert.True(viewModel.StartCommand.CanExecute(null));
         Assert.Equal(string.Empty, viewModel.ModelUrl);
         Assert.Equal(string.Empty, viewModel.Message);
         Assert.Empty(viewModel.Microphones);
@@ -163,7 +163,7 @@ public sealed class DesktopViewModelTests
         }
         await installing;
         Assert.False(context.ViewModel.IsBusy);
-        Assert.StartsWith("Active model", context.ViewModel.ModelStatus);
+        Assert.StartsWith(download ? "Active model" : "No compatible model", context.ViewModel.ModelStatus);
     }
 
     [Fact]
@@ -265,7 +265,7 @@ public sealed class DesktopViewModelTests
     {
         using var context = new DesktopTestContext();
         var viewModel = context.ViewModel;
-        Assert.False(viewModel.StartCommand.CanExecute(null));
+        Assert.True(viewModel.StartCommand.CanExecute(null));
         Assert.True(viewModel.IsIdle);
         Assert.False(viewModel.PauseCommand.CanExecute(null));
         Assert.False(viewModel.ResumeCommand.CanExecute(null));
@@ -414,16 +414,18 @@ public sealed class DesktopViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ImportModelCommand_SelectedPackage_ReportsActivationOrFailure(bool fails)
+    public async Task ImportModelCommand_SelectedPackage_RegistersWithoutSelectingOrReportsFailure(bool fails)
     {
         using var context = new DesktopTestContext();
         context.Models.Error = fails ? new IOException("bad package") : null;
         await context.ViewModel.ImportModelCommand.ExecuteAsync("chosen.zip");
         Assert.Equal("chosen.zip", Assert.Single(context.Models.Imports));
-        Assert.Equal(fails ? "The model package was not activated: bad package" :
-            "The model package was verified and activated locally.", context.ViewModel.Message);
-        Assert.Equal(fails ? "No compatible model is installed. Recordings remain available for later transcription." :
-            "Active model: local-model (English, Brazilian Portuguese)", context.ViewModel.ModelStatus);
+        Assert.Equal(fails ? "The model package was not registered: bad package" :
+            "The model package was verified and registered locally. Choose it from Downloaded models.", context.ViewModel.Message);
+        Assert.Equal("No compatible model is installed. Recordings remain available for later transcription.",
+            context.ViewModel.ModelStatus);
+        Assert.Null(context.Models.SelectedModelId);
+        Assert.Equal(fails ? 0 : 1, context.ViewModel.DownloadedModels.Count);
         Assert.False(context.ViewModel.IsBusy);
     }
 
@@ -639,8 +641,9 @@ public sealed class DesktopViewModelTests
         Assert.True(context.ViewModel.HasActiveWork());
         await context.ViewModel.CancelJobCommand.ExecuteAsync(null);
         await context.Queue.WaitForIdleAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.Equal(1, refreshes);
+        Assert.Equal(0, refreshes);
         Assert.Equal(TranscriptionJobStatus.Canceled, context.ViewModel.SelectedJob.Status);
+        Assert.Equal("Cancelled", Assert.Single(context.ViewModel.JobRows).Status);
         Assert.False(context.ViewModel.HasActiveWork());
     }
 
@@ -659,8 +662,9 @@ public sealed class DesktopViewModelTests
         };
         await context.ViewModel.StopActiveWorkAsync();
         await context.Queue.WaitForIdleAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.Equal(1, refreshes);
+        Assert.Equal(0, refreshes);
         Assert.Equal(TranscriptionJobStatus.Canceled, Assert.Single(context.ViewModel.Jobs).Status);
+        Assert.Equal("Cancelled", Assert.Single(context.ViewModel.JobRows).Status);
     }
 
     [Fact]
@@ -764,9 +768,42 @@ internal sealed class DesktopEngine : IRecordingEngine, IRecordingMonitor
 
 internal sealed class DesktopModels : ILocalTranscriptionModelManager
 {
+    private readonly List<DownloadedTranscriptionModel> _registered = [];
+    public TaskCompletionSource? CatalogGate { get; set; }
+    public async Task<DownloadedTranscriptionModel> DownloadAsync(ModelCatalogEntry entry,
+        IProgress<ModelDownloadProgress> progress, CancellationToken token)
+    {
+        progress.Report(new(ModelDownloadPhase.Downloading, 1024, 4096));
+        if (CatalogGate is not null) await CatalogGate.Task.WaitAsync(token);
+        if (Error is not null) throw Error;
+        progress.Report(new(ModelDownloadPhase.Verifying, 4096, 4096));
+        var model = new DownloadedTranscriptionModel(entry.Key, entry.DisplayName, Package.ModelFile, entry.Languages);
+        _registered.Add(model);
+        return model;
+    }
     public TranscriptionModelPackage Package { get; } = new(
         1, "local-model", "whisper", "model.bin", "hash", "win-x64", ["English", "Brazilian Portuguese"]);
     public TranscriptionModelPackage? CurrentPackage { get; set; }
+    public string? SelectedModelId => CurrentPackage?.Id;
+    public IReadOnlyList<DownloadedTranscriptionModel> DownloadedModels => _registered;
+    public Task RefreshInventoryAsync(CancellationToken token) => Task.CompletedTask;
+    public Func<CancellationToken, Task>? Selecting { get; set; }
+    public async Task SelectAsync(string id, CancellationToken token)
+    {
+        if (Selecting is not null) await Selecting(token);
+        if (Error is not null) throw Error;
+        CurrentPackage = Package;
+    }
+    public async Task<DownloadedTranscriptionModel> RegisterAsync(string packagePath, CancellationToken token)
+    {
+        Imports.Add(packagePath);
+        Started.TrySetResult();
+        if (Gate is not null) await Gate.Task;
+        if (Error is not null) throw Error;
+        var model = new DownloadedTranscriptionModel(Package.Id, Package.Id, Package.ModelFile, Package.Languages);
+        _registered.Add(model);
+        return model;
+    }
     public TranscriptionModelPackage? Bundled { get; set; }
     public string? BundledDirectory { get; private set; }
     public Exception? Error { get; set; }
@@ -774,7 +811,7 @@ internal sealed class DesktopModels : ILocalTranscriptionModelManager
     public List<Uri> Downloads { get; } = [];
     public TaskCompletionSource? Gate { get; set; }
     public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public bool HasCompatibleModel(string language) => CurrentPackage is not null;
+    public bool HasCompatibleModel(string language) => CurrentPackage?.Languages.Contains(language) == true;
     public string? GetModelPath(string language) => CurrentPackage?.ModelFile;
     public Task<TranscriptionModelPackage> ImportAsync(string packagePath, CancellationToken cancellationToken)
     {
@@ -851,8 +888,16 @@ internal sealed class DesktopRepository : ITranscriptionJobRepository
         Task.CompletedTask;
 }
 
-internal sealed class DesktopTranscriber : ILocalTranscriber
+internal sealed class DesktopTranscriber : IJobTranscriber
 {
+    public IReadOnlyList<TranscriptSegment> Segments { get; set; } = [];
+    public IProgress<TranscriptionProgress>? Progress { get; private set; }
+    public Task<TranscriptDocument> TranscribeAsync(TranscriptionRequest request,
+        IProgress<TranscriptionProgress>? progress, CancellationToken token)
+    {
+        Progress = progress;
+        return TranscribeAsync(request.Recording, token);
+    }
     public bool Block { get; set; }
     public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -874,7 +919,7 @@ internal sealed class DesktopTranscriber : ILocalTranscriber
                 throw;
             }
         }
-        return new(recording, recording.Language, []);
+        return new(recording, recording.Language, Segments);
     }
 }
 

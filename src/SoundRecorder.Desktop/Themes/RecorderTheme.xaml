@@ -3,6 +3,31 @@
     <Thickness x:Key="PageInset">20</Thickness>
     <Thickness x:Key="SectionGap">0,0,0,20</Thickness>
 
+    <Style x:Key="WorkspaceHeader" TargetType="Border">
+        <Setter Property="Background" Value="#174C3D"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="HeaderText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="White"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+    <Style x:Key="WorkspaceSidebar" TargetType="Border">
+        <Setter Property="Background" Value="#E3ECE8"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
     <Style x:Key="RecorderWindow" TargetType="Window">
         <Setter Property="FontFamily" Value="Segoe UI"/>
         <Setter Property="FontSize" Value="13"/>
@@ -90,8 +115,40 @@
 
     <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
-        <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+        <Setter Property="Background" Value="#17604F"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="HeaderButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="BorderBrush" Value="#648779"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="DestructiveButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Background" Value="#B2243D"/>
+        <Setter Property="BorderBrush" Value="#B2243D"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding UseSystemColors}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}"/>
+            </DataTrigger>
+        </Style.Triggers>
     </Style>
 
     <Style TargetType="TabItem">

@@ -13,7 +13,9 @@ public sealed class TranscriptionJob
         DateTimeOffset createdAt,
         TranscriptionJobStatus status,
         TranscriptOutputs? outputs,
-        string? error)
+        string? error,
+        string? modelId = null,
+        string? interruptionReason = null)
     {
         Id = id;
         Recording = recording;
@@ -21,6 +23,8 @@ public sealed class TranscriptionJob
         Status = status;
         Outputs = outputs;
         Error = error;
+        ModelId = modelId;
+        InterruptionReason = interruptionReason;
     }
 
     public Guid Id { get; }
@@ -34,4 +38,10 @@ public sealed class TranscriptionJob
     public TranscriptOutputs? Outputs { get; internal set; }
 
     public string? Error { get; internal set; }
+
+    public string? ModelId { get; }
+    public string Language => Recording.Language;
+    public TranscriptionProgress? Progress { get; internal set; }
+    public bool IsTerminationPending { get; internal set; }
+    public string? InterruptionReason { get; internal set; }
 }

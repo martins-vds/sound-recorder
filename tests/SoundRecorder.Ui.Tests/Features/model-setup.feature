@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Manage local model setup through the desktop UI
   The package-selection adapter supplies a fixture after the user clicks Import.
   Package validation is real; no model inference or network request is performed.
@@ -20,12 +20,18 @@ Feature: Manage local model setup through the desktop UI
     And the UI message contains "SHA-256"
     And the selected model remains "ui-fixture"
 
-  Scenario: Browse the full catalog without starting a download
+  Scenario Outline: Browse the full catalog without starting a download
     Given the isolated recorder UI is open with "no model" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user opens local transcription models and the download catalog
     Then the catalog shows 12 model families and 72 downloadable artifacts
     And the downloaded model selector remains empty
     And no network request has been made
+
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
 
   Scenario Outline: Filter available downloads without changing downloaded selection
     Given the isolated recorder UI is open with "model catalog" fixtures
@@ -39,9 +45,10 @@ Feature: Manage local model setup through the desktop UI
       | Multilingual | 8        |
       | English only | 4        |
 
-  Scenario: Show transfer progress outside the model view without selecting the download
+  Scenario Outline: Show transfer progress outside the model view without selecting the download
     Given the isolated recorder UI is open with "controlled model download" fixtures
     And Base original is selected
+    When the user resizes the recorder to <width> by <height>
     When the user requests Small Q5_1 and the fixture transfers 1024 of 4096 bytes
     Then model download progress shows 25 percent
     And Small Q5_1 is not selectable yet
@@ -51,12 +58,23 @@ Feature: Manage local model setup through the desktop UI
     Then Small Q5_1 is selectable
     And Base original remains selected
 
-  Scenario: Keep verification and unknown transfer progress honest
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
+
+  Scenario Outline: Keep verification and unknown transfer progress honest
     Given the isolated recorder UI is open with "unknown download length" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user requests a model download
     Then download progress is indeterminate
     When transfer finishes but verification has not completed
     Then the UI identifies verification and does not offer the model as downloaded
+
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
 
   Scenario: Cancel a download without cancelling capture
     Given the isolated recorder UI is open with "controlled model download" fixtures

@@ -518,7 +518,8 @@ public sealed class TranscriptionSteps
         _queue = new TranscriptionQueue(
             _transcriber,
             new AtomicTranscriptWriter(),
-            _repository);
+            _repository,
+            history: _history);
         await _queue.RestoreAsync(CancellationToken.None);
         await _queue.WaitForIdleAsync(CancellationToken.None);
     }
@@ -565,6 +566,32 @@ public sealed class TranscriptionSteps
         Assert.All(outputPaths, path => Assert.True(File.Exists(path)));
     }
 
+    [Then("recordings and transcripts are deleted only after an explicit confirmed deletion request")]
+    public async Task ThenDeletionRequiresExplicitConfirmation()
+    {
+        var queue = _queue ?? throw new InvalidOperationException("The transcription queue fixture is unavailable.");
+        var history = _history ?? throw new InvalidOperationException("The recording history fixture is unavailable.");
+        var recording = _recording ?? throw new InvalidOperationException("The recording fixture is unavailable.");
+        await queue.WaitForIdleAsync(CancellationToken.None);
+        var outputs = queue.Jobs.Where(job => job.Outputs is not null)
+            .SelectMany(job => new[] { job.Outputs!.TextPath, job.Outputs.SubtitlePath })
+            .ToDictionary(path => path, File.ReadAllBytes);
+        Assert.NotEmpty(outputs);
+        var library = new RecordingLibrary(history, _repository, cancelRecordingAsync: queue.CancelRecordingAsync,
+            deleteJobAsync: queue.DeleteJobAsync, releasePlaybackAsync: (_, _) => Task.CompletedTask);
+        await library.LoadAsync(CancellationToken.None);
+        await library.LoadAsync(CancellationToken.None);
+        foreach (var (path, bytes) in outputs)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+        var result = await library.DeleteRecordingAsync(recording.Id, RecordingDeletionScope.AllArtifacts, CancellationToken.None);
+        Assert.True(result.Status == LibraryDeletionStatus.Completed,
+            string.Join(" ", result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+        Assert.Empty(await history.LoadAsync(CancellationToken.None));
+        Assert.All(outputs.Keys, path => Assert.False(File.Exists(path)));
+    }
+
     [Then("version one does not require live transcription")]
     public void ThenVersionOneDoesNotRequireLiveTranscription()
     {
@@ -597,13 +624,10 @@ public sealed class TranscriptionSteps
         Assert.False(ProductScope.IdentifiesSpeakers);
     }
 
-    [Then("version one does not require transcript editing, in-app audio playback, search, or deletion")]
-    public void ThenVersionOneDoesNotRequireAdditionalTranscriptFeatures()
+    [Then("transcript editing remains outside the approved meeting workspace scope")]
+    public void ThenTranscriptEditingRemainsOutsideScope()
     {
         Assert.False(ProductScope.EditsTranscripts);
-        Assert.False(ProductScope.PlaysAudioInApp);
-        Assert.False(ProductScope.SearchesRecordings);
-        Assert.False(ProductScope.DeletesRecordingsInApp);
     }
 
     private void CreateQueue(

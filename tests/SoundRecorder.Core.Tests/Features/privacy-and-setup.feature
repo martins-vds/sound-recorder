@@ -18,7 +18,7 @@ Feature: Install and operate a private offline Windows recorder
     And the app checks compatibility and package integrity before activation
     And the request contains no recording audio or transcript content
 
-  @meeting_workspace @planned
+  @meeting_workspace
   Scenario: Complete setup without connecting the target computer
     Given the installer and a compatible model package have been transferred from another computer
     And the target computer has no network connection

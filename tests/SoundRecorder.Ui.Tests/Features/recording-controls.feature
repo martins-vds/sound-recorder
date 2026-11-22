@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Operate recording controls through the desktop UI
   These scenarios exercise the real window with deterministic capture adapters.
   They do not establish real-device capture quality or release performance.

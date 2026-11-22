@@ -12,6 +12,7 @@ public sealed class RecorderApplication
     private readonly ILogger<RecorderApplication> _logger;
     private readonly SemaphoreSlim _completionGate = new(1, 1);
     private readonly HashSet<Guid> _completedRecordingIds = [];
+    private readonly HashSet<Guid> _persistedRecordingIds = [];
 
     public RecorderApplication(
         IRecordingEngine recordingEngine,
@@ -145,6 +146,12 @@ public sealed class RecorderApplication
             LastError = CompletionError(recording);
             CoreLog.RecordingCompleted(_logger, recording.Id, recording.Outcome);
 
+            if (_history is not null && !_persistedRecordingIds.Contains(recording.Id))
+            {
+                await _history.AddAsync(recording, cancellationToken);
+                _persistedRecordingIds.Add(recording.Id);
+            }
+
             if (ShouldAutomaticallyTranscribe(recording, enqueueTranscription))
             {
                 await _transcriptionQueue!.EnqueueAsync(recording, cancellationToken);
@@ -155,10 +162,6 @@ public sealed class RecorderApplication
                 TranscriptionNotice = MissingModelNotice(recording);
             }
 
-            if (_history is not null)
-            {
-                await _history.AddAsync(recording, cancellationToken);
-            }
         }
         catch (Exception exception)
         {

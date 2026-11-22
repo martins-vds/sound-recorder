@@ -328,7 +328,10 @@ public sealed class WindowsRecordingEngine : IRecordingEngine, IRecordingMonitor
             outputPath,
             request.Language,
             outcome,
-            CapturedDuration);
+            CapturedDuration)
+        {
+            Title = request.Title,
+        };
     }
 
     private void SaveCheckpoint()

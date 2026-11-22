@@ -15,6 +15,183 @@ namespace SoundRecorder.Core.Tests;
 public sealed class DesktopNativeAdapterTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RecordingPlayback_UnavailableSelectionReportsErrorWithoutOpeningAnotherSource(bool selected)
+    {
+        using var context = new DesktopTestContext();
+        using var playback = new WindowsRecordingPlayback();
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+            context.History, new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+        if (selected) viewModel.SelectedRecording = context.Engine.Result;
+        viewModel.PlayRecordingCommand.Execute(null);
+        Assert.Contains(selected ? "could not be played" : "Select an available recording", viewModel.Message);
+        Assert.Null(playback.SourcePath);
+        Assert.False(playback.IsPlaying);
+        viewModel.PlaybackVolume = .5;
+        Assert.Equal(.5, playback.Volume);
+    }
+
+    [Theory]
+    [InlineData(-0.1)]
+    [InlineData(1.1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void RecordingPlayback_InvalidVolumeLeavesThePreviousLevel(double value)
+    {
+        using var playback = new WindowsRecordingPlayback();
+        playback.Volume = .5;
+        Assert.Throws<ArgumentOutOfRangeException>(() => playback.Volume = value);
+        Assert.Equal(.5, playback.Volume);
+    }
+
+    [Fact]
+    public void RecordingPlayback_DevicePositionFailureIsReportedWithoutBreakingRefresh()
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "playback-error.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[96_000], 0, 96_000);
+        }
+        var device = new PlaybackDevice();
+        using var playback = new WindowsRecordingPlayback(() => device);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+            context.History, new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+        viewModel.SelectedRecording = new SavedRecording(Guid.NewGuid(), path, "English",
+            RecordingOutcome.Complete, TimeSpan.FromSeconds(1));
+        viewModel.PlayRecordingCommand.Execute(null);
+        device.PositionError = new IOException("Audio device disconnected");
+
+        Assert.Null(Record.Exception(viewModel.Refresh));
+        Assert.Contains("Audio device disconnected", viewModel.Message);
+        Assert.False(viewModel.IsPlaying);
+    }
+
+    [Fact]
+    public void RecordingPlayback_UserPlayOpensOnlyTheSelectedRecording()
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "selected-playback.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[6 * 96_000], 0, 6 * 96_000);
+        }
+        using var playback = new WindowsRecordingPlayback(() => new PlaybackDevice());
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+            context.History, new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+        var recording = new SavedRecording(Guid.NewGuid(), path, "English", RecordingOutcome.Complete,
+            TimeSpan.FromSeconds(6));
+        viewModel.SelectedRecording = recording;
+        Assert.Null(Record.Exception(() => viewModel.PlayRecordingCommand.Execute(null)));
+        Assert.Equal(recording.Id, playback.RecordingId);
+        Assert.True(playback.IsPlaying);
+    }
+
+    [Fact]
+    public void RecordingPlayback_LeavingReviewPausesWithoutLosingPosition()
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "view-playback.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[6 * 96_000], 0, 6 * 96_000);
+        }
+        var device = new PlaybackDevice();
+        using var playback = new WindowsRecordingPlayback(() => device);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+            context.History, new RecoveryManager(context.Recovery), context, context.Logger,
+            playback: playback);
+        var recording = new SavedRecording(Guid.NewGuid(), path, "English",
+            RecordingOutcome.Complete, TimeSpan.FromSeconds(6));
+        viewModel.SelectedRecording = recording;
+        playback.Open(recording);
+        playback.Play();
+        device.PlayedBytes = 96_000;
+        viewModel.ShowModelsCommand.Execute(null);
+        Assert.False(playback.IsPlaying);
+        Assert.Equal(TimeSpan.FromSeconds(1), playback.Position);
+    }
+
+    [Fact]
+    public void RecordingPlayback_UsesDevicePositionAndRetainsSeekOnResume()
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "playback-controls.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[6 * 96_000], 0, 6 * 96_000);
+        }
+        var outputs = new List<PlaybackDevice>();
+        using var playback = new WindowsRecordingPlayback(() =>
+        {
+            var output = new PlaybackDevice();
+            outputs.Add(output);
+            return output;
+        });
+        playback.Open(new(Guid.NewGuid(), path, "English", RecordingOutcome.Complete, TimeSpan.FromSeconds(6)));
+        playback.Volume = .5;
+        playback.Play();
+        outputs[0].PlayedBytes = 96_000;
+        Assert.True(playback.IsPlaying);
+        Assert.Equal(TimeSpan.FromSeconds(1), playback.Position);
+        Assert.Equal(.5f, outputs[0].Volume);
+        playback.Pause();
+        Assert.False(playback.IsPlaying);
+        playback.Position = TimeSpan.FromSeconds(4);
+        playback.Play();
+        Assert.Equal(2, outputs.Count);
+        Assert.Equal(TimeSpan.FromSeconds(4), playback.Position);
+        outputs[1].Fail(new IOException("Output unavailable"));
+        Assert.Contains("Output unavailable", playback.LastError);
+        playback.Close();
+        Assert.False(playback.IsPlaying);
+        using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    private sealed class PlaybackDevice : NAudio.Wave.IWavePlayer, NAudio.Wave.IWavePosition
+    {
+        public Exception? PositionError { get; set; }
+        public long PlayedBytes { get; set; }
+        public float Volume { get; set; }
+        public NAudio.Wave.PlaybackState PlaybackState { get; private set; }
+        public NAudio.Wave.WaveFormat OutputWaveFormat { get; private set; } = new(48_000, 16, 1);
+        public event EventHandler<NAudio.Wave.StoppedEventArgs>? PlaybackStopped;
+        public void Init(NAudio.Wave.IWaveProvider provider) => OutputWaveFormat = provider.WaveFormat;
+        public void Play() => PlaybackState = NAudio.Wave.PlaybackState.Playing;
+        public void Pause() => PlaybackState = NAudio.Wave.PlaybackState.Paused;
+        public void Stop() => PlaybackState = NAudio.Wave.PlaybackState.Stopped;
+        public long GetPosition() => PositionError is { } error ? throw error : PlayedBytes;
+        public void Dispose() => Stop();
+        public void Fail(Exception exception)
+        {
+            Stop();
+            PlaybackStopped?.Invoke(this, new(exception));
+        }
+    }
+
+    [Fact]
+    public void RecordingPlayback_OpensSeeksAndReleasesTheActualWave()
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "playback.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            writer.Write(new byte[6 * 96_000], 0, 6 * 96_000);
+        }
+        var recording = new SavedRecording(Guid.NewGuid(), path, "English",
+            RecordingOutcome.Complete, TimeSpan.FromSeconds(6));
+        using var playback = new WindowsRecordingPlayback();
+        Assert.Null(Record.Exception(() => playback.Open(recording)));
+        Assert.Equal(TimeSpan.FromSeconds(6), playback.Duration);
+        playback.Position = TimeSpan.FromSeconds(4);
+        Assert.Equal(TimeSpan.FromSeconds(4), playback.Position);
+        playback.Close();
+        Assert.Null(playback.RecordingId);
+        using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    [Theory]
     [InlineData("power")]
     [InlineData("session")]
     [InlineData("capture")]

@@ -1,4 +1,4 @@
-@ui @type:IntegrationTests @meeting_workspace @planned
+@ui @type:IntegrationTests @meeting_workspace
 Feature: Listen to recordings and confirm artifact deletion in the workspace
   Playback uses disposable real WAV fixtures and a controllable playback adapter.
   The UI test host never uses user recordings or a user's output destination.
@@ -24,15 +24,16 @@ Feature: Listen to recordings and confirm artifact deletion in the workspace
     And the visible completed transcript is identified as the previous output
 
   Scenario: Pause playback when leaving review and reset it for another recording
-    Given the isolated recorder UI is open with "playable transcript" fixtures
+    Given the isolated recorder UI is open with "two playable transcripts" fixtures
     When the user plays the selected recording and opens model management
     Then playback is paused
     When the user returns and selects a different recording
     Then playback uses the newly selected WAV from its beginning
     And it does not start automatically
 
-  Scenario: Cancel deletion through the confirmation dialog
+  Scenario Outline: Cancel deletion through the confirmation dialog
     Given the isolated recorder UI is open with "playable transcript" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user opens Delete recording
     Then the dialog offers audio-only and all-artifacts scopes and explains their consequences
     And the default scope is audio only
@@ -40,13 +41,24 @@ Feature: Listen to recordings and confirm artifact deletion in the workspace
     Then audio, transcript, subtitles, library entry, and job history remain unchanged
     And keyboard focus returns to the recording's review
 
-  Scenario: Delete only audio and continue reviewing retained outputs
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
+
+  Scenario Outline: Delete only audio and continue reviewing retained outputs
     Given the isolated recorder UI is open with "playable transcript" fixtures
+    When the user resizes the recorder to <width> by <height>
     When the user confirms audio-only deletion
     Then the library entry remains selected and explains that audio was deleted
     And its transcript and subtitle outputs remain viewable
     And playback and Transcribe again are unavailable
     And Open output folder remains available for retained outputs
+
+    Examples:
+      | width | height |
+      | 760   | 560    |
+      | 980   | 720    |
 
   Scenario: Delete all artifacts and move to a remaining recording
     Given the isolated recorder UI is open with "multiple transcript attempts" fixtures

@@ -1,4 +1,4 @@
-@requirements @meeting_workspace @planned
+@requirements @meeting_workspace
 Feature: Choose verified downloaded models and explicitly download other models
   The catalog is pinned to the Whisper.net 1.9.1 downloader.
   All network and package fixtures are controlled; tests do not download model binaries.

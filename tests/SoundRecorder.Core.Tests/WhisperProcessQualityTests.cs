@@ -13,6 +13,264 @@ public sealed class WhisperProcessQualityTests : IDisposable
 {
     private readonly string _directory = Directory.CreateTempSubdirectory("recorder-process-tests-").FullName;
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TranscribeAsync_PreCanceledRequests_DoNotResolveModelsOrStartWorkers(bool jobEntrypoint)
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var models = new RoutingModels();
+        var starts = 0;
+        var transcriber = new WhisperProcessTranscriber("worker.exe", models, _ =>
+        {
+            starts++;
+            return new FakeWorker("{\"Segments\":[]}");
+        });
+        var recording = Recording();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => jobEntrypoint
+            ? transcriber.TranscribeAsync(new(Guid.NewGuid(), recording, "base-original", null), null, cancellation.Token)
+            : transcriber.TranscribeAsync(recording, cancellation.Token));
+
+        Assert.Equal(0, starts);
+        Assert.Equal(0, models.PinnedLookups);
+        Assert.Equal(0, models.SelectedLookups);
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_TypedCurrentWorkerError_IsActionableAndDoesNotExposeForeignAttemptErrors()
+    {
+        var id = Guid.NewGuid();
+        var worker = new FakeWorker(
+            JsonSerializer.Serialize(new { Kind = "Error", JobId = Guid.NewGuid(), Error = "Foreign attempt failed." }) + "\n" +
+            JsonSerializer.Serialize(new { Kind = "Error", JobId = id, Error = "Current model inference failed." }));
+        var transcriber = new WhisperProcessTranscriber("worker.exe", new ModelStore(), _ => worker);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transcriber.TranscribeAsync(new(id, Recording(), null, "pinned.bin"), null, default));
+
+        Assert.Equal("Current model inference failed.", error.Message);
+        Assert.True(worker.Disposed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunWorkerAsync_AwaitingPhaseDelivery_PreventsStartAndFinalFramesFromOvertakingProgress(bool fail)
+    {
+        var id = Guid.NewGuid();
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inferenceFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var output = new BufferedOutput
+        {
+            BeforeWrite = async line =>
+            {
+                if (line?.Contains("\"Kind\":\"Progress\"", StringComparison.Ordinal) != true) return;
+                held.TrySetResult();
+                await release.Task;
+            },
+        };
+        using var input = new StringReader(JsonSerializer.Serialize(new
+        {
+            JobId = id, ModelPath = "pinned.bin", Recording = Recording(),
+            ProcessingAudioPath = Path.Combine(_directory, "delayed-phase.wav"),
+        }));
+        var run = WhisperProcessTranscriber.RunWorkerAsync(input, output, (models, logger) =>
+            new WhisperLocalTranscriber(models, logger, (_, _, _, _) =>
+            {
+                inferenceFinished.TrySetResult();
+                return fail
+                    ? Task.FromException<IReadOnlyList<TranscriptSegment>>(new IOException("Controlled inference failed."))
+                    : Task.FromResult<IReadOnlyList<TranscriptSegment>>([]);
+            }));
+        try
+        {
+            await held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await inferenceFinished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotSame(run, await Task.WhenAny(run, Task.Delay(100)));
+            Assert.Equal(string.Empty, output.ToString());
+            release.TrySetResult();
+            Assert.Equal(fail ? 1 : 0, await run);
+            var frames = output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+            using var first = JsonDocument.Parse(frames[0]);
+            using var final = JsonDocument.Parse(frames[^1]);
+            Assert.Equal("Progress", first.RootElement.GetProperty("Kind").GetString());
+            Assert.Equal(fail ? "Error" : "Result", final.RootElement.GetProperty("Kind").GetString());
+        }
+        finally { release.TrySetResult(); await run; }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TranscribeAsync_CancellationArrivesWithAWorkerFrame_DiscardsEvenMalformedFrames(bool malformed)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var id = Guid.NewGuid();
+        var reads = 0;
+        var worker = new FakeWorker(string.Empty)
+        {
+            Reader = new FailingReader(() =>
+            {
+                if (reads++ != 0) return null;
+                cancellation.Cancel();
+                return malformed ? "{\"Kind\":\"Progress\"" : JsonSerializer.Serialize(new
+                {
+                    Kind = "Progress", JobId = id, Progress = new TranscriptionProgress(TranscriptionPhase.Recognizing, 37),
+                });
+            }),
+        };
+        var reported = new List<TranscriptionProgress>();
+        var transcriber = new WhisperProcessTranscriber("worker.exe", new ModelStore(), _ => worker);
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            transcriber.TranscribeAsync(new(id, Recording(), null, "pinned.bin"),
+                new TranscriptionProgressProtocolTests.Reporter(value => reported.Add(value)), cancellation.Token));
+
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Empty(reported);
+        Assert.True(worker.Disposed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunWorkerAsync_TypedJob_StreamsFlushedCorrelatedPhasesBeforeItsResultOrError(bool fail)
+    {
+        var id = Guid.NewGuid();
+        var recording = Recording();
+        var processing = Path.Combine(_directory, "typed-processing.wav");
+        var model = Path.Combine(_directory, "pinned-model.bin");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var input = new StringReader(JsonSerializer.Serialize(new
+        {
+            JobId = id, ModelPath = model, Recording = recording, ProcessingAudioPath = processing,
+        }));
+        using var output = new BufferedOutput();
+        var run = WhisperProcessTranscriber.RunWorkerAsync(input, output, (models, logger) =>
+            new WhisperLocalTranscriber(models, logger, async (path, _, _, _) =>
+            {
+                Assert.Equal(model, path);
+                entered.TrySetResult();
+                await finish.Task;
+                if (fail) throw new IOException("Controlled inference failed.");
+                return [new(TimeSpan.Zero, TimeSpan.FromSeconds(.5), "typed result")];
+            }));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await TranscriptionJobManagementTests.WaitUntilAsync(() =>
+                output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                    .Count(line => line.Contains("\"Kind\":\"Progress\"", StringComparison.Ordinal)) == 2);
+            Assert.False(run.IsCompleted);
+            Assert.DoesNotContain("\"Kind\":\"Result\"", output.ToString());
+            finish.TrySetResult();
+            Assert.Equal(fail ? 1 : 0, await run);
+
+            var frames = output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => JsonDocument.Parse(line)).ToArray();
+            try
+            {
+                Assert.All(frames, frame => Assert.Equal(id, frame.RootElement.GetProperty("JobId").GetGuid()));
+                Assert.Single(frames, frame => frame.RootElement.GetProperty("Kind").GetString() == "Started");
+                var phases = frames.Where(frame => frame.RootElement.GetProperty("Kind").GetString() == "Progress")
+                    .Select(frame => frame.RootElement.GetProperty("Progress")).ToArray();
+                Assert.Equal(new[] { (int)TranscriptionPhase.Preparing, (int)TranscriptionPhase.Recognizing },
+                    phases.Select(phase => phase.GetProperty("Phase").GetInt32()));
+                Assert.All(phases, phase => Assert.Equal(JsonValueKind.Null, phase.GetProperty("Percent").ValueKind));
+                var final = frames[^1].RootElement;
+                Assert.Equal(fail ? "Error" : "Result", final.GetProperty("Kind").GetString());
+                if (fail) Assert.Contains("Controlled inference failed", final.GetProperty("Error").GetString());
+                else Assert.Equal("typed result", final.GetProperty("Segments")[0].GetProperty("Text").GetString());
+                Assert.False(File.Exists(processing));
+            }
+            finally { foreach (var frame in frames) frame.Dispose(); }
+        }
+        finally { finish.TrySetResult(); await run; }
+    }
+
+    [Theory]
+    [InlineData("Progress", false, null, null, "Progress frame has no progress.")]
+    [InlineData("Progress", false, -1, 1, "Invalid worker progress.")]
+    [InlineData("Progress", false, 101, 1, "Invalid worker progress.")]
+    [InlineData("Progress", false, 37, 99, "Invalid worker progress.")]
+    [InlineData("Unknown", false, null, null, "Unknown local transcription worker frame.")]
+    [InlineData("Result", true, null, null, "A typed worker frame must identify its job.")]
+    public async Task TranscribeAsync_InvalidTypedFrame_RejectsMalformedWorkerState(
+        string kind, bool missingIdentity, int? percent, int? phase, string expectedError)
+    {
+        var id = Guid.NewGuid();
+        var frame = JsonSerializer.Serialize(new
+        {
+            Kind = kind,
+            JobId = missingIdentity ? Guid.Empty : id,
+            Progress = phase is null ? null : new { Phase = phase.Value, Percent = percent },
+            Segments = Array.Empty<TranscriptSegment>(),
+        });
+        var worker = new FakeWorker(frame + "\n");
+        var transcriber = new WhisperProcessTranscriber("worker.exe", new ModelStore(), _ => worker);
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            transcriber.TranscribeAsync(new(id, Recording(), null, "pinned.bin"), null, default));
+
+        Assert.Equal(expectedError, error.Message);
+        Assert.True(worker.Disposed);
+    }
+
+    [Theory]
+    [InlineData(true, "explicit.bin", "explicit.bin")]
+    [InlineData(true, null, "base-original.bin")]
+    [InlineData(false, null, "selected.bin")]
+    public async Task TranscribeAsync_PinnedAndLegacyEntrypoints_ResolveOnlyTheirIntendedModel(
+        bool jobEntrypoint, string? explicitPath, string expectedPath)
+    {
+        var worker = new FakeWorker("{\"Segments\":[]}");
+        var models = new RoutingModels();
+        var transcriber = new WhisperProcessTranscriber("worker.exe", models, _ => worker);
+        var recording = Recording();
+        if (jobEntrypoint)
+            await transcriber.TranscribeAsync(new(Guid.NewGuid(), recording, "base-original", explicitPath), null, default);
+        else
+            await transcriber.TranscribeAsync(recording, default);
+
+        using var request = JsonDocument.Parse(worker.Request.ToString());
+        Assert.Equal(expectedPath, request.RootElement.GetProperty("ModelPath").GetString());
+        Assert.Equal(explicitPath is null && jobEntrypoint ? 1 : 0, models.PinnedLookups);
+        Assert.Equal(jobEntrypoint ? 0 : 1, models.SelectedLookups);
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_CorrelatedIndeterminateAndFinalRecognitionEstimates_AreNotResults()
+    {
+        var id = Guid.NewGuid();
+        var frames = string.Join("\n", new[]
+        {
+            JsonSerializer.Serialize(new { Kind = "Started", JobId = id }),
+            JsonSerializer.Serialize(new { Kind = "Progress", JobId = id, Progress = new TranscriptionProgress(TranscriptionPhase.Preparing) }),
+            JsonSerializer.Serialize(new { Kind = "Progress", JobId = id, Progress = new TranscriptionProgress(TranscriptionPhase.Recognizing) }),
+            JsonSerializer.Serialize(new { Kind = "Progress", JobId = id, Progress = new TranscriptionProgress(TranscriptionPhase.Recognizing, 100) }),
+            JsonSerializer.Serialize(new { Kind = "Result", JobId = Guid.NewGuid(), Segments = new[] { new TranscriptSegment(TimeSpan.Zero, TimeSpan.FromSeconds(1), "stale") } }),
+            JsonSerializer.Serialize(new { Kind = "Result", JobId = id, Segments = new[] { new TranscriptSegment(TimeSpan.Zero, TimeSpan.FromSeconds(1), "current") } }),
+        });
+        var worker = new FakeWorker(frames);
+        var seen = new List<TranscriptionProgress>();
+        var transcriber = new WhisperProcessTranscriber("worker.exe", new ModelStore(), _ => worker);
+
+        var document = await transcriber.TranscribeAsync(new(id, Recording(), null, "pinned.bin"),
+            new TranscriptionProgressProtocolTests.Reporter(value => seen.Add(value)), default);
+
+        Assert.Equal(new TranscriptionProgress[]
+        {
+            new(TranscriptionPhase.Preparing),
+            new(TranscriptionPhase.Recognizing),
+            new(TranscriptionPhase.Recognizing, 100),
+        }, seen);
+        Assert.Equal("current", Assert.Single(document.Segments).Text);
+    }
+
     [Fact]
     public async Task TranscribeAsync_WorkerProtocol_ReturnsSegmentsAndCleansOwnedDirectory()
     {
@@ -348,6 +606,20 @@ public sealed class WhisperProcessQualityTests : IDisposable
         public string? GetModelPath(string language) => path;
     }
 
+    private sealed class RoutingModels : ITranscriptionModelStore
+    {
+        public int SelectedLookups { get; private set; }
+        public int PinnedLookups { get; private set; }
+        public bool HasCompatibleModel(string language) => true;
+        public string? GetModelPath(string language) { SelectedLookups++; return "selected.bin"; }
+        public string? GetModelPath(string language, string? modelId)
+        {
+            PinnedLookups++;
+            Assert.Equal("base-original", modelId);
+            return "base-original.bin";
+        }
+    }
+
     private sealed class MissingModel : ITranscriptionModelStore
     {
         public bool HasCompatibleModel(string language) => false;
@@ -388,20 +660,25 @@ public sealed class WhisperProcessQualityTests : IDisposable
 
     private sealed class BufferedOutput : TextWriter
     {
+        private readonly object _gate = new();
         private readonly StringBuilder _pending = new();
         private readonly StringBuilder _visible = new();
+        public Func<string?, Task>? BeforeWrite { get; init; }
         public override Encoding Encoding => Encoding.UTF8;
-        public override void WriteLine(string? value) => _pending.AppendLine(value);
-        public override Task WriteLineAsync(string? value)
+        public override void WriteLine(string? value) { lock (_gate) _pending.AppendLine(value); }
+        public override async Task WriteLineAsync(string? value)
         {
+            if (BeforeWrite is not null) await BeforeWrite(value);
             WriteLine(value);
-            return Task.CompletedTask;
         }
 
         public override void Flush()
         {
-            _visible.Append(_pending);
-            _pending.Clear();
+            lock (_gate)
+            {
+                _visible.Append(_pending);
+                _pending.Clear();
+            }
         }
 
         public override Task FlushAsync()
@@ -410,7 +687,7 @@ public sealed class WhisperProcessQualityTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public override string ToString() => _visible.ToString();
+        public override string ToString() { lock (_gate) return _visible.ToString(); }
     }
 
     private sealed class StartingLogger : ILogger<WhisperProcessTranscriber>

@@ -1,0 +1,41 @@
+<Window x:Class="SoundRecorder.Desktop.RecordingDeletionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
+        Title="Delete recording artifacts?" Width="520" SizeToContent="Height"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Style="{DynamicResource RecorderWindow}">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/RecorderTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+    <StackPanel Margin="24">
+        <TextBlock Text="Delete recording artifacts?" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,16"/>
+        <TextBlock x:Name="RecordingTitleText" TextWrapping="Wrap" FontWeight="SemiBold" Margin="0,0,0,20"/>
+        <GroupBox Header="What should be deleted?" Padding="12">
+            <StackPanel>
+                <RadioButton x:Name="AudioOnlyDeletionScope" Content="Just the audio recording"
+                             GroupName="DeletionScope" Checked="ScopeChanged"
+                             automation:AutomationProperties.Name="Just the audio recording"/>
+                <TextBlock Text="Keep the transcript, subtitles, and library/job history. Playback and retranscription will no longer be available."
+                           TextWrapping="Wrap" Margin="22,8,0,20"/>
+                <RadioButton x:Name="AllArtifactsDeletionScope" Content="Audio and all generated artifacts"
+                             GroupName="DeletionScope" Checked="ScopeChanged"
+                             automation:AutomationProperties.Name="Audio and all generated artifacts"/>
+                <TextBlock Text="Remove audio, all transcript TXT and subtitle SRT outputs, and associated library/job history. Downloaded models are kept."
+                           TextWrapping="Wrap" Margin="22,8,0,0"/>
+            </StackPanel>
+        </GroupBox>
+        <TextBlock Text="Any queued or running transcription for this recording will be cancelled before deletion."
+                   TextWrapping="Wrap" Margin="0,16,0,20"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="KeepRecordingButton" Content="Keep it" IsCancel="True"/>
+            <Button x:Name="DeleteArtifactsButton" Content="Delete audio only" Click="ConfirmDeletion"
+                    Style="{StaticResource DestructiveButton}"
+                    Margin="8,0,0,0"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

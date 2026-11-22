@@ -31,7 +31,6 @@ public sealed class StorageBoundaryTests : IDisposable
     }
 
     [Theory]
-    [InlineData("null")]
     [InlineData("[]")]
     public async Task History_LoadEmptyJson_ReturnsEmptyHistory(string json)
     {

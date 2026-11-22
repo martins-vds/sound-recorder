@@ -7,18 +7,20 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SoundRecorder.Infrastructure.Transcription;
 
-public sealed class WhisperLocalTranscriber : ILocalTranscriber
+public sealed class WhisperLocalTranscriber : IJobTranscriber
 {
     private readonly ITranscriptionModelStore _models;
     private readonly ILogger<WhisperLocalTranscriber> _logger;
     private readonly Func<string, string, Stream, CancellationToken,
         Task<IReadOnlyList<TranscriptSegment>>> _processAudio;
+    private readonly bool _nativeProgress;
 
     public WhisperLocalTranscriber(
         ITranscriptionModelStore models,
         ILogger<WhisperLocalTranscriber>? logger = null)
         : this(models, logger, ProcessWithWhisperAsync)
     {
+        _nativeProgress = true;
     }
 
     internal WhisperLocalTranscriber(
@@ -46,25 +48,24 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         SavedRecording recording,
         string temporaryAudioPath,
         CancellationToken cancellationToken)
+        => await TranscribeAsync(new(Guid.NewGuid(), recording, null, null), temporaryAudioPath, null, cancellationToken);
+
+    public Task<TranscriptDocument> TranscribeAsync(
+        TranscriptionRequest request, IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken) =>
+        TranscribeAsync(request,
+            Path.Combine(Path.GetTempPath(), $"sound-recorder-whisper-{Guid.NewGuid():N}.wav"), progress, cancellationToken);
+
+    internal async Task<TranscriptDocument> TranscribeAsync(
+        TranscriptionRequest request, string temporaryAudioPath,
+        IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken)
     {
-        var model = _models.GetModelPath(recording.Language)
-            ?? throw new InvalidOperationException(
-                $"No compatible local transcription model is installed for {recording.Language}.");
+        var recording = request.Recording;
+        var model = ResolveModelPath(request, recording);
         try
         {
-            ResampleForWhisper(
-                recording.AudioPath,
-                temporaryAudioPath,
-                cancellationToken);
+            PrepareAudio(recording, temporaryAudioPath, progress, cancellationToken);
             await using var audio = File.OpenRead(temporaryAudioPath);
-            InfrastructureLog.TranscriptionStarted(_logger, recording.Id);
-            var segments = NormalizeSegments(
-                await _processAudio(
-                    model,
-                    ToWhisperLanguage(recording.Language),
-                    audio,
-                    cancellationToken),
-                recording.CapturedDuration);
+            var segments = await RecognizeAudioAsync(recording, model, audio, progress, cancellationToken);
             InfrastructureLog.TranscriptionProducedSegments(
                 _logger,
                 segments.Count,
@@ -73,11 +74,48 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         }
         finally
         {
-            if (File.Exists(temporaryAudioPath))
-            {
-                File.Delete(temporaryAudioPath);
-            }
+            DeleteProcessingAudio(temporaryAudioPath);
         }
+    }
+
+    private string ResolveModelPath(TranscriptionRequest request, SavedRecording recording)
+    {
+        var model = request.ModelPath ?? _models.GetModelPath(recording.Language, request.ModelId);
+        return RequireModelPath(model, recording);
+    }
+
+    private static string RequireModelPath(string? model, SavedRecording recording) =>
+        model ?? throw new InvalidOperationException(
+            $"No compatible local transcription model is installed for {recording.Language}.");
+
+    private static void PrepareAudio(
+        SavedRecording recording, string temporaryAudioPath,
+        IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken)
+    {
+        progress?.Report(new(TranscriptionPhase.Preparing));
+        ResampleForWhisper(recording.AudioPath, temporaryAudioPath, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<TranscriptSegment>> RecognizeAudioAsync(
+        SavedRecording recording, string model, Stream audio,
+        IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken)
+    {
+        InfrastructureLog.TranscriptionStarted(_logger, recording.Id);
+        progress?.Report(new(TranscriptionPhase.Recognizing));
+        var segments = await ProcessAudioAsync(recording, model, audio, progress, cancellationToken);
+        return NormalizeSegments(segments, recording.CapturedDuration);
+    }
+
+    private Task<IReadOnlyList<TranscriptSegment>> ProcessAudioAsync(
+        SavedRecording recording, string model, Stream audio,
+        IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken) =>
+        _nativeProgress
+            ? ProcessWithWhisperAsync(model, ToWhisperLanguage(recording.Language), audio, cancellationToken, progress)
+            : _processAudio(model, ToWhisperLanguage(recording.Language), audio, cancellationToken);
+
+    private static void DeleteProcessingAudio(string temporaryAudioPath)
+    {
+        if (File.Exists(temporaryAudioPath)) File.Delete(temporaryAudioPath);
     }
 
     private static IReadOnlyList<TranscriptSegment> NormalizeSegments(
@@ -122,11 +160,17 @@ public sealed class WhisperLocalTranscriber : ILocalTranscriber
         string language,
         Stream audio,
         CancellationToken cancellationToken)
+        => await ProcessWithWhisperAsync(model, language, audio, cancellationToken, null);
+
+    private static async Task<IReadOnlyList<TranscriptSegment>> ProcessWithWhisperAsync(
+        string model, string language, Stream audio, CancellationToken cancellationToken,
+        IProgress<TranscriptionProgress>? progress)
     {
         using var factory = WhisperFactory.FromPath(model);
         // Cancellation ends enumeration before native inference necessarily releases the model.
         await using var processor = factory.CreateBuilder()
             .WithLanguage(language)
+            .WithProgressHandler(percent => progress?.Report(new(TranscriptionPhase.Recognizing, percent)))
             .Build();
         var segments = new List<TranscriptSegment>();
 
