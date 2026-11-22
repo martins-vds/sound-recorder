@@ -25,6 +25,14 @@ It must pass before claiming an extension comparison or ARM64 extension support.
 Running on x64 emulation would not establish ARM64 support. Publishing this
 library stages RID assets; it is neither an installer nor native execution proof.
 
+[Issue #8's hosted x64 workflow](../../.github/workflows/transcript-feasibility.yml)
+runs the complete 15-test portable suite and the one native comparison after
+locked restores. Both must execute and pass; unavailable `vec0.dll` is an explicit
+failure, never a skip. TRX records synthetic measurements and native version
+output alongside actual hardware/SDK inventory, retained for 14 days even on
+failure. Native ARM64 extension support and real-model/resource acceptance remain
+separate gates; adding this workflow alone supplies no executed x64 evidence.
+
 Measurement cases include indexing, close/reopen, first query, database size,
 cumulative query allocations, and test-process peak working set. Peak working
 set covers the entire test process, not just retrieval. They are single-run
