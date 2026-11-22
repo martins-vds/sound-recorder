@@ -28,12 +28,19 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
     public async Task<IReadOnlyList<TranscriptionJob>> LoadAsync(
         CancellationToken cancellationToken)
     {
-        if (!File.Exists(_path))
+        await _saveGate.WaitAsync(cancellationToken);
+        try { return await ReadSnapshotAsync(cancellationToken); }
+        finally { _saveGate.Release(); }
+    }
+
+    private async Task<IReadOnlyList<TranscriptionJob>> ReadSnapshotAsync(CancellationToken cancellationToken)
+    {
+        await using var stream = OpenSnapshot();
+        if (stream is null)
         {
             return [];
         }
 
-        await using var stream = File.OpenRead(_path);
         var states = await JsonSerializer.DeserializeAsync<List<TranscriptionJobState>>(
             stream,
             JsonOptions,
@@ -53,6 +60,13 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
         return jobs;
     }
 
+    private FileStream? OpenSnapshot()
+    {
+        try { return File.Open(_path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
     public async Task SaveAsync(
         IReadOnlyList<TranscriptionJob> jobs,
         CancellationToken cancellationToken)
@@ -62,24 +76,28 @@ public sealed class JsonTranscriptionJobRepository : ITranscriptionJobRepository
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             var temporaryPath = $"{_path}.{Guid.NewGuid():N}.tmp";
-            await using (var stream = File.Create(temporaryPath))
+            try
             {
-                var states = jobs
-                    .Select(job => new TranscriptionJobState(
-                        job.Id,
-                        job.Recording,
-                        job.Status,
-                        job.CreatedAt,
-                        job.Outputs,
-                        job.Error,
-                        job.ModelId,
-                        job.InterruptionReason))
-                    .ToArray();
-                await JsonSerializer.SerializeAsync(stream, states, JsonOptions, cancellationToken);
-            }
+                await using (var stream = File.Create(temporaryPath))
+                {
+                    var states = jobs
+                        .Select(job => new TranscriptionJobState(
+                            job.Id,
+                            job.Recording,
+                            job.Status,
+                            job.CreatedAt,
+                            job.Outputs,
+                            job.Error,
+                            job.ModelId,
+                            job.InterruptionReason))
+                        .ToArray();
+                    await JsonSerializer.SerializeAsync(stream, states, JsonOptions, cancellationToken);
+                }
 
-            File.Move(temporaryPath, _path, overwrite: true);
-            InfrastructureLog.TranscriptionJobsPersisted(_logger, jobs.Count);
+                AtomicSnapshotPublication.Publish(temporaryPath, _path);
+                InfrastructureLog.TranscriptionJobsPersisted(_logger, jobs.Count);
+            }
+            finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
         }
         finally
         {

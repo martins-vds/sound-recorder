@@ -643,6 +643,80 @@ public sealed class ModelInventoryTests : IDisposable
         finally { Directory.Delete(junction); }
     }
 
+    [Fact]
+    public async Task RefreshInventory_LocalSocketPayloadIsNotARegularVerifiedModelFile()
+    {
+        var root = Path.Combine("artifacts", $"socket-{Guid.NewGuid():N}"[..15]);
+        try
+        {
+            var manager = new LocalTranscriptionModelManager(root, _workspace.Client);
+            await manager.ImportAsync(_workspace.Package("base"), default);
+            var path = manager.GetModelPath("English")!;
+            File.Delete(path);
+            using var socket = new System.Net.Sockets.Socket(
+                System.Net.Sockets.AddressFamily.Unix,
+                System.Net.Sockets.SocketType.Stream,
+                System.Net.Sockets.ProtocolType.Unspecified);
+            socket.Bind(new System.Net.Sockets.UnixDomainSocketEndPoint(
+                Path.GetRelativePath(Directory.GetCurrentDirectory(), path)));
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                manager.RefreshInventoryAsync(default));
+            Assert.Contains(Assert.IsType<AggregateException>(error.InnerException).InnerExceptions,
+                failure => failure.Message == "Linked model files are unavailable. Re-import a regular model file.");
+            Assert.Empty(manager.DownloadedModels);
+            Assert.Equal("base", manager.SelectedModelId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("manifest")]
+    [InlineData("selection")]
+    public async Task ImportAsync_CancellationAtQueuedPublicationContinuationDoesNotPublish(string publication)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var context = new PublicationCancellationContext(_workspace.ModelsDirectory, publication, cancellation);
+        var previous = SynchronizationContext.Current;
+        Task<TranscriptionModelPackage> operation;
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            operation = _workspace.Manager.ImportAsync(
+                _workspace.Package("base-" + new string('x', 256 * 1024)), cancellation.Token);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(context.CancelledAtPublication, "The public continuation never reached the controlled publication boundary.");
+        Assert.Null(_workspace.Manager.SelectedModelId);
+        Assert.Empty(_workspace.Manager.DownloadedModels);
+        Assert.Empty(Directory.GetFileSystemEntries(_workspace.ModelsDirectory));
+    }
+
+    private sealed class PublicationCancellationContext(
+        string modelsDirectory, string publication, CancellationTokenSource cancellation) : SynchronizationContext
+    {
+        public bool CancelledAtPublication { get; private set; }
+
+        public override void Post(SendOrPostCallback callback, object? state) =>
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var previous = Current;
+                SetSynchronizationContext(this);
+                try
+                {
+                    var pattern = publication == "manifest" ? ".manifest-*.tmp" : "current.json.*.tmp";
+                    if (!cancellation.IsCancellationRequested &&
+                        Directory.GetFiles(modelsDirectory, pattern, SearchOption.AllDirectories).Length != 0)
+                    {
+                        CancelledAtPublication = true;
+                        cancellation.Cancel();
+                    }
+                    callback(state);
+                }
+                finally { SetSynchronizationContext(previous); }
+            });
+    }
+
     private sealed class StartupContext : SynchronizationContext
     {
         private int _posts;

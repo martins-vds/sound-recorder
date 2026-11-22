@@ -50,6 +50,20 @@ public partial class MainWindow : Window
         Func<WindowsRecordingEngine, IDesktopLifecycleEvents> lifecycleEvents,
         IAudioDeviceCatalog? devices = null,
         Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber>? transcriber = null)
+        : this(stateDirectory, loggerFactory, dialogs, environment, lifecycleEvents, devices, transcriber, null)
+    {
+    }
+
+    /// <summary>Composes real local services in a chosen state directory and owns the optional playback adapter.</summary>
+    public MainWindow(
+        string stateDirectory,
+        ILoggerFactory loggerFactory,
+        Func<IDesktopDialogs> dialogs,
+        Func<IDesktopEnvironment> environment,
+        Func<WindowsRecordingEngine, IDesktopLifecycleEvents> lifecycleEvents,
+        IAudioDeviceCatalog? devices,
+        Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber>? transcriber,
+        IRecordingPlayback? playback)
     {
         try
         {
@@ -57,7 +71,8 @@ public partial class MainWindow : Window
             _logger = loggerFactory.CreateLogger<MainWindow>();
             DesktopLog.MainWindowInitializing(_logger);
             InitializeServices(stateDirectory, loggerFactory, dialogs, environment, lifecycleEvents,
-                devices ?? new WindowsAudioDeviceCatalog(), transcriber ?? CreateTranscriber);
+                devices ?? new WindowsAudioDeviceCatalog(), transcriber ?? CreateTranscriber,
+                playback ?? new WindowsRecordingPlayback());
         }
 
         catch (Exception exception)
@@ -102,7 +117,8 @@ public partial class MainWindow : Window
         Func<IDesktopEnvironment> environment,
         Func<WindowsRecordingEngine, IDesktopLifecycleEvents> lifecycleEvents,
         IAudioDeviceCatalog devices,
-        Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber> createTranscriber)
+        Func<string, ITranscriptionModelStore, ILoggerFactory, ILocalTranscriber> createTranscriber,
+        IRecordingPlayback playback)
     {
         var recordingEngine = new WindowsRecordingEngine(
             Path.Combine(root, "capture"),
@@ -143,7 +159,6 @@ public partial class MainWindow : Window
                 Path.Combine(root, "capture"),
                 loggerFactory.CreateLogger<LocalRecoveryStorage>()),
             loggerFactory.CreateLogger<RecoveryManager>());
-        var playback = new WindowsRecordingPlayback();
         var library = new RecordingLibrary(history, jobRepository, loggerFactory.CreateLogger<RecordingLibrary>(),
             queue.CancelRecordingAsync, queue.DeleteJobAsync, (recordingId, token) =>
                 Dispatcher.InvokeAsync(() =>
@@ -242,7 +257,14 @@ public partial class MainWindow : Window
             return;
         }
         await ConfirmRecordingDeletionAsync(recording);
-        DeleteRecordingButton.Focus();
+        if (_viewModel.SelectedRecording?.Id == recording.Id && _viewModel.CanDeleteRecording)
+        {
+            DeleteRecordingButton.Focus();
+        }
+        else
+        {
+            HistoryList.Focus();
+        }
     }
 
     private SavedRecording? DeletableRecording() => _viewModel.CanDeleteRecording ? _viewModel.SelectedRecording : null;
@@ -539,7 +561,8 @@ public partial class MainWindow : Window
     /// <summary>Confirms stopping active work before closing, without queuing a new transcription.</summary>
     public async Task RequestExitAsync()
     {
-        if (_viewModel.HasActiveWork())
+        var hasActiveWork = _viewModel.HasActiveWork();
+        if (hasActiveWork)
         {
             var answer = _dialogs.Show(
                 "Stop active recording or transcription work and exit? " +
@@ -551,9 +574,12 @@ public partial class MainWindow : Window
             {
                 return;
             }
-            await _viewModel.StopActiveWorkAsync();
         }
         await _viewModel.PrepareViewCloseAsync();
+        if (hasActiveWork)
+        {
+            await _viewModel.StopActiveWorkAsync();
+        }
         _allowClose = true;
         Close();
     }
@@ -570,9 +596,13 @@ public partial class MainWindow : Window
         }
         if (_allowClose || !_viewModel.HasActiveWork())
         {
-            _allowClose = true;
-            DisposeWindowServices();
             base.OnClosing(args);
+            if (args.Cancel)
+            {
+                _allowClose = false;
+                return;
+            }
+            DisposeWindowServices();
             return;
         }
 
@@ -598,6 +628,7 @@ public partial class MainWindow : Window
 
     private async Task StopAndCloseAsync()
     {
+        await _viewModel.PrepareViewCloseAsync();
         try
         {
             await _viewModel.StopActiveWorkAsync();
@@ -608,7 +639,6 @@ public partial class MainWindow : Window
         }
         finally
         {
-            await _viewModel.PrepareViewCloseAsync();
             _allowClose = true;
             Close();
         }
@@ -636,11 +666,17 @@ public partial class MainWindow : Window
 
     private void DisposeWindowServices()
     {
+        _timer.Stop();
+        _timer.Tick -= TimerOnTick;
+        _viewModel.PropertyChanged -= ViewModelOnPropertyChanged;
+        _environment.OpenRequested -= EnvironmentOnOpenRequested;
+        _environment.ExitRequested -= EnvironmentOnExitRequested;
         _viewModel.ReleaseViewResources();
         _environment.Dispose();
         _captureLifetime?.Dispose();
         if (_lifecycleEvents is not null)
         {
+            _lifecycleEvents.RecordingCompleted -= RecordingEngineOnRecordingCompleted;
             _lifecycleEvents.PowerModeChanged -= SystemEventsOnPowerModeChanged;
             _lifecycleEvents.SessionEnding -= SystemEventsOnSessionEnding;
         }

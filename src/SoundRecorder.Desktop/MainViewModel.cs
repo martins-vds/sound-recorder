@@ -31,7 +31,6 @@ public sealed partial class MainViewModel : ObservableObject
     private bool _updatingModels;
     private CancellationTokenSource? _modelDownloadCancellation;
     private Task? _recordingDeletionTask;
-    private bool _updatingJobSelection;
     private long _transcriptReadVersion;
     private readonly HashSet<Task> _viewReads = [];
     private bool _closingView;
@@ -307,7 +306,7 @@ public sealed partial class MainViewModel : ObservableObject
         IsDeletingRecording = true;
         try
         {
-            var library = _library ?? throw new InvalidOperationException("Recording library is unavailable.");
+            var library = _library!;
             var result = await Task.Run(() =>
                 library.DeleteRecordingAsync(recording.Id, scope, CancellationToken.None));
             await RefreshHistoryAsync();
@@ -758,16 +757,32 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task CancelJobAsync()
     {
-        if (SelectedJob is null)
+        var job = SelectedJob;
+        if (job is null)
         {
             Message = "Select a transcription job to cancel.";
             return;
         }
 
-        await Task.Run(() =>
-            _queue.CancelAsync(SelectedJob.Id, CancellationToken.None));
-        RefreshJobs();
+        try
+        {
+            var retryingCheckpoint = job.HasTerminalCheckpointFailure;
+            await Task.Run(() => _queue.CancelAsync(job.Id, CancellationToken.None));
+            RefreshJobs();
+            if (retryingCheckpoint)
+            {
+                Message = "The job history checkpoint was saved.";
+            }
+        }
+        catch (Exception exception) when (IsWorkspaceOperationError(exception))
+        {
+            LogJobCancellationFailed(_logger, job.Id, exception.GetType().Name);
+            Message = "The transcription job could not be cancelled: " + exception.Message;
+        }
     }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Transcription cancellation failed for job {JobId} ({ErrorType})")]
+    private static partial void LogJobCancellationFailed(ILogger logger, Guid jobId, string errorType);
 
     [RelayCommand]
     private async Task StopJobAsync()
@@ -817,7 +832,9 @@ public sealed partial class MainViewModel : ObservableObject
         RetryRecordingAsync(SelectedJob?.Recording ?? SelectedRecording);
 
     private static bool IsWorkspaceOperationError(Exception exception) =>
-        IsWorkspaceReadError(exception) || exception is InvalidOperationException;
+        IsWorkspaceReadError(exception) || exception is InvalidOperationException ||
+        exception is AggregateException { InnerExceptions.Count: > 0 } aggregate &&
+        aggregate.InnerExceptions.All(IsWorkspaceOperationError);
 
     private static bool IsWorkspaceReadError(Exception exception) =>
         exception is IOException or UnauthorizedAccessException;
@@ -901,11 +918,12 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var job = SelectedJob;
         var path = job?.Outputs?.TextPath;
-        if (job is null || path is null || !File.Exists(path))
+        if (job is not { Status: TranscriptionJobStatus.Succeeded } || path is null || !File.Exists(path))
         {
             Message = "Select a successful transcription job.";
             Transcript = null;
             CanCopyTranscript = false;
+            CompletedTranscriptJobId = null;
             _logger.LogWarning("Transcript view requested without an available completed output");
             return;
         }
@@ -944,6 +962,8 @@ public sealed partial class MainViewModel : ObservableObject
     private long PrepareJobReview(TranscriptionJob job)
     {
         SelectedRecording = Recordings.FirstOrDefault(recording => recording.Id == job.Recording.Id) ?? job.Recording;
+        CanCopyTranscript = false;
+        CompletedTranscriptJobId = null;
         return ++_transcriptReadVersion;
     }
 
@@ -999,7 +1019,8 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     public bool HasActiveWork() =>
-        !IsIdle || IsDeletingRecording || Jobs.Any(job => job.Status == TranscriptionJobStatus.Running);
+        !IsIdle || IsDeletingRecording || Jobs.Any(job =>
+            job.Status == TranscriptionJobStatus.Running || job.IsTerminationPending);
 
     public async Task StopActiveWorkAsync()
     {
@@ -1013,7 +1034,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         foreach (var job in Jobs.Where(
-                     item => item.Status == TranscriptionJobStatus.Running))
+                     item => item.Status == TranscriptionJobStatus.Running || item.IsTerminationPending))
         {
             await Task.Run(() =>
                 _queue.CancelAsync(job.Id, CancellationToken.None));
@@ -1206,23 +1227,12 @@ public sealed partial class MainViewModel : ObservableObject
         {
             SelectedJob = Jobs.FirstOrDefault(job => job.Id == selectedJobId);
         }
-        _updatingJobSelection = true;
-        try
-        {
-            SelectedJobRow = JobRows.FirstOrDefault(row => row.Id == SelectedJob?.Id);
-        }
-        finally
-        {
-            _updatingJobSelection = false;
-        }
+        SelectedJobRow = JobRows.FirstOrDefault(row => row.Id == SelectedJob?.Id);
     }
 
     partial void OnSelectedJobRowChanged(TranscriptionJobViewModel? value)
     {
-        if (!_updatingJobSelection)
-        {
-            SelectedJob = value?.Job;
-        }
+        SelectedJob = value?.Job;
         OnPropertyChanged(nameof(CanDeleteSelectedJob));
         OnPropertyChanged(nameof(CanRestartSelectedJob));
     }
@@ -1408,11 +1418,12 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (_closingView) return;
         _transcriptReadVersion++;
+        Transcript = null;
         CanCopyTranscript = false;
         CompletedTranscriptJobId = null;
         if (_playback is not null && _playback.RecordingId != value?.Id)
         {
-            _playback.Close();
+            RunPlaybackAction(_playback.Close);
             RefreshPlayback();
         }
         OnPropertyChanged(nameof(HasPlayableRecording));
@@ -1430,6 +1441,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             Transcript = null;
             SelectedJob = null;
+            SelectedJobRow = null;
         }
     }
 

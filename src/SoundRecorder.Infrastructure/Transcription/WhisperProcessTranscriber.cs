@@ -119,7 +119,7 @@ public sealed class WhisperProcessTranscriber : IJobTranscriber
             var request = JsonSerializer.Deserialize<WorkerRequest>(line)
                 ?? throw new InvalidDataException("The local transcription request is invalid.");
             jobId = request.JobId;
-            var frames = Channel.CreateUnbounded<WorkerMessage>(new() { SingleReader = true });
+            var frames = Channel.CreateUnbounded<WorkerMessage>();
             var pump = Task.Run(async () =>
             {
                 await foreach (var frame in frames.Reader.ReadAllAsync())

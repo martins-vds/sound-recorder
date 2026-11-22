@@ -43,5 +43,8 @@ public sealed class TranscriptionJob
     public string Language => Recording.Language;
     public TranscriptionProgress? Progress { get; internal set; }
     public bool IsTerminationPending { get; internal set; }
+    public bool HasTerminalCheckpointFailure { get; internal set; }
+    internal bool WorkerReleaseCompleted { get; set; } = true;
+    internal string? ErrorBeforeTerminalCheckpoint { get; set; }
     public string? InterruptionReason { get; internal set; }
 }

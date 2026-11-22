@@ -187,7 +187,7 @@ public sealed partial class RecordingLibrary
             }
             else if (existing.Outputs != job.Outputs)
             {
-                throw new InvalidDataException("Historical output ownership conflicts with recording metadata.");
+                throw new InvalidDataException();
             }
         }
         return recording with { TranscriptOutputs = outputs };
@@ -243,9 +243,9 @@ public sealed partial class RecordingLibrary
     private static IEnumerable<(Guid JobId, TranscriptOutputs Outputs)> FinishedResidualPairs(
         SavedRecording recording, IReadOnlyList<TranscriptionJob> jobHistory)
     {
-        if (recording.PendingDeletion is not { Scope: RecordingDeletionScope.AllArtifacts } pending)
+        if (recording.PendingDeletion?.Scope != RecordingDeletionScope.AllArtifacts)
             yield break;
-        foreach (var group in pending.Artifacts.Where(artifact => artifact.JobId is not null)
+        foreach (var group in recording.PendingDeletion!.Artifacts.Where(artifact => artifact.JobId is not null)
             .GroupBy(artifact => artifact.JobId!.Value))
         {
             var pair = ReconstructFinishedResidualPair(recording, jobHistory, group);
@@ -273,7 +273,7 @@ public sealed partial class RecordingLibrary
         if (jobs is not null && (await jobs.LoadAsync(token)).Any(job =>
             job.Recording.Id == recordingId && !IsTerminal(job)))
         {
-            throw new InvalidOperationException("Related work has not been released.");
+            throw new InvalidOperationException();
         }
     }
 
@@ -307,10 +307,10 @@ public sealed partial class RecordingLibrary
         var recordings = await history.LoadAsync(token);
         var jobHistory = jobs is null ? [] : await jobs.LoadAsync(token);
         var recording = recordings.FirstOrDefault(item => item.Id == operation.Recording.Id)
-            ?? throw new InvalidDataException("Recording ownership disappeared during deletion.");
+            ?? throw new InvalidDataException();
         operation.FailureCode = LibraryFailureCode.OwnershipInvalid;
         if (ValidateRecordingOwnership(recording, recordings, jobHistory) is not null)
-            throw new InvalidDataException("Recording ownership changed during deletion.");
+            throw new InvalidDataException();
     }
 
     private async Task CompleteDeletionAsync(DeletionOperation operation, CancellationToken token)
@@ -349,10 +349,10 @@ public sealed partial class RecordingLibrary
         if (job is null)
             return;
         if (job.Recording.Id != recordingId || !IsTerminal(job))
-            throw new InvalidDataException("Job ownership or terminal worker-release state changed.");
+            throw new InvalidDataException();
         await deleteJobAsync!(jobId, token);
         if ((await jobs.LoadAsync(token)).Any(item => item.Id == jobId))
-            throw new IOException("Job-history removal was not durably persisted.");
+            throw new IOException();
     }
 
     private static PendingRecordingDeletion MergeDeletionPlan(
@@ -362,8 +362,6 @@ public sealed partial class RecordingLibrary
         var existing = recording.PendingDeletion;
         if (existing is null)
             return expected;
-        if (existing.Artifacts.Any(artifact => !expected.Artifacts.Any(candidate => SameArtifact(candidate, artifact))))
-            throw new InvalidDataException("Pending deletion contains an unowned artifact reference.");
         var knownOutputJobs = existing.Artifacts.Where(artifact => artifact.JobId is not null)
             .Select(artifact => artifact.JobId!.Value).ToHashSet();
         return expected with
@@ -386,11 +384,11 @@ public sealed partial class RecordingLibrary
         var recordings = await history.LoadAsync(token);
         var jobHistory = jobs is null ? [] : await jobs.LoadAsync(token);
         var recording = recordings.FirstOrDefault(item => item.Id == operation.Recording.Id)
-            ?? throw new InvalidDataException("Recording ownership disappeared during release.");
+            ?? throw new InvalidDataException();
         recording = RetainSuccessfulOutputs(recording, jobHistory);
         operation.FailureCode = LibraryFailureCode.OwnershipInvalid;
         if (ValidateRecordingOwnership(recording, recordings, jobHistory) is not null)
-            throw new InvalidDataException("Recording ownership changed during release.");
+            throw new InvalidDataException();
         operation.Recording = recording with { PendingDeletion = MergeDeletionPlan(recording, scope, jobHistory) };
         operation.FailureCode = LibraryFailureCode.PersistenceFailed;
         await history.UpdateAsync(operation.Recording, CancellationToken.None);
@@ -511,7 +509,7 @@ public sealed partial class RecordingLibrary
     {
         if (!Path.IsPathFullyQualified(recording.AudioPath) ||
             !string.Equals(Path.GetExtension(recording.AudioPath), ".wav", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Invalid recording audio reference.");
+            throw new InvalidDataException();
         if (!recording.AudioDeleted && !WasArtifactRemoved(recording, recording.AudioPath))
             ValidateArtifactPath(recording.AudioPath);
     }
@@ -521,7 +519,7 @@ public sealed partial class RecordingLibrary
         foreach (var output in recording.TranscriptOutputs)
         {
             if (!OwnsOutputPaths(recording, output.Outputs))
-                throw new InvalidDataException("Invalid transcript output reference.");
+                throw new InvalidDataException();
         }
     }
 
@@ -532,7 +530,7 @@ public sealed partial class RecordingLibrary
         {
             if (!SamePath(job.Recording.AudioPath, recording.AudioPath) ||
                 (job.Outputs is not null && !OwnsOutputPaths(recording, job.Outputs)))
-                throw new InvalidDataException("Invalid related job artifact reference.");
+                throw new InvalidDataException();
         }
     }
 
@@ -547,7 +545,7 @@ public sealed partial class RecordingLibrary
             .Concat(jobHistory.Where(job => job.Recording.Id != recording.Id)
                 .SelectMany(job => JobPaths(job)));
         if (foreignPaths.Any(path => ownedPaths.Contains(Path.GetFullPath(path))))
-            throw new InvalidDataException("Another recording references this artifact.");
+            throw new InvalidDataException();
     }
 
     private static void ValidatePendingOwnership(
@@ -560,12 +558,12 @@ public sealed partial class RecordingLibrary
         var expected = CreateDeletionPlan(recording, pending.Scope, jobHistory);
         if (pending.OperationId == Guid.Empty ||
             pending.Artifacts.Any(artifact => !expected.Artifacts.Any(candidate => SameArtifact(candidate, artifact))))
-            throw new InvalidDataException("Pending deletion contains an unowned artifact.");
+            throw new InvalidDataException();
         var foreignJobs = jobHistory.Where(job => job.Recording.Id != recording.Id).Select(job => job.Id)
             .Concat(recordings.Where(item => item.Id != recording.Id)
                 .SelectMany(item => item.TranscriptOutputs.Select(output => output.JobId))).ToHashSet();
         if (pending.RemainingJobIds.Any(id => id == Guid.Empty || foreignJobs.Contains(id)))
-            throw new InvalidDataException("Pending deletion contains an unowned job-history reference.");
+            throw new InvalidDataException();
     }
 
     private static IEnumerable<string> RecordingPaths(SavedRecording recording)

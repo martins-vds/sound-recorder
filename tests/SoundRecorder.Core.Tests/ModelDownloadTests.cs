@@ -99,6 +99,19 @@ public sealed class ModelDownloadTests
         Assert.Null(workspace.Manager.SelectedModelId);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0L)]
+    public void TransferProgress_UnknownOrZeroTotalReportsBytesWithoutInvalidPercentage(long? total)
+    {
+        var observed = new List<ModelDownloadProgress>();
+        IProgress<ModelDownloadProgress> receiver = new InlineModelProgress(observed.Add);
+        receiver.Report(new(ModelDownloadPhase.Downloading, 1024, total));
+        receiver.Report(new(ModelDownloadPhase.Verifying, 4096, total));
+        Assert.Equal(new long[] { 1024, 4096 }, observed.Select(progress => progress.BytesTransferred));
+        Assert.All(observed, progress => Assert.Null(progress.Percent));
+    }
+
     [Fact]
     public async Task DownloadAsync_CancelDuringTransferPreservesSelectionAndIndependentFiles()
     {
@@ -318,6 +331,31 @@ public sealed class ModelDownloadTests
             Assert.True(nativeError is 5 or 32, $"Unexpected directory rename error: {deniedRename}");
         }
         finally { directoryReader?.Dispose(); }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_FailedManifestPublicationRemovesOnlyItsOwnedArtifactAndTemporaryFile()
+    {
+        var handler = new ControlledModelDownload();
+        using var workspace = new ModelTestWorkspace(handler);
+        await workspace.Manager.ImportAsync(workspace.Package("base"), default);
+        var previous = workspace.Manager.GetModelPath("English");
+        string? blockedArtifact = null;
+        var failure = await Record.ExceptionAsync(() => workspace.Manager.DownloadAsync(handler.Entry,
+            new InlineModelProgress(progress =>
+            {
+                if (progress.Phase != ModelDownloadPhase.Verifying)
+                    return;
+                blockedArtifact = Directory.GetDirectories(workspace.ModelsDirectory)
+                    .Single(directory => directory != Path.GetDirectoryName(previous));
+                Directory.CreateDirectory(Path.Combine(blockedArtifact, "manifest.json"));
+            }), default));
+        Assert.IsType<IOException>(failure);
+        Assert.False(Directory.Exists(blockedArtifact));
+        Assert.Equal(previous, workspace.Manager.GetModelPath("English"));
+        Assert.Equal("base", workspace.Manager.SelectedModelId);
+        Assert.Equal("base", Assert.Single(workspace.Manager.DownloadedModels).Id);
+        Assert.Empty(Directory.GetFiles(workspace.ModelsDirectory, "*.tmp", SearchOption.AllDirectories));
     }
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW",

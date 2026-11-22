@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="SkipCompilerExecution">
 
   <ItemGroup>
     <ProjectReference Include="..\SoundRecorder.Core\SoundRecorder.Core.csproj" />
@@ -18,6 +18,13 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(_TargetAssemblyProjectName)' != ''">
+    <!-- WPF type inspection needs compiled local types, without regenerating the parent's XAML sources. -->
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <SkipCompilerExecution>false</SkipCompilerExecution>
   </PropertyGroup>
 
 </Project>

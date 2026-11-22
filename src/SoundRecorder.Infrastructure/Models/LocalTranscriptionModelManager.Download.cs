@@ -13,10 +13,11 @@ public sealed partial class LocalTranscriptionModelManager
     {
         entry = GetDownloadCatalogEntry(entry);
         cancellationToken.ThrowIfCancellationRequested();
-        using var staging = new ModelStaging(_modelsDirectory);
+        var staging = new ModelStaging(_modelsDirectory);
         try
         {
-            return await DownloadIntoStagingAsync(entry, progress, staging, cancellationToken);
+            using (staging)
+                return await DownloadIntoStagingAsync(entry, progress, staging, cancellationToken);
         }
         catch (HttpRequestException exception)
         {

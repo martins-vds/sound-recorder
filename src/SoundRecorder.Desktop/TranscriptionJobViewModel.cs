@@ -15,10 +15,12 @@ public sealed class TranscriptionJobViewModel : ObservableObject
     public string Language => Job.Language;
     public string ModelName { get; private set; } = string.Empty;
     public string Status => Job.IsTerminationPending
-        ? PendingStatus(Job.InterruptionReason)
+        ? PendingStatus(Job)
         : TerminalStatus(Job);
 
-    private static string PendingStatus(string? reason) => reason == "User requested Stop." ? "Stopping" : "Cancelling";
+    private static string PendingStatus(TranscriptionJob job) =>
+        job.InterruptionReason == "User requested Stop." ? "Stopping" :
+        job.Status is TranscriptionJobStatus.Succeeded or TranscriptionJobStatus.Failed ? "Finishing" : "Cancelling";
 
     private static string TerminalStatus(TranscriptionJob job) => job.Status switch
         {
@@ -28,7 +30,7 @@ public sealed class TranscriptionJobViewModel : ObservableObject
             _ => job.Status.ToString(),
         };
     public string? Error => Job.Error;
-    public bool CanCancel => !Job.IsTerminationPending &&
+    public bool CanCancel => Job.HasTerminalCheckpointFailure || !Job.IsTerminationPending &&
         Job.Status is TranscriptionJobStatus.Queued or TranscriptionJobStatus.Running;
     public bool CanStop => !Job.IsTerminationPending && Job.Status == TranscriptionJobStatus.Running;
     public bool CanDelete => !Job.IsTerminationPending &&

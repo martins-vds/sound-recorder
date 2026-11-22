@@ -10,6 +10,143 @@ public sealed class RecordingLibraryMutationTests : IDisposable
     private readonly LibraryDeletionFixture _fixture = new();
 
     [Fact]
+    public async Task ReadTranscriptAsync_EntryRemovedDuringLegacyRegistration_ReturnsOwnershipFailureWithoutResurrection()
+    {
+        await _fixture.InitializeAsync();
+        await File.WriteAllTextAsync(_fixture.HistoryPath, JsonSerializer.Serialize(new[] { _fixture.Recording }));
+        var history = new RemovedAfterRegistrationHistory(_fixture.History);
+        var library = new RecordingLibrary(history, _fixture.Jobs, _fixture.Logger);
+
+        var result = await library.ReadTranscriptAsync(_fixture.Recording.Id, _fixture.Outputs[0].JobId, default);
+
+        Assert.Null(result.Text);
+        Assert.Null(result.Subtitles);
+        Assert.Equal(LibraryFailureCode.OwnershipInvalid, Assert.Single(result.Issues).Code);
+        Assert.Empty(await _fixture.History.LoadAsync(default));
+        Assert.Equal("Transcript attempt 1", await File.ReadAllTextAsync(_fixture.Outputs[0].Outputs.TextPath));
+    }
+
+    [Fact]
+    public async Task ReadTranscriptAsync_JobHistoryIsCorrupt_RetainsExactTextAndLogsUnavailableReviewStatus()
+    {
+        await _fixture.InitializeAsync();
+        await File.WriteAllTextAsync(_fixture.JobsPath, "{broken private job history");
+
+        var result = await _fixture.CreateLibrary().ReadTranscriptAsync(
+            _fixture.Recording.Id, _fixture.Outputs[0].JobId, default);
+
+        Assert.Equal("Transcript attempt 1", result.Text);
+        Assert.NotNull(result.Subtitles);
+        Assert.Empty(result.Issues);
+        var entry = Assert.Single(_fixture.Logger.Entries);
+        Assert.Contains("review status is unavailable", entry.Message);
+        Assert.Contains("retained ownership is unchanged", entry.Message);
+        Assert.DoesNotContain(_fixture.Root, entry.Message);
+        Assert.DoesNotContain("private job history", entry.Message);
+    }
+
+    [Theory]
+    [InlineData("meeting")]
+    [InlineData(" ")]
+    public async Task SearchAsync_RequestIsCanceledAfterSnapshotRead_DoesNotReturnAnOtherwiseMatchingTitle(string query)
+    {
+        await _fixture.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+        var history = new AfterLoadHistory(_fixture.History, () =>
+        {
+            cancellation.Cancel();
+            return Task.CompletedTask;
+        });
+        var library = new RecordingLibrary(history);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            library.SearchAsync(query, cancellation.Token));
+
+        Assert.True(File.Exists(_fixture.Recording.AudioPath));
+        Assert.Null(Assert.Single(await _fixture.History.LoadAsync(default)).PendingDeletion);
+    }
+
+    [Fact]
+    public async Task LoadAsync_OriginalAudioIsMissing_ExplainsRetainedReviewAndLogsAvailabilityFailure()
+    {
+        await _fixture.InitializeAsync();
+        File.Delete(_fixture.Recording.AudioPath);
+
+        var entry = Assert.Single(await _fixture.CreateLibrary().LoadAsync(default));
+
+        Assert.Equal(AudioAvailability.Missing, entry.AudioAvailability);
+        var issue = Assert.Single(entry.Issues);
+        Assert.Equal(LibraryFailureCode.ArtifactMissing, issue.Code);
+        Assert.Contains("original audio is missing", issue.Message);
+        Assert.Contains("Retained transcripts", issue.Message);
+        Assert.Contains(_fixture.Logger.Entries, log => log.Message.Contains("original audio is missing"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_SuccessfulJobHasNoOutputs_ReportsHistoricalOwnershipRatherThanCreatingATranscript()
+    {
+        await _fixture.InitializeAsync();
+        var job = new TranscriptionJob(Guid.NewGuid(), _fixture.Recording, DateTimeOffset.UtcNow,
+            TranscriptionJobStatus.Succeeded, null, null);
+        await _fixture.Jobs.SaveAsync([.. await _fixture.Jobs.LoadAsync(default), job], default);
+
+        var entry = Assert.Single(await _fixture.CreateLibrary().LoadAsync(default));
+
+        var issue = Assert.Single(entry.Issues);
+        Assert.Equal(job.Id, issue.JobId);
+        Assert.Equal(LibraryFailureCode.OwnershipInvalid, issue.Code);
+        Assert.Contains("historical output pair", issue.Message);
+        Assert.Contains("paths", issue.Message);
+        Assert.Equal(_fixture.Outputs, entry.Recording.TranscriptOutputs);
+        Assert.Contains(_fixture.Logger.Entries, log => log.Message.Contains("Historical output ownership validation failed"));
+    }
+
+    [Theory]
+    [InlineData("audio")]
+    [InlineData("text")]
+    [InlineData("subtitle")]
+    public async Task ReadTranscriptAsync_LiveArtifactIsADirectory_RejectsBeforeReadingOtherContents(string kind)
+    {
+        await _fixture.InitializeAsync();
+        var output = _fixture.Outputs[0];
+        var path = kind switch
+        {
+            "audio" => _fixture.Recording.AudioPath,
+            "text" => output.Outputs.TextPath,
+            _ => output.Outputs.SubtitlePath,
+        };
+        File.Delete(path);
+        Directory.CreateDirectory(path);
+        await File.WriteAllTextAsync(Path.Combine(path, "protected.txt"), "Protected directory content");
+
+        var result = await _fixture.CreateLibrary().ReadTranscriptAsync(
+            _fixture.Recording.Id, output.JobId, default);
+
+        Assert.Null(result.Text);
+        Assert.Null(result.Subtitles);
+        Assert.Equal(LibraryFailureCode.OwnershipInvalid, Assert.Single(result.Issues).Code);
+        Assert.Equal("Protected directory content", await File.ReadAllTextAsync(Path.Combine(path, "protected.txt")));
+    }
+
+    [Theory]
+    [InlineData("Quarterly roadmap", " roadmap ", true)]
+    [InlineData("Quarterly roadmap", "meeting", false)]
+    [InlineData(" ", " meeting ", true)]
+    public async Task SearchAsync_TitleOnlyMatch_DoesNotSubstituteTheFilenameOrTranscript(
+        string title, string query, bool matches)
+    {
+        await _fixture.InitializeAsync();
+        await _fixture.History.UpdateAsync(_fixture.Recording with { Title = title }, default);
+
+        var results = await _fixture.CreateLibrary().SearchAsync(query, default);
+
+        if (matches)
+            Assert.Equal(_fixture.Recording.Id, Assert.Single(results).Recording.Id);
+        else
+            Assert.Empty(results);
+    }
+
+    [Fact]
     public async Task SearchAsync_TitleDiffersFromFilename_ReturnsOneEntryWithoutDuplicatingContentMatches()
     {
         await _fixture.InitializeAsync();
@@ -68,6 +205,7 @@ public sealed class RecordingLibraryMutationTests : IDisposable
     [InlineData("subtitle-name")]
     [InlineData("attempt-one")]
     [InlineData("unrelated")]
+    [InlineData("prefix-alias")]
     public async Task ReadTranscriptAsync_UnownedPairShape_DoesNotReadOrSearchForeignContent(string invalid)
     {
         await _fixture.InitializeAsync();
@@ -82,6 +220,7 @@ public sealed class RecordingLibraryMutationTests : IDisposable
             "extension" => (Path.Combine(_fixture.Root, "meeting.transcript-2.json"), subtitle),
             "subtitle-name" => (text, Path.Combine(_fixture.Root, "another.srt")),
             "attempt-one" => (Path.Combine(_fixture.Root, "meeting.transcript-1.txt"), Path.Combine(_fixture.Root, "meeting.transcript-1.srt")),
+            "prefix-alias" => (Path.Combine(_fixture.Root, "foreign.unrelated--2.txt"), Path.Combine(_fixture.Root, "foreign.unrelated--2.srt")),
             _ => (Path.Combine(_fixture.Root, "unrelated-reference-22.txt"), Path.Combine(_fixture.Root, "unrelated-reference-22.srt")),
         };
         var foreign = new OwnedTranscriptOutputs(Guid.NewGuid(), new(text, subtitle));
@@ -187,4 +326,31 @@ public sealed class RecordingLibraryMutationTests : IDisposable
     }
 
     public void Dispose() => _fixture.Dispose();
+}
+
+internal sealed class AfterLoadHistory(IRecordingHistory inner, Func<Task> afterLoad) : IRecordingHistory
+{
+    public async Task<IReadOnlyList<SavedRecording>> LoadAsync(CancellationToken token)
+    {
+        var recordings = await inner.LoadAsync(token);
+        await afterLoad();
+        return recordings;
+    }
+
+    public Task AddAsync(SavedRecording recording, CancellationToken token) => inner.AddAsync(recording, token);
+    public Task UpdateAsync(SavedRecording recording, CancellationToken token) => inner.UpdateAsync(recording, token);
+    public Task RemoveAsync(Guid id, CancellationToken token) => inner.RemoveAsync(id, token);
+    public Task RegisterOutputsAsync(Guid id, OwnedTranscriptOutputs outputs, CancellationToken token) =>
+        inner.RegisterOutputsAsync(id, outputs, token);
+}
+
+internal sealed class RemovedAfterRegistrationHistory(IRecordingHistory inner) : IRecordingHistory
+{
+    public Task<IReadOnlyList<SavedRecording>> LoadAsync(CancellationToken token) => inner.LoadAsync(token);
+    public Task AddAsync(SavedRecording recording, CancellationToken token) => inner.AddAsync(recording, token);
+    public async Task RegisterOutputsAsync(Guid id, OwnedTranscriptOutputs outputs, CancellationToken token)
+    {
+        await inner.RegisterOutputsAsync(id, outputs, token);
+        await inner.RemoveAsync(id, token);
+    }
 }

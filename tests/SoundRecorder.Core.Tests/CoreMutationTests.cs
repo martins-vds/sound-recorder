@@ -328,6 +328,50 @@ public sealed class RecorderApplicationMutationTests
         Assert.Same(recording, Assert.Single(history.Recordings));
     }
 
+    [Fact]
+    public async Task RetryAfterEnqueueFailureKeepsOneSavedHistoryEntry()
+    {
+        var history = new TestHistory();
+        var queue = new TestQueue { EnqueueFailure = new IOException("Job history is unavailable.") };
+        var engine = new TestRecordingEngine();
+        var app = new RecorderApplication(engine, queue, new TestModels(true), history);
+
+        await Assert.ThrowsAsync<IOException>(() => app.AcceptCompletedRecordingAsync(engine.Result));
+        Assert.Same(engine.Result, Assert.Single(await history.LoadAsync(CancellationToken.None)));
+        Assert.Empty(queue.Recordings);
+
+        queue.EnqueueFailure = null;
+        await app.AcceptCompletedRecordingAsync(engine.Result);
+
+        Assert.Same(engine.Result, Assert.Single(await history.LoadAsync(CancellationToken.None)));
+        Assert.Same(engine.Result, Assert.Single(queue.Recordings));
+    }
+
+    [Theory]
+    [InlineData("updates")]
+    [InlineData("removal")]
+    [InlineData("output registration")]
+    public async Task LegacyHistoryRejectsUnsupportedArtifactManagementWithoutChangingSavedEntries(string operation)
+    {
+        IRecordingHistory history = new TestHistory();
+        var recording = new TestRecordingEngine().Result;
+        await history.AddAsync(recording, CancellationToken.None);
+        var outputs = new OwnedTranscriptOutputs(Guid.NewGuid(),
+            new TranscriptOutputs(Path.ChangeExtension(recording.AudioPath, ".txt"),
+                Path.ChangeExtension(recording.AudioPath, ".srt")));
+
+        var failure = await Assert.ThrowsAsync<NotSupportedException>(() => operation switch
+        {
+            "updates" => history.UpdateAsync(recording with { AudioDeleted = true }, CancellationToken.None),
+            "removal" => history.RemoveAsync(recording.Id, CancellationToken.None),
+            "output registration" => history.RegisterOutputsAsync(recording.Id, outputs, CancellationToken.None),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        });
+
+        Assert.Contains(operation, failure.Message);
+        Assert.Same(recording, Assert.Single(await history.LoadAsync(CancellationToken.None)));
+    }
+
     internal static RecordingRequest ValidRequest()
     {
         return new RecordingRequest(
@@ -765,11 +809,13 @@ internal sealed class TestRecordingEngine : IRecordingEngine
 internal sealed class TestQueue : ITranscriptionQueue
 {
     public List<SavedRecording> Recordings { get; } = [];
+    public IOException? EnqueueFailure { get; set; }
 
     public Task EnqueueAsync(
         SavedRecording recording,
         CancellationToken cancellationToken)
     {
+        if (EnqueueFailure is not null) throw EnqueueFailure;
         Recordings.Add(recording);
         return Task.CompletedTask;
     }

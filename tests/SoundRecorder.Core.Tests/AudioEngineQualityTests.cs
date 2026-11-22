@@ -225,8 +225,9 @@ public sealed class AudioEngineQualityTests : IDisposable
             _ => 1_000_000);
         var storage = await Assert.ThrowsAsync<RecordingStartException>(() =>
             engine.StartAsync(Request(), CancellationToken.None));
-        Assert.Contains("four-hour", storage.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Confirm a shorter recording or choose another local folder.", storage.Message);
+        Assert.Equal(
+            "The destination does not have enough free space for a four-hour recording. " +
+            "Confirm a shorter recording or choose another local folder.", storage.Message);
         Assert.Empty(devices);
         await engine.StartAsync(
             Request() with { AllowShortRecordingWhenStorageIsLow = true },

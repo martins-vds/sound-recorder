@@ -125,11 +125,6 @@ public sealed partial class RecordingLibrary(
     {
         var entries = await LoadAsync(cancellationToken);
         var term = query.Trim();
-        if (term.Length == 0)
-        {
-            return entries;
-        }
-
         var matches = new List<RecordingLibraryEntry>();
         foreach (var entry in entries)
         {
@@ -226,7 +221,7 @@ public sealed partial class RecordingLibrary(
     private async Task<HashSet<Guid>> KnownUnsuccessfulJobsAsync(CancellationToken token)
     {
         if (jobs is null)
-            return [];
+            return new HashSet<Guid>();
         try
         {
             return (await jobs.LoadAsync(token)).Where(job => job.Status != TranscriptionJobStatus.Succeeded)
@@ -236,7 +231,7 @@ public sealed partial class RecordingLibrary(
         {
             _logger.LogWarning("Job-history review status is unavailable ({FailureType}); retained ownership is unchanged.",
                 exception.GetType().Name);
-            return [];
+            return new HashSet<Guid>();
         }
     }
 
@@ -270,7 +265,6 @@ public sealed partial class RecordingLibrary(
         var text = Path.GetFullPath(outputs.TextPath);
         var subtitle = Path.GetFullPath(outputs.SubtitlePath);
         return string.Equals(directory, Path.GetDirectoryName(text), StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(directory, Path.GetDirectoryName(subtitle), StringComparison.OrdinalIgnoreCase) &&
             string.Equals(Path.GetExtension(text), ".txt", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(Path.ChangeExtension(text, ".srt"), subtitle, StringComparison.OrdinalIgnoreCase);
     }
@@ -316,9 +310,9 @@ public sealed partial class RecordingLibrary(
     private static void ValidateArtifactAttributes(FileAttributes attributes, bool isArtifact)
     {
         if (isArtifact && (attributes & FileAttributes.Directory) != 0)
-            throw new InvalidDataException("Recording artifacts must be files, not directories.");
+            throw new InvalidDataException();
         if ((attributes & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("Redirected recording artifact paths are not supported.");
+            throw new InvalidDataException();
     }
 
     private async Task<string?> ReadArtifactAsync(

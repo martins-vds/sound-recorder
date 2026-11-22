@@ -458,9 +458,10 @@ public sealed class WhisperProcessQualityTests : IDisposable
         var worker = new FakeWorker(string.Empty) { OnWait = cancellation.Cancel };
         var transcriber = new WhisperProcessTranscriber("worker.exe", new ModelStore(), _ => worker);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             transcriber.TranscribeAsync(Recording(), cancellation.Token));
 
+        Assert.Null(error.InnerException);
         Assert.True(worker.Disposed);
     }
 

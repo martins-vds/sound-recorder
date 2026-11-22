@@ -16,6 +16,1337 @@ namespace SoundRecorder.Core.Tests;
 [Collection("Desktop environment")]
 public sealed class MainWindowTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task MeetingWorkspace_StopDistinguishesKnownWorkerErrorsWithoutWeakeningPhysicalRelease(bool knownFailure) => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        context.Transcriber.Block = true;
+        context.Transcriber.CancellationError = knownFailure
+            ? new AggregateException(new IOException("Worker cancellation release failed."),
+                new UnauthorizedAccessException("Worker handle unavailable."))
+            : new AggregateException(new IOException("Worker cancellation release failed."),
+                new NullReferenceException("Unexpected worker defect."));
+        context.Transcriber.CancellationGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await context.Queue.EnqueueAsync(context.Engine.Result, CancellationToken.None);
+        await context.Transcriber.Started.Task;
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            context.ViewModel.Refresh();
+            context.ViewModel.SelectedJobRow = Assert.Single(context.ViewModel.JobRows);
+            var failure = await Record.ExceptionAsync(() => context.ViewModel.StopJobCommand.ExecuteAsync(null));
+            if (knownFailure)
+            {
+                Assert.Null(failure);
+                Assert.Contains("could not be stopped", context.ViewModel.Message);
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(context.ViewModel.SelectedJob!.Id.ToString(), StringComparison.Ordinal));
+            }
+            else
+            {
+                Assert.IsType<AggregateException>(failure);
+            }
+        }
+        finally
+        {
+            context.Transcriber.CancellationError = null;
+            context.Transcriber.CancellationGate.TrySetResult();
+            try { await context.Queue.WaitForIdleAsync(CancellationToken.None); }
+            catch (AggregateException) { }
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_DeferredQueuePersistenceFailureKeepsSavedAudioAndDoesNotStartProcessing() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "deferred-history.json"));
+        var path = Path.Combine(context.Directory, "deferred-jobs.json");
+        var repository = new JsonTranscriptionJobRepository(path);
+        await repository.SaveAsync([], CancellationToken.None);
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        var recorder = new RecorderApplication(context.Engine, queue, context.Models, history);
+        var viewModel = new MainViewModel(recorder, context.Engine, queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger);
+        viewModel.DestinationFolder = context.Directory;
+        var model = await context.Models.RegisterAsync("existing.zip", CancellationToken.None);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Models.Selecting = token => release.Task.WaitAsync(token);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            viewModel.SelectedModel = model;
+            await UntilAsync(() => viewModel.IsSelectingModel);
+            viewModel.PermissionConfirmed = true;
+            viewModel.SelectedMicrophoneId = "microphone";
+            await viewModel.StartRecordingAsync(false);
+            await viewModel.StopAsync(enqueueTranscription: true);
+            using (var blocked = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                release.SetResult();
+                await UntilAsync(() => !viewModel.HasPendingViewWork);
+                Assert.Contains("could not be queued", viewModel.Message);
+                Assert.Equal(recording.Id, Assert.Single(viewModel.Recordings).Id);
+                Assert.True(File.Exists(recording.AudioPath));
+                Assert.False(context.Transcriber.Started.Task.IsCompleted);
+                Assert.DoesNotContain(queue.Jobs, job => job.Status == TranscriptionJobStatus.Running);
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(recording.Id.ToString(), StringComparison.Ordinal));
+            }
+            Assert.Empty(await repository.LoadAsync(CancellationToken.None));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await queue.CancelRecordingAsync(recording.Id, CancellationToken.None);
+            await queue.WaitForIdleAsync(CancellationToken.None);
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ExitCancelsAndDrainsCatalogTransferWithoutReplacingTheSelectedModel() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        await context.Models.RegisterAsync("existing.zip", CancellationToken.None);
+        context.Models.CurrentPackage = context.Models.Package;
+        context.Models.CatalogGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        var entry = SoundRecorder.Infrastructure.Models.TranscriptionModelCatalog.Entries.Single(
+            model => model.Key == "whisper.net:small:Q5_1");
+        var download = context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(entry);
+        try
+        {
+            await UntilAsync(() => context.ViewModel.ModelDownloadStatus == "Downloading");
+            Assert.True(context.ViewModel.HasPendingViewWork);
+            await window.RequestExitAsync();
+            Assert.True(download.IsCompleted);
+            Assert.False(context.ViewModel.HasPendingViewWork);
+            Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            Assert.DoesNotContain(context.Models.DownloadedModels, model => model.Id == entry.Key);
+            Assert.Contains("cancelled", context.ViewModel.ModelDownloadStatus, StringComparison.OrdinalIgnoreCase);
+            Assert.False(context.Models.CatalogGate.Task.IsCompleted);
+        }
+        finally
+        {
+            context.Models.CatalogGate.TrySetResult();
+            await download;
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_JobHistoryBoundaryFailureLeavesReviewAndArtifactsAvailableForExplicitRetry() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "job-boundary-history.json"));
+        var repository = new JsonTranscriptionJobRepository(Path.Combine(context.Directory, "job-boundary-jobs.json"));
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Completed before history became unavailable.")]), CancellationToken.None);
+        var job = context.Job(recording, outputs);
+        await history.AddAsync(recording, CancellationToken.None);
+        await repository.SaveAsync([job], CancellationToken.None);
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        var localLibrary = new RecordingLibrary(history, repository, deleteJobAsync: queue.DeleteJobAsync);
+        var library = new JobHistoryBoundary(localLibrary) { Failure = new IOException("History service unavailable.") };
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            await UntilAsync(() => viewModel.CanCopyTranscript);
+            viewModel.SelectedJobRow = Assert.Single(viewModel.JobRows);
+            await viewModel.DeleteSelectedJobHistoryAsync();
+            Assert.Equal(job.Id, Assert.Single(viewModel.Jobs).Id);
+            Assert.Equal(job.Id, viewModel.SelectedJob!.Id);
+            Assert.True(viewModel.CanCopyTranscript);
+            Assert.Contains("Completed before history became unavailable.", viewModel.Transcript);
+            Assert.True(File.Exists(recording.AudioPath));
+            Assert.True(File.Exists(outputs.TextPath));
+            Assert.True(File.Exists(outputs.SubtitlePath));
+            Assert.Contains("could not be deleted", viewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains(job.Id.ToString(), StringComparison.Ordinal) &&
+                entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+            library.Failure = null;
+            await viewModel.DeleteSelectedJobHistoryAsync();
+            Assert.Empty(viewModel.Jobs);
+            Assert.Empty(viewModel.JobRows);
+            Assert.Contains("Completed before history became unavailable.", viewModel.Transcript);
+            Assert.True(File.Exists(outputs.TextPath));
+            Assert.True(File.Exists(outputs.SubtitlePath));
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_PublicResourceReleaseCancelsSearchAndClosesItsActualAudioHandle() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        using (var wave = new NAudio.Wave.WaveFileWriter(recording.AudioPath, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            wave.Write(new byte[96_000], 0, 96_000);
+        }
+        context.History.Items.Add(recording);
+        context.History.LoadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = context.History.LoadGate;
+        using var playback = new WindowsRecordingPlayback(() => new WorkspacePlaybackDevice());
+        var library = new RecordingLibrary(context.History);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, library, playback);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            viewModel.SelectedRecording = recording;
+            viewModel.PlayRecordingCommand.Execute(null);
+            Assert.Equal(recording.AudioPath, viewModel.PlaybackSourcePath);
+            viewModel.SearchText = "pending search";
+            await context.History.LoadStarted.Task;
+            Assert.True(viewModel.HasPendingViewWork);
+            viewModel.ReleaseViewResources();
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.False(release.Task.IsCompleted);
+            Assert.Null(playback.RecordingId);
+            using var exclusive = File.Open(recording.AudioPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ChangingMeetingClearsPrivateTextWhileItsNewTranscriptIsLoading() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var first = context.Engine.Result with { Title = "First meeting" };
+        var second = context.Recording(Guid.NewGuid()) with { Title = "Second meeting" };
+        var writer = new AtomicTranscriptWriter();
+        var firstOutputs = await writer.WriteAsync(new(first, first.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "First private decision.")]), CancellationToken.None);
+        var secondOutputs = await writer.WriteAsync(new(second, second.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Second private decision.")]), CancellationToken.None);
+        first = first with { TranscriptOutputs = [new(Guid.NewGuid(), firstOutputs)] };
+        second = second with { TranscriptOutputs = [new(Guid.NewGuid(), secondOutputs)] };
+        context.History.Items.AddRange([first, second]);
+        var library = new RecordingLibrary(context.History);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        viewModel.Recordings.Add(first);
+        viewModel.Recordings.Add(second);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            viewModel.SelectedRecording = first;
+            await UntilAsync(() => viewModel.CanCopyTranscript);
+            Assert.Contains("First private decision.", viewModel.Transcript);
+            context.History.LoadGate = release;
+            viewModel.SelectedRecording = second;
+            Assert.True(viewModel.HasPendingViewWork);
+            Assert.Equal(second.Id, viewModel.SelectedRecording!.Id);
+            Assert.False(viewModel.CanCopyTranscript);
+            Assert.Null(viewModel.CompletedTranscriptJobId);
+            Assert.DoesNotContain("First private decision.", viewModel.Transcript ?? string.Empty);
+            release.SetResult();
+            await UntilAsync(() => viewModel.CanCopyTranscript);
+            Assert.Contains("Second private decision.", viewModel.Transcript);
+            Assert.DoesNotContain("First private decision.", viewModel.Transcript);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_EnglishRequiresACompatibleChoiceWithoutReplacingALanguageRestrictedPackage() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+            context.Models.CurrentPackage = context.Models.Package with { Languages = ["Brazilian Portuguese"] };
+            context.ViewModel.Language = "Brazilian Portuguese";
+            context.ViewModel.Language = "English";
+            Assert.Contains("compatible downloaded model for English", context.ViewModel.Message);
+            Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            Assert.Equal(["Brazilian Portuguese"], context.Models.CurrentPackage.Languages);
+            Assert.True(context.ViewModel.StartCommand.CanExecute(null));
+            Assert.Empty(context.Queue.Jobs);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("English", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_MissingOwnedArtifactsRemainExplicitWithoutPromotingACompletedReview() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Saved before the files went missing.")]), CancellationToken.None);
+        var jobId = Guid.NewGuid();
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "missing-artifacts-history.json"));
+        await history.AddAsync(recording with { TranscriptOutputs = [new(jobId, outputs)] }, CancellationToken.None);
+        File.Delete(outputs.TextPath);
+        var library = new RecordingLibrary(history);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.Contains("retained transcript artifact is unavailable", viewModel.Message);
+            Assert.Null(viewModel.Transcript);
+            Assert.False(viewModel.CanCopyTranscript);
+            Assert.Null(viewModel.CompletedTranscriptJobId);
+            Assert.True(File.Exists(outputs.SubtitlePath));
+            Assert.False(File.Exists(recording.AudioPath));
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Library", StringComparison.Ordinal));
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains(recording.Id.ToString(), StringComparison.Ordinal));
+            Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains(recording.AudioPath,
+                StringComparison.Ordinal) || entry.Message.Contains(outputs.TextPath, StringComparison.Ordinal));
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_FullDeletionDisablesDuplicateRequestsUntilOwnedWorkerAndAudioAreReleased() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        using (var wave = new NAudio.Wave.WaveFileWriter(recording.AudioPath, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            wave.Write(new byte[96_000], 0, 96_000);
+        }
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "held-deletion-history.json"));
+        var repository = new JsonTranscriptionJobRepository(Path.Combine(context.Directory, "held-deletion-jobs.json"));
+        await history.AddAsync(recording, CancellationToken.None);
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(1), "Retained before explicit deletion.")]), CancellationToken.None);
+        var completed = context.Job(recording, outputs);
+        await repository.SaveAsync([completed], CancellationToken.None);
+        context.Transcriber.Block = true;
+        context.Transcriber.CancellationGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        using var playback = new WindowsRecordingPlayback(() => new WorkspacePlaybackDevice());
+        var dispatcher = Dispatcher.CurrentDispatcher;
+        var library = new RecordingLibrary(history, repository, cancelRecordingAsync: queue.CancelRecordingAsync,
+            deleteJobAsync: queue.DeleteJobAsync, releasePlaybackAsync: (_, token) =>
+                dispatcher.InvokeAsync(playback.Close, DispatcherPriority.Normal, token).Task);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library, playback);
+        var environment = new DesktopEnvironment();
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs { Answer = MessageBoxResult.Yes }, environment,
+            new DesktopLogger<MainWindow>());
+        Task? deleting = null;
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            viewModel.PlayRecordingCommand.Execute(null);
+            Assert.True(viewModel.IsPlaying);
+            await queue.EnqueueAsync(recording, CancellationToken.None);
+            await context.Transcriber.Started.Task;
+            viewModel.Refresh();
+            deleting = viewModel.DeleteRecordingAsync(true);
+            await context.Transcriber.CancellationRequested.Task;
+            Assert.True(viewModel.IsDeletingRecording);
+            Assert.False(viewModel.CanDeleteRecording);
+            Assert.True(viewModel.StartCommand.CanExecute(null));
+            await viewModel.DeleteRecordingAsync(true);
+            Assert.True(File.Exists(recording.AudioPath));
+            Assert.Equal(2, queue.Jobs.Count);
+            var exiting = window.RequestExitAsync();
+            Assert.False(exiting.IsCompleted);
+            Assert.Equal(0, environment.Disposals);
+            context.Transcriber.CancellationGate.SetResult();
+            await deleting;
+            await exiting;
+            Assert.Equal(1, environment.Disposals);
+            Assert.Empty(viewModel.Jobs);
+            Assert.Empty(viewModel.JobRows);
+            Assert.Empty(viewModel.Recordings);
+            Assert.Empty(queue.Jobs);
+            Assert.False(viewModel.IsDeletingRecording);
+            Assert.False(viewModel.IsPlaying);
+            Assert.Null(viewModel.PlaybackSourcePath);
+            Assert.Equal(0, viewModel.PlaybackPositionSeconds);
+            Assert.Equal(0, viewModel.PlaybackDurationSeconds);
+            Assert.False(File.Exists(recording.AudioPath));
+            Assert.False(File.Exists(outputs.TextPath));
+            Assert.False(File.Exists(outputs.SubtitlePath));
+        }
+        finally
+        {
+            context.Transcriber.CancellationGate.TrySetResult();
+            if (deleting is not null) await deleting;
+            await queue.WaitForIdleAsync(CancellationToken.None);
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_EmptySearchUpdatesWhenMatchingRecoveredAudioIsAdded() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "empty-search-history.json"));
+        var library = new RecordingLibrary(history);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            viewModel.SearchText = "Budget";
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.Empty(viewModel.FilteredRecordings);
+            Assert.Contains("No recordings", viewModel.LibraryMessage);
+            var recovered = context.Engine.Result with { Title = "Budget", Outcome = RecordingOutcome.Recovered };
+            await File.WriteAllBytesAsync(recovered.AudioPath, [1, 2, 3]);
+            context.Recovery.Result = recovered;
+            await viewModel.RecoverAsync(context.Recovery.Candidate);
+            Assert.Equal("Budget", viewModel.SearchText);
+            Assert.Equal(recovered.Id, Assert.Single(viewModel.FilteredRecordings).Id);
+            Assert.Equal(string.Empty, viewModel.LibraryMessage);
+            Assert.Null(viewModel.SelectedRecording);
+            Assert.Empty(context.Queue.Jobs);
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_CloseRetainsSavedAudioWhenModelCommitWinsCancellation() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var model = await context.Models.RegisterAsync("existing.zip", CancellationToken.None);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var selectionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken selectionToken = default;
+        context.Models.Selecting = token =>
+        {
+            selectionToken = token;
+            selectionStarted.SetResult();
+            return releaseCommit.Task;
+        };
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+            context.ViewModel.SelectedModel = model;
+            await selectionStarted.Task;
+            context.PrepareRecording();
+            await context.ViewModel.StartRecordingAsync(false);
+            var saved = await context.ViewModel.StopAsync(enqueueTranscription: true);
+            Assert.Same(saved, Assert.Single(context.ViewModel.Recordings));
+            Assert.Empty(context.Queue.Jobs);
+            var exiting = window.RequestExitAsync();
+            Assert.True(selectionToken.IsCancellationRequested);
+            Assert.False(exiting.IsCompleted);
+            releaseCommit.SetResult();
+            await exiting;
+            Assert.Empty(context.Queue.Jobs);
+            Assert.Same(saved, Assert.Single(context.ViewModel.Recordings));
+            Assert.Contains("saved for later transcription while the workspace is closing", context.ViewModel.Message);
+            Assert.False(context.ViewModel.HasPendingViewWork);
+        }
+        finally
+        {
+            releaseCommit.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task MeetingWorkspace_TransferAndVerificationNeverOfferAnIncompleteModelChoice(bool lengthKnown) => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        await context.Models.RegisterAsync("existing.zip", CancellationToken.None);
+        context.Models.CurrentPackage = context.Models.Package;
+        context.Models.CatalogTotalBytes = lengthKnown ? 4096 : null;
+        context.Models.CatalogGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Models.VerificationGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        var entry = SoundRecorder.Infrastructure.Models.TranscriptionModelCatalog.Entries.Single(
+            model => model.Key == "whisper.net:small:Q5_1");
+        var download = context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(entry);
+        try
+        {
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            await UntilAsync(() => context.ViewModel.ModelDownloadStatus == "Downloading");
+            var progress = Assert.IsType<System.Windows.Controls.ProgressBar>(window.FindName("ModelDownloadProgress"));
+            Assert.Equal(lengthKnown ? 25 : 0, progress.Value);
+            Assert.Equal(!lengthKnown, progress.IsIndeterminate);
+            if (!lengthKnown)
+            {
+                Assert.DoesNotContain("%", context.ViewModel.ModelHeader);
+                Assert.Equal("Indeterminate", System.Windows.Automation.AutomationProperties.GetItemStatus(progress));
+            }
+            context.Models.CatalogGate.SetResult();
+            await UntilAsync(() => context.ViewModel.ModelDownloadStatus == "Verifying");
+            Assert.True(context.ViewModel.IsDownloadingModel);
+            Assert.True(progress.IsIndeterminate);
+            Assert.Equal("Indeterminate", System.Windows.Automation.AutomationProperties.GetItemStatus(progress));
+            Assert.DoesNotContain(context.Models.DownloadedModels, model => model.Id == entry.Key);
+            Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            context.Models.VerificationGate.SetResult();
+            await download;
+            Assert.Contains(context.ViewModel.DownloadedModels, model => model.Id == entry.Key);
+            Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            Assert.False(context.ViewModel.IsDownloadingModel);
+            var completedStatus = context.ViewModel.ModelDownloadStatus;
+            var selectedHeader = context.ViewModel.ModelHeader;
+            context.Models.CatalogProgress!.Report(new(ModelDownloadPhase.Downloading, 1, 2));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.Equal(completedStatus, context.ViewModel.ModelDownloadStatus);
+            Assert.Equal(selectedHeader, context.ViewModel.ModelHeader);
+            Assert.False(context.ViewModel.IsDownloadingModel);
+        }
+        finally
+        {
+            context.Models.CatalogGate.TrySetResult();
+            context.Models.VerificationGate.TrySetResult();
+            await download;
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_FailedTerminalCheckpointOffersAnExplicitPersistenceRetry() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        context.Repository.TerminalSaveError = new IOException("Private history checkpoint is unavailable.");
+        await context.Queue.EnqueueAsync(context.Engine.Result, CancellationToken.None);
+        await UntilAsync(() => Assert.Single(context.Queue.Jobs).HasTerminalCheckpointFailure);
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            context.ViewModel.Refresh();
+            var row = Assert.Single(context.ViewModel.JobRows);
+            context.ViewModel.SelectedJobRow = row;
+            context.ViewModel.ShowJobsCommand.Execute(null);
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.Equal(TranscriptionJobStatus.Succeeded, row.Job.Status);
+            Assert.True(row.Job.HasTerminalCheckpointFailure);
+            Assert.True(row.Job.IsTerminationPending);
+            Assert.False(row.CanDelete);
+            var cancel = Assert.IsType<System.Windows.Controls.Button>(FindButton(content, "Cancel"));
+            Assert.True(cancel.IsEnabled);
+            var command = Assert.IsAssignableFrom<CommunityToolkit.Mvvm.Input.IAsyncRelayCommand>(cancel.Command);
+            var failure = await Record.ExceptionAsync(() => command.ExecuteAsync(cancel.CommandParameter));
+            Assert.Null(failure);
+            Assert.True(row.Job.HasTerminalCheckpointFailure);
+            Assert.True(row.Job.IsTerminationPending);
+            Assert.False(row.CanDelete);
+            Assert.Contains("could not be cancelled", context.ViewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains(row.Id.ToString(), StringComparison.Ordinal) &&
+                entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+            Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains("Private history checkpoint",
+                StringComparison.Ordinal));
+            context.Repository.TerminalSaveError = null;
+            await command.ExecuteAsync(cancel.CommandParameter);
+            Assert.False(row.Job.HasTerminalCheckpointFailure);
+            Assert.False(row.Job.IsTerminationPending);
+            Assert.Equal(TranscriptionJobStatus.Succeeded, row.Job.Status);
+            Assert.True(row.CanDelete);
+            Assert.DoesNotContain("could not be cancelled", context.ViewModel.Message);
+            Assert.Same(row.Job, Assert.Single(context.Queue.Jobs));
+            Assert.Null(context.Engine.Request);
+        }
+        finally
+        {
+            context.Repository.TerminalSaveError = null;
+            await context.Queue.CancelAsync(Assert.Single(context.Queue.Jobs).Id, CancellationToken.None);
+            await context.Queue.WaitForIdleAsync(CancellationToken.None);
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ExitWaitsForATerminalJobCheckpointBeforeDisposingOwnedServices() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        context.Repository.TerminalSaveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Transcriber.Block = true;
+        await context.Queue.EnqueueAsync(context.Engine.Result, CancellationToken.None);
+        await context.Transcriber.Started.Task;
+        var environment = new DesktopEnvironment();
+        var lifetime = new DesktopLifetime();
+        var window = new MainWindow(context.ViewModel, context.Engine, new DesktopDialogs { Answer = MessageBoxResult.Yes }, environment,
+            new DesktopLogger<MainWindow>(), lifetime);
+        try
+        {
+            context.Transcriber.Release.SetResult();
+            await context.Repository.TerminalSaveStarted.Task;
+            context.ViewModel.Refresh();
+            var row = Assert.Single(context.ViewModel.JobRows);
+            Assert.Equal(TranscriptionJobStatus.Succeeded, row.Job.Status);
+            Assert.True(row.Job.IsTerminationPending);
+            Assert.False(row.CanDelete);
+            Assert.True(context.ViewModel.HasActiveWork());
+            var exiting = window.RequestExitAsync();
+            Assert.False(exiting.IsCompleted);
+            Assert.Equal(0, environment.Disposals);
+            Assert.Equal(0, lifetime.Disposals);
+            context.Repository.TerminalSaveGate.SetResult();
+            await exiting;
+            await context.Queue.WaitForIdleAsync(CancellationToken.None);
+            Assert.False(row.Job.IsTerminationPending);
+            Assert.Equal(1, environment.Disposals);
+            Assert.Equal(1, lifetime.Disposals);
+        }
+        finally
+        {
+            context.Repository.TerminalSaveGate.TrySetResult();
+            await context.Queue.WaitForIdleAsync(CancellationToken.None);
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ChangingSearchCancelsSupersededLocalReadsWithoutChangingReview() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var first = context.Engine.Result with { Title = "Alpha meeting" };
+        var second = context.Recording(Guid.NewGuid()) with { Title = "Beta meeting" };
+        await File.WriteAllBytesAsync(first.AudioPath, [1, 2, 3]);
+        await File.WriteAllBytesAsync(second.AudioPath, [4, 5, 6]);
+        context.History.Items.AddRange([first, second]);
+        context.History.LoadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedRead = context.History.LoadGate;
+        var library = new RecordingLibrary(context.History);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        viewModel.Recordings.Add(first);
+        viewModel.Recordings.Add(second);
+        viewModel.SelectedRecording = first;
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            viewModel.SearchText = "Alpha";
+            await context.History.LoadStarted.Task;
+            Assert.True(viewModel.HasPendingViewWork);
+            context.History.LoadGate = null;
+            viewModel.SearchText = "Beta";
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.Equal(second.Id, Assert.Single(viewModel.FilteredRecordings).Id);
+            Assert.Equal(first.Id, viewModel.SelectedRecording!.Id);
+            Assert.Equal(string.Empty, viewModel.LibraryMessage);
+            Assert.False(blockedRead.Task.IsCompleted);
+            Assert.Empty(context.Logger.Errors);
+            blockedRead.SetResult();
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.Equal(second.Id, Assert.Single(viewModel.FilteredRecordings).Id);
+            Assert.Equal(first.Id, viewModel.SelectedRecording!.Id);
+        }
+        finally
+        {
+            blockedRead.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_UnreadableDeletionMetadataIsRecoverableAndNeverReportedAsDeleted() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        var path = Path.Combine(context.Directory, "unavailable-deletion-history.json");
+        var history = new JsonRecordingHistory(path);
+        await history.AddAsync(recording, CancellationToken.None);
+        var library = new RecordingLibrary(history, context.Repository, cancelRecordingAsync: context.Queue.CancelRecordingAsync,
+            deleteJobAsync: context.Queue.DeleteJobAsync, releasePlaybackAsync: (_, _) => Task.CompletedTask);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            using (var blockedMetadata = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                await viewModel.DeleteRecordingAsync(false);
+                Assert.Contains("Deletion could not finish", viewModel.Message);
+                Assert.False(viewModel.IsDeletingRecording);
+                Assert.True(viewModel.CanDeleteRecording);
+                Assert.Equal(recording.Id, viewModel.SelectedRecording!.Id);
+                Assert.False(viewModel.SelectedRecording.AudioDeleted);
+                Assert.True(File.Exists(recording.AudioPath));
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(recording.Id.ToString(), StringComparison.Ordinal) &&
+                    entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+                Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains(recording.AudioPath,
+                    StringComparison.Ordinal));
+            }
+            await viewModel.DeleteRecordingAsync(false);
+            Assert.False(File.Exists(recording.AudioPath));
+            Assert.True(viewModel.SelectedRecording!.AudioDeleted);
+            Assert.False(viewModel.IsDeletingRecording);
+            Assert.Contains("Audio deleted", viewModel.Message);
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ChangingReviewReportsAPlaybackReleaseFailureWithoutBreakingTheNewMeeting() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var first = context.Engine.Result with { Title = "Previous meeting" };
+        var next = context.Recording(Guid.NewGuid()) with { Title = "Next meeting" };
+        foreach (var recording in new[] { first, next })
+        {
+            using var wave = new NAudio.Wave.WaveFileWriter(recording.AudioPath, new NAudio.Wave.WaveFormat(48_000, 16, 1));
+            wave.Write(new byte[96_000], 0, 96_000);
+        }
+        var devices = new List<WorkspacePlaybackDevice>();
+        using var playback = new WindowsRecordingPlayback(() =>
+        {
+            var device = new WorkspacePlaybackDevice();
+            devices.Add(device);
+            return device;
+        });
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+        viewModel.Recordings.Add(first);
+        viewModel.Recordings.Add(next);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            viewModel.SelectedRecording = first;
+            viewModel.PlayRecordingCommand.Execute(null);
+            var oldDevice = Assert.Single(devices);
+            oldDevice.DisposeError = new IOException("Previous audio device release failed.");
+            var error = Record.Exception(() => viewModel.SelectedRecording = next);
+            Assert.Null(error);
+            Assert.True(oldDevice.Disposed);
+            Assert.Null(viewModel.PlaybackSourcePath);
+            Assert.False(viewModel.IsPlaying);
+            Assert.Equal(next.Id, viewModel.SelectedRecording!.Id);
+            Assert.Contains("Previous audio device release failed", viewModel.Message);
+            content.UpdateLayout();
+            await UntilAsync(() => VisualTexts(Assert.IsAssignableFrom<DependencyObject>(window.FindName("ReaderPane")))
+                .Contains("Next meeting"));
+            using (var releasedAudio = File.Open(first.AudioPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                viewModel.PlayRecordingCommand.Execute(null);
+                Assert.Equal(next.AudioPath, viewModel.PlaybackSourcePath);
+                Assert.True(viewModel.IsPlaying);
+                Assert.Equal(2, devices.Count);
+            }
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_ReloadingTheSameMeetingCannotPublishAnOlderInFlightTranscript() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        var writer = new AtomicTranscriptWriter();
+        var oldOutput = await writer.WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Superseded published decision.")]), CancellationToken.None);
+        var latestOutput = await writer.WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Latest approved decision.")]), CancellationToken.None);
+        var oldJob = Guid.NewGuid();
+        var latestJob = Guid.NewGuid();
+        var initial = recording with { TranscriptOutputs = [new(oldJob, oldOutput)] };
+        var updated = recording with { TranscriptOutputs = [new(oldJob, oldOutput), new(latestJob, latestOutput)] };
+        context.History.Items.Add(initial);
+        context.History.LoadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedRead = context.History.LoadGate;
+        var library = new RecordingLibrary(context.History);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        viewModel.Recordings.Add(initial);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            viewModel.SelectedRecording = initial;
+            await context.History.LoadStarted.Task;
+            context.History.LoadGate = null;
+            context.History.Items[0] = updated;
+            viewModel.Recordings[0] = updated;
+            viewModel.SelectedRecording = null;
+            viewModel.SelectedRecording = updated;
+            await UntilAsync(() => viewModel.CompletedTranscriptJobId == latestJob);
+            Assert.Contains("Latest approved decision.", viewModel.Transcript);
+            blockedRead.SetResult();
+            await UntilAsync(() => !viewModel.HasPendingViewWork);
+            Assert.Equal(latestJob, viewModel.CompletedTranscriptJobId);
+            Assert.Contains("Latest approved decision.", viewModel.Transcript);
+            Assert.DoesNotContain("Superseded published decision.", viewModel.Transcript);
+        }
+        finally
+        {
+            blockedRead.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MeetingWorkspace_PlaybackRefreshPreservesPositionAndPauseFailureReleasesSavedAudio(bool releaseFails) =>
+        OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        using (var wave = new NAudio.Wave.WaveFileWriter(recording.AudioPath, new NAudio.Wave.WaveFormat(48_000, 16, 1)))
+        {
+            wave.Write(new byte[3 * 96_000], 0, 3 * 96_000);
+        }
+        var devices = new List<WorkspacePlaybackDevice>();
+        using var playback = new WindowsRecordingPlayback(() =>
+        {
+            var device = new WorkspacePlaybackDevice();
+            devices.Add(device);
+            return device;
+        });
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            Assert.False(viewModel.HasPlayableRecording);
+            viewModel.PlayRecordingCommand.Execute(null);
+            Assert.Contains("Select an available recording", viewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Playback", StringComparison.Ordinal));
+            viewModel.SelectedRecording = recording;
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            var playbackPanel = LogicalElements(content).OfType<System.Windows.Controls.Border>().Single(element =>
+                System.Windows.Automation.AutomationProperties.GetName(element) == "Recording playback");
+            Assert.Equal(Visibility.Visible, playbackPanel.Visibility);
+            viewModel.PlaybackVolume = 0.4;
+            viewModel.PlayRecordingCommand.Execute(null);
+            var device = Assert.Single(devices);
+            device.PositionBytes = 120_000;
+            viewModel.Refresh();
+            Assert.Equal(1.25, viewModel.PlaybackPositionSeconds);
+            Assert.Equal(3, viewModel.PlaybackDurationSeconds);
+            Assert.Equal(0.4f, device.Volume);
+            Assert.False(device.Disposed);
+            Assert.True(viewModel.IsPlaying);
+            Assert.Equal(recording.AudioPath, viewModel.PlaybackSourcePath);
+            viewModel.PlayRecordingCommand.Execute(null);
+            Assert.Single(devices);
+            device.Fail(new IOException("Device cannot continue saved audio."));
+            viewModel.Refresh();
+            Assert.False(viewModel.IsPlaying);
+            Assert.Contains("Device cannot continue saved audio", viewModel.Message);
+            var reportedErrors = context.Logger.Entries.Count(entry => entry.Level == LogLevel.Error);
+            Assert.Equal(1, reportedErrors);
+            viewModel.Refresh();
+            Assert.Equal(reportedErrors, context.Logger.Entries.Count(entry => entry.Level == LogLevel.Error));
+            viewModel.PlayRecordingCommand.Execute(null);
+            viewModel.PlaybackPositionSeconds = 2;
+            Assert.True(device.Disposed);
+            Assert.Equal(2, devices.Count);
+            var resumed = devices.Last();
+            resumed.PauseError = new IOException("Device cannot pause the private meeting.");
+            resumed.DisposeError = releaseFails ? new UnauthorizedAccessException("Device release failed.") : null;
+            viewModel.PausePlaybackCommand.Execute(null);
+            Assert.True(resumed.Disposed);
+            Assert.False(viewModel.IsPlaying);
+            Assert.Equal(0, viewModel.PlaybackPositionSeconds);
+            Assert.Equal(0, viewModel.PlaybackDurationSeconds);
+            Assert.Null(viewModel.PlaybackSourcePath);
+            Assert.Equal(recording.Id, viewModel.SelectedRecording!.Id);
+            Assert.Contains("Device cannot pause", viewModel.Message);
+            Assert.StartsWith("The recording could not be played", viewModel.Message);
+            Assert.Equal(releaseFails, viewModel.Message.Contains("handle could not be released", StringComparison.Ordinal));
+            if (releaseFails)
+            {
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(nameof(UnauthorizedAccessException), StringComparison.Ordinal));
+            }
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+            Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains(recording.AudioPath,
+                StringComparison.Ordinal) || entry.Message.Contains("private meeting", StringComparison.Ordinal));
+            using var exclusivelyReopened = File.Open(recording.AudioPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            viewModel.SelectedRecording = null;
+            content.UpdateLayout();
+            await UntilAsync(() => playbackPanel.Visibility == Visibility.Collapsed);
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MeetingWorkspace_ACompletedReadCannotOverwriteAnotherMeetingOrAnExitedWorkspace(bool close) =>
+        OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var first = context.Engine.Result;
+        var second = context.Recording(Guid.NewGuid());
+        var firstOutputs = await new AtomicTranscriptWriter().WriteAsync(new(first, first.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "First meeting private decision.")]), CancellationToken.None);
+        var secondOutputs = await new AtomicTranscriptWriter().WriteAsync(new(second, second.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Second meeting private decision.")]), CancellationToken.None);
+        var firstJob = Guid.NewGuid();
+        var secondJob = Guid.NewGuid();
+        first = first with { TranscriptOutputs = [new(firstJob, firstOutputs)] };
+        second = second with { TranscriptOutputs = [new(secondJob, secondOutputs)] };
+        context.History.Items.AddRange([first, second]);
+        context.History.LoadGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedRead = context.History.LoadGate;
+        var library = new RecordingLibrary(context.History);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, context.History,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        viewModel.Recordings.Add(first);
+        viewModel.Recordings.Add(second);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            viewModel.SelectedRecording = first;
+            await context.History.LoadStarted.Task;
+            Assert.True(viewModel.HasPendingViewWork);
+            Assert.False(viewModel.CanCopyTranscript);
+            context.History.LoadGate = null;
+            if (close)
+            {
+                var exiting = window.RequestExitAsync();
+                Assert.False(exiting.IsCompleted);
+                blockedRead.SetResult();
+                await exiting;
+                Assert.Null(viewModel.Transcript);
+                Assert.False(viewModel.CanCopyTranscript);
+                Assert.Null(viewModel.CompletedTranscriptJobId);
+                var lateRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                context.History.LoadGate = lateRead;
+                try
+                {
+                    viewModel.SearchText = "private decision";
+                    viewModel.SelectedRecording = second;
+                    Assert.False(viewModel.HasPendingViewWork);
+                    Assert.Null(viewModel.Transcript);
+                    Assert.False(viewModel.CanCopyTranscript);
+                }
+                finally
+                {
+                    lateRead.TrySetResult();
+                }
+            }
+            else
+            {
+                viewModel.SelectedRecording = second;
+                await UntilAsync(() => viewModel.CanCopyTranscript);
+                Assert.Equal(secondJob, viewModel.CompletedTranscriptJobId);
+                Assert.Contains("Second meeting private decision.", viewModel.Transcript);
+                blockedRead.SetResult();
+                await UntilAsync(() => !viewModel.HasPendingViewWork);
+                Assert.Equal(second.Id, viewModel.SelectedRecording!.Id);
+                Assert.Equal(secondJob, viewModel.CompletedTranscriptJobId);
+                Assert.Contains("Second meeting private decision.", viewModel.Transcript);
+                Assert.DoesNotContain("First meeting private decision.", viewModel.Transcript);
+            }
+            Assert.False(viewModel.HasPendingViewWork);
+        }
+        finally
+        {
+            blockedRead.TrySetResult();
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_RetainedLatestTranscriptOutlivesItsJobWhileOlderJobReviewStaysExact() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Engine.Result;
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "attempt-history.json"));
+        var repository = new JsonTranscriptionJobRepository(Path.Combine(context.Directory, "attempt-jobs.json"));
+        await history.AddAsync(recording, CancellationToken.None);
+        var seed = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        context.Transcriber.Segments = [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Earlier approved decision.")];
+        await seed.EnqueueAsync(recording, CancellationToken.None);
+        await seed.WaitForIdleAsync(CancellationToken.None);
+        var earlier = Assert.Single(seed.Jobs);
+        context.Transcriber.Segments = [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Latest revised decision.")];
+        await seed.RetryAsync(recording, CancellationToken.None);
+        await seed.WaitForIdleAsync(CancellationToken.None);
+        var latest = seed.Jobs.Last();
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        var library = new RecordingLibrary(history, repository, deleteJobAsync: queue.DeleteJobAsync,
+            cancelRecordingAsync: queue.CancelRecordingAsync, releasePlaybackAsync: (_, _) => Task.CompletedTask);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            await UntilAsync(() => viewModel.CompletedTranscriptJobId == latest.Id);
+            Assert.Contains("Latest revised decision.", viewModel.Transcript);
+            viewModel.SelectedJobRow = viewModel.JobRows.Single(row => row.Id == latest.Id);
+            await viewModel.DeleteSelectedJobHistoryAsync();
+            Assert.Equal(earlier.Id, Assert.Single(queue.Jobs).Id);
+            Assert.Null(viewModel.SelectedJobRow);
+            viewModel.SelectedRecording = null;
+            viewModel.SelectedRecording = Assert.Single(viewModel.Recordings);
+            await UntilAsync(() => viewModel.CanCopyTranscript);
+            Assert.Equal(latest.Id, viewModel.CompletedTranscriptJobId);
+            Assert.Contains("Latest revised decision.", viewModel.Transcript);
+            Assert.DoesNotContain("Earlier approved decision.", viewModel.Transcript);
+            viewModel.SelectedJobRow = Assert.Single(viewModel.JobRows);
+            await viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+            Assert.Equal(earlier.Id, viewModel.CompletedTranscriptJobId);
+            Assert.Contains("Earlier approved decision.", viewModel.Transcript);
+            Assert.DoesNotContain("Latest revised decision.", viewModel.Transcript);
+            Assert.True(File.Exists(recording.AudioPath));
+            Assert.Contains("Latest revised decision.", await File.ReadAllTextAsync(latest.Outputs!.TextPath));
+            Assert.Contains("Earlier approved decision.", await File.ReadAllTextAsync(earlier.Outputs!.TextPath));
+            using (var unavailableHistory = File.Open(Path.Combine(context.Directory, "attempt-history.json"),
+                       FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                await viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+                Assert.Null(viewModel.Transcript);
+                Assert.False(viewModel.CanCopyTranscript);
+                Assert.Null(viewModel.CompletedTranscriptJobId);
+                Assert.Contains("retained transcript could not be read", viewModel.Message);
+            }
+            await viewModel.DeleteRecordingAsync(false);
+            Assert.True(viewModel.SelectedRecording!.AudioDeleted);
+            viewModel.SelectedRecording = null;
+            Assert.Null(viewModel.SelectedJob);
+            Assert.Null(viewModel.SelectedJobRow);
+            viewModel.SelectedJobRow = Assert.Single(viewModel.JobRows);
+            await viewModel.ViewTranscriptCommand.ExecuteAsync(null);
+            Assert.NotNull(viewModel.SelectedRecording);
+            Assert.True(viewModel.SelectedRecording!.AudioDeleted);
+            Assert.Contains("Audio deleted", viewModel.SelectedRecordingInformation);
+            Assert.Equal(earlier.Id, viewModel.CompletedTranscriptJobId);
+            Assert.Contains("Earlier approved decision.", viewModel.Transcript);
+            await viewModel.RetryTranscriptionCommand.ExecuteAsync(null);
+            Assert.Contains("Audio is deleted", viewModel.Message);
+            Assert.Equal(earlier.Id, Assert.Single(queue.Jobs).Id);
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MeetingWorkspace_ActiveAttemptsLeadHistoryAndProgressBelongsToTheReviewedRecording(bool downloadedModel) => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff")) with { Title = "Reviewed meeting" };
+        var other = context.Recording(Guid.Parse("00000000-0000-0000-0000-000000000001")) with { Title = "Other meeting" };
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        await File.WriteAllBytesAsync(other.AudioPath, [4, 5, 6]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "ordered-history.json"));
+        var repository = new JsonTranscriptionJobRepository(Path.Combine(context.Directory, "ordered-jobs.json"));
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, recording.Language,
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(5), "Previously published decision.")]), CancellationToken.None);
+        var model = downloadedModel ? await context.Models.DownloadAsync(
+            SoundRecorder.Infrastructure.Models.TranscriptionModelCatalog.Entries.Single(entry => entry.Key == "whisper.net:small:Q5_1"),
+            new Progress<ModelDownloadProgress>(), CancellationToken.None) : null;
+        var completed = new TranscriptionJob(Guid.NewGuid(), recording, DateTimeOffset.UnixEpoch,
+            TranscriptionJobStatus.Succeeded, outputs, null, model?.Id ?? "historical-model");
+        await history.AddAsync(recording, CancellationToken.None);
+        await history.AddAsync(other, CancellationToken.None);
+        await repository.SaveAsync([completed], CancellationToken.None);
+        context.Transcriber.Block = true;
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(), repository, history: history);
+        var library = new RecordingLibrary(history, repository, cancelRecordingAsync: queue.CancelRecordingAsync,
+            deleteJobAsync: queue.DeleteJobAsync);
+        var recorder = new RecorderApplication(context.Engine, queue, context.Models, history);
+        var viewModel = new MainViewModel(recorder, context.Engine, queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            await UntilAsync(() => viewModel.CanCopyTranscript);
+            Assert.Contains("Previously published decision.", viewModel.Transcript);
+            Assert.Equal(completed.Id, viewModel.CompletedTranscriptJobId);
+            await queue.EnqueueAsync(recording, CancellationToken.None);
+            await context.Transcriber.Started.Task;
+            await queue.EnqueueAsync(other, CancellationToken.None);
+            viewModel.Refresh();
+            var running = viewModel.JobRows.Single(row => row.Job.Status == TranscriptionJobStatus.Running);
+            var queued = viewModel.JobRows.Single(row => row.Job.Status == TranscriptionJobStatus.Queued);
+            var published = viewModel.JobRows.Single(row => row.Id == completed.Id);
+            Assert.Equal([running, queued, published], viewModel.JobRows);
+            Assert.Equal(model?.DisplayName ?? "historical-model", published.ModelName);
+            Assert.Same(running, viewModel.SelectedRecordingJobProgress);
+            Assert.Equal("Previously completed transcript", viewModel.TranscriptReviewLabel);
+            viewModel.SelectedJobRow = running;
+            await viewModel.StopJobCommand.ExecuteAsync(null);
+            await UntilAsync(() => queue.Jobs.Any(job => job.Recording.Id == other.Id &&
+                job.Status == TranscriptionJobStatus.Running));
+            viewModel.Refresh();
+            Assert.Same(running, viewModel.SelectedJobRow);
+            Assert.Equal([queued, published, running], viewModel.JobRows);
+            Assert.Null(viewModel.SelectedRecordingJobProgress);
+            Assert.Equal("Completed transcript", viewModel.TranscriptReviewLabel);
+            Assert.Contains("Previously published decision.", viewModel.Transcript);
+            Assert.True(viewModel.CanDeleteSelectedJob);
+            viewModel.SelectedRecording = viewModel.Recordings.Single(item => item.Id == other.Id);
+            Assert.Same(queued, viewModel.SelectedRecordingJobProgress);
+            Assert.Null(viewModel.CompletedTranscriptJobId);
+            Assert.Equal(string.Empty, viewModel.TranscriptReviewLabel);
+            Assert.Equal(running.Id, viewModel.SelectedJob!.Id);
+            await viewModel.DeleteSelectedJobHistoryAsync();
+            Assert.True(viewModel.Message.Contains("Job history deleted.", StringComparison.Ordinal),
+                $"{viewModel.Message} Other attempt: {queued.Job.Status} / {queued.Job.Error}; target pending: {running.Job.IsTerminationPending}.");
+            Assert.True(queued.Job.Status == TranscriptionJobStatus.Running, queued.Job.Error);
+            Assert.Equal([queued, published], viewModel.JobRows);
+            Assert.Null(viewModel.SelectedJobRow);
+            Assert.Null(viewModel.SelectedJob);
+            Assert.Equal(2, queue.Jobs.Count);
+            Assert.Contains("completed outputs were kept", viewModel.Message);
+            Assert.Contains("Previously published decision.", await File.ReadAllTextAsync(outputs.TextPath));
+            viewModel.SelectedJobRow = published;
+            viewModel.Language = "Brazilian Portuguese";
+            await viewModel.RetranscribeSelectedRecordingCommand.ExecuteAsync(null);
+            var requested = queue.Jobs.Single(job => job.Status == TranscriptionJobStatus.Queued);
+            Assert.Equal(other.Id, requested.Recording.Id);
+            Assert.Equal("Brazilian Portuguese", requested.Language);
+            Assert.Equal("English", queued.Job.Language);
+            Assert.Equal(completed.Id, viewModel.SelectedJob!.Id);
+            Assert.NotEqual(completed.Id, requested.Id);
+        }
+        finally
+        {
+            await queue.CancelRecordingAsync(recording.Id, CancellationToken.None);
+            await queue.CancelRecordingAsync(other.Id, CancellationToken.None);
+            await queue.WaitForIdleAsync(CancellationToken.None);
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MeetingWorkspace_PartialRecordingDeletionCanBeRetriedWithoutDeletingAnotherMeeting(bool allArtifacts) =>
+        OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.Parse("00000000-0000-0000-0000-000000000001")) with { Title = "Blocked meeting" };
+        var other = context.Recording(Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff")) with { Title = "Other meeting" };
+        await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+        await File.WriteAllBytesAsync(other.AudioPath, [4, 5, 6]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "retry-history.json"));
+        await history.AddAsync(recording, CancellationToken.None);
+        await history.AddAsync(other, CancellationToken.None);
+        var library = new RecordingLibrary(history, context.Repository, cancelRecordingAsync: context.Queue.CancelRecordingAsync,
+            deleteJobAsync: context.Queue.DeleteJobAsync, releasePlaybackAsync: (_, _) => Task.CompletedTask);
+        var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger, library);
+        var window = new MainWindow(viewModel, context.Engine, new DesktopDialogs(), new DesktopEnvironment(),
+            new DesktopLogger<MainWindow>());
+        try
+        {
+            await viewModel.InitializeCommand.ExecuteAsync(null);
+            viewModel.SelectedRecording = viewModel.Recordings.Single(item => item.Id == recording.Id);
+            using (var locked = File.Open(recording.AudioPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                await viewModel.DeleteRecordingAsync(allArtifacts);
+                Assert.Equal(recording.Id, viewModel.SelectedRecording!.Id);
+                Assert.True(viewModel.HasPendingDeletion);
+                Assert.False(viewModel.IsDeletingRecording);
+                Assert.True(viewModel.CanDeleteRecording);
+                Assert.False(viewModel.CanRetranscribeSelectedRecording);
+                Assert.Equal(allArtifacts ? RecordingDeletionScope.AllArtifacts : RecordingDeletionScope.AudioOnly,
+                    viewModel.SelectedRecording.PendingDeletion!.Scope);
+                Assert.Contains("Retry deletion", viewModel.Message);
+                Assert.Contains(recording.AudioPath, viewModel.Message);
+                Assert.Contains("Deletion incomplete", viewModel.SelectedRecordingInformation);
+                Assert.True(File.Exists(recording.AudioPath));
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                    entry.Message.Contains("Recording deletion", StringComparison.Ordinal));
+            }
+            await viewModel.RetryRecordingDeletionCommand.ExecuteAsync(null);
+            Assert.False(File.Exists(recording.AudioPath));
+            Assert.Equal(new byte[] { 4, 5, 6 }, await File.ReadAllBytesAsync(other.AudioPath));
+            Assert.False(viewModel.HasPendingDeletion);
+            if (allArtifacts)
+            {
+                Assert.Equal(other.Id, Assert.Single(viewModel.Recordings).Id);
+                Assert.Equal(other.Id, viewModel.SelectedRecording!.Id);
+                Assert.Contains("all its generated artifacts", viewModel.Message);
+            }
+            else
+            {
+                Assert.Equal(2, viewModel.Recordings.Count);
+                Assert.Equal(recording.Id, viewModel.SelectedRecording!.Id);
+                Assert.True(viewModel.SelectedRecording.AudioDeleted);
+                Assert.Contains("history were kept", viewModel.Message);
+            }
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Theory]
+    [InlineData(TranscriptionJobStatus.Failed)]
+    [InlineData(TranscriptionJobStatus.Canceled)]
+    [InlineData(TranscriptionJobStatus.Running)]
+    public Task MeetingWorkspace_UnsuccessfulJobResidualsAreNotCompletedTranscripts(TranscriptionJobStatus status) =>
+        OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var path = Path.Combine(context.Directory, "attempt.txt");
+        await File.WriteAllTextAsync(path, "Unpublished attempt residual.");
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            var publishedPath = Path.Combine(context.Directory, "published.txt");
+            await File.WriteAllTextAsync(publishedPath, "An earlier successful transcript.");
+            var published = context.Job(context.Engine.Result, new(publishedPath, Path.ChangeExtension(publishedPath, ".srt")));
+            context.ViewModel.SelectedJob = published;
+            await context.ViewModel.ViewTranscriptCommand.ExecuteAsync(null);
+            Assert.Equal("An earlier successful transcript.", context.ViewModel.Transcript);
+            Assert.True(context.ViewModel.CanCopyTranscript);
+            Assert.Equal(published.Id, context.ViewModel.CompletedTranscriptJobId);
+            context.ViewModel.SelectedJob = new TranscriptionJob(Guid.NewGuid(), context.Engine.Result,
+                DateTimeOffset.UtcNow, status, new(path, Path.ChangeExtension(path, ".srt")), "Attempt did not publish");
+            await context.ViewModel.ViewTranscriptCommand.ExecuteAsync(null);
+            Assert.Null(context.ViewModel.Transcript);
+            Assert.False(context.ViewModel.CanCopyTranscript);
+            Assert.Null(context.ViewModel.CompletedTranscriptJobId);
+            Assert.Contains("successful transcription job", context.ViewModel.Message);
+            Assert.Equal("Unpublished attempt residual.", await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
+    [Fact]
+    public Task MeetingWorkspace_CatalogFiltersOfferCompatibleDownloadChoicesWithoutActivatingThem() => OnStaAsync(async () =>
+    {
+        using var context = new DesktopTestContext();
+        var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
+        try
+        {
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+            context.ViewModel.ShowModelsCommand.Execute(null);
+            var models = Assert.IsType<ScrollViewer>(window.FindName("ModelSettingsScroll"));
+            Assert.Equal(Visibility.Visible, models.Visibility);
+            var filter = Assert.IsType<System.Windows.Controls.ComboBox>(window.FindName("ModelCatalogFilter"));
+            Assert.Equal(3, filter.Items.Count);
+            Assert.Equal("All models", filter.SelectedItem);
+            Assert.Equal(12, context.ViewModel.CatalogFamilies.Count);
+            Assert.Equal(72, context.ViewModel.CatalogFamilies.Sum(family => family.Variants.Count));
+            filter.SelectedIndex = 1;
+            Assert.Equal(8, context.ViewModel.CatalogFamilies.Count);
+            Assert.All(context.ViewModel.CatalogFamilies, family =>
+            {
+                Assert.Equal(6, family.Variants.Count);
+                Assert.All(family.Variants, variant => Assert.Contains("Brazilian Portuguese", variant.Languages));
+            });
+            filter.SelectedIndex = 2;
+            Assert.Equal(4, context.ViewModel.CatalogFamilies.Count);
+            Assert.All(context.ViewModel.CatalogFamilies, family => Assert.All(family.Variants,
+                variant => Assert.Equal(["English"], variant.Languages)));
+            filter.SelectedIndex = 0;
+            Assert.Equal(12, context.ViewModel.CatalogFamilies.Count);
+            Assert.Equal(72, context.ViewModel.CatalogFamilies.Sum(family => family.Variants.Count));
+            Assert.Empty(context.Models.DownloadedModels);
+            Assert.Null(context.Models.SelectedModelId);
+            context.ViewModel.ShowJobsCommand.Execute(null);
+            Assert.Equal(Visibility.Collapsed, models.Visibility);
+            Assert.True(context.ViewModel.IsJobsView);
+            Assert.False(context.ViewModel.IsLibraryView);
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            Assert.Contains("No transcription jobs yet.", VisualTexts(content));
+            await context.Queue.EnqueueAsync(context.Engine.Result, CancellationToken.None);
+            await context.Queue.WaitForIdleAsync(CancellationToken.None);
+            context.ViewModel.Refresh();
+            await UntilAsync(() => !VisualTexts(content).Contains("No transcription jobs yet."));
+            Assert.Single(context.ViewModel.JobRows);
+            context.ViewModel.ShowLibraryCommand.Execute(null);
+            Assert.False(context.ViewModel.IsJobsView);
+            Assert.True(context.ViewModel.IsLibraryView);
+        }
+        finally
+        {
+            await window.RequestExitAsync();
+        }
+    });
+
     [Fact]
     public Task MeetingWorkspace_JobReviewDoesNotReadAReplacementAfterPartialDeletion() => OnStaAsync(async () =>
     {
@@ -67,14 +1398,33 @@ public sealed class MainWindowTests
         {
             context.ViewModel.SearchText = "query";
             Assert.Contains("search is unavailable", context.ViewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("search", StringComparison.OrdinalIgnoreCase));
             await context.ViewModel.StopJobCommand.ExecuteAsync(null);
             Assert.Contains("running transcription job", context.ViewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Stop", StringComparison.Ordinal));
             await context.ViewModel.DeleteSelectedJobHistoryAsync();
             Assert.Contains("terminal transcription job", context.ViewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Job-history deletion", StringComparison.Ordinal));
             await context.ViewModel.DeleteRecordingAsync(false);
             Assert.Contains("Select a recording", context.ViewModel.Message);
+            context.ViewModel.SelectedRecording = context.Engine.Result;
+            Assert.False(context.ViewModel.CanDeleteRecording);
+            var unavailableDelete = Assert.IsType<System.Windows.Controls.Button>(window.FindName("DeleteRecordingButton"));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.False(unavailableDelete.IsEnabled);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Recording deletion", StringComparison.Ordinal));
             await context.ViewModel.RetryRecordingDeletionCommand.ExecuteAsync(null);
             Assert.Contains("unfinished deletion", context.ViewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                entry.Message.Contains("Deletion retry", StringComparison.Ordinal));
+            await context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(null);
+            Assert.Contains("Select a catalog model", context.ViewModel.Message);
+            Assert.False(context.ViewModel.IsDownloadingModel);
+            Assert.Empty(context.Models.DownloadedModels);
         }
         finally
         {
@@ -109,6 +1459,15 @@ public sealed class MainWindowTests
             await window.RequestExitAsync();
         }
     });
+
+    private static IEnumerable<DependencyObject> LogicalElements(DependencyObject element)
+    {
+        yield return element;
+        foreach (var child in LogicalTreeHelper.GetChildren(element).OfType<DependencyObject>())
+        {
+            foreach (var descendant in LogicalElements(child)) yield return descendant;
+        }
+    }
 
     private static IEnumerable<string> VisualTexts(DependencyObject element)
     {
@@ -147,6 +1506,9 @@ public sealed class MainWindowTests
                     await context.ViewModel.ViewTranscriptCommand.ExecuteAsync(null);
                     Assert.Null(context.ViewModel.Transcript);
                     Assert.Contains("completed transcript could not be read", context.ViewModel.Message);
+                    Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                        entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+                    Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains(path, StringComparison.Ordinal));
                 }
             }
             else
@@ -154,6 +1516,10 @@ public sealed class MainWindowTests
                 await UntilAsync(() => context.ViewModel.Message.Contains("could not be read", StringComparison.Ordinal));
                 Assert.Null(context.ViewModel.Transcript);
                 Assert.False(File.Exists(path));
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(recording.Id.ToString(), StringComparison.Ordinal) &&
+                    entry.Message.Contains(nameof(FileNotFoundException), StringComparison.Ordinal));
+                Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains(path, StringComparison.Ordinal));
             }
         }
         finally
@@ -177,6 +1543,12 @@ public sealed class MainWindowTests
             await context.ViewModel.InitializeCommand.ExecuteAsync(null);
             context.ViewModel.SelectedModel = model;
             await UntilAsync(() => context.ViewModel.IsSelectingModel);
+            var selector = Assert.IsType<System.Windows.Controls.ComboBox>(window.FindName("DownloadedModelSelector"));
+            Assert.False(selector.IsEnabled);
+            Assert.True(context.ViewModel.HasPendingViewWork);
+            context.ViewModel.SelectedRecording = context.Engine.Result;
+            Assert.False(context.ViewModel.CanRetranscribeSelectedRecording);
+            Assert.False(context.ViewModel.CanRestartSelectedJob);
             context.PrepareRecording();
             await context.ViewModel.StartRecordingAsync(false);
             var saved = await context.ViewModel.StopAsync(enqueueTranscription: true);
@@ -185,7 +1557,14 @@ public sealed class MainWindowTests
             Assert.Empty(context.Queue.Jobs);
             Assert.True(context.ViewModel.IsIdle);
             Assert.False(context.ViewModel.PermissionConfirmed);
-            if (!succeeds) context.Models.Error = new IOException("Selection verification failed.");
+            Assert.Contains("waits for the pending model selection", context.ViewModel.Message);
+            Task? compatibilityRetry = null;
+            if (!succeeds)
+            {
+                compatibilityRetry = context.ViewModel.RetryTranscriptionCommand.ExecuteAsync(null);
+                Assert.False(compatibilityRetry.IsCompleted);
+                context.Models.Error = new IOException("Selection verification failed.");
+            }
             release.SetResult();
             if (succeeds)
             {
@@ -195,8 +1574,22 @@ public sealed class MainWindowTests
             else
             {
                 await UntilAsync(() => context.ViewModel.Message.Contains("explicit retry", StringComparison.Ordinal));
+                await compatibilityRetry!;
                 Assert.Empty(context.Queue.Jobs);
                 Assert.Same(saved, Assert.Single(context.ViewModel.Recordings));
+            }
+            await UntilAsync(() => !context.ViewModel.HasPendingViewWork);
+            Assert.True(selector.IsEnabled);
+            Assert.True(context.ViewModel.CanRetranscribeSelectedRecording);
+            Assert.False(context.ViewModel.CanRestartSelectedJob);
+            if (succeeds)
+            {
+                context.Engine.Result = context.Recording(Guid.NewGuid());
+                context.PrepareRecording();
+                await context.ViewModel.StartRecordingAsync(false);
+                await context.ViewModel.StopAsync(enqueueTranscription: true);
+                Assert.Equal(2, context.Queue.Jobs.Count);
+                Assert.DoesNotContain("waits for the pending model selection", context.ViewModel.Message);
             }
         }
         finally
@@ -229,12 +1622,19 @@ public sealed class MainWindowTests
                 await UntilAsync(() => context.ViewModel.Message.Contains("could not be selected", StringComparison.Ordinal));
                 Assert.Equal(registered.Id, context.Models.SelectedModelId);
                 Assert.Equal(registered.Id, context.ViewModel.SelectedModel!.Id);
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains("Downloaded model selection failed", StringComparison.Ordinal) &&
+                    entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+                Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains("Selected model is unavailable",
+                    StringComparison.Ordinal));
             }
             else
             {
                 context.Models.CurrentPackage = context.Models.Package with { Languages = ["English"] };
                 context.ViewModel.Language = "Brazilian Portuguese";
                 Assert.Contains("compatible multilingual downloaded model", context.ViewModel.Message);
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+                    entry.Message.Contains("Brazilian Portuguese", StringComparison.Ordinal));
                 Assert.Equal(registered.Id, context.Models.SelectedModelId);
                 Assert.True(context.ViewModel.StartCommand.CanExecute(null));
                 context.ViewModel.Language = "English";
@@ -318,6 +1718,16 @@ public sealed class MainWindowTests
             viewModel.SearchText = "handover";
             await UntilAsync(() => viewModel.FilteredRecordings.Count == 1 && viewModel.LibraryMessage == string.Empty);
             var selected = viewModel.SelectedRecording;
+            viewModel.SearchText = "Budget";
+            await UntilAsync(() => viewModel.FilteredRecordings.Count == 1 && viewModel.FilteredRecordings[0].Id == other.Id);
+            var recovered = context.Recording(Guid.NewGuid()) with { Title = "Budget follow-up", Outcome = RecordingOutcome.Recovered };
+            await File.WriteAllBytesAsync(recovered.AudioPath, [7, 8, 9]);
+            context.Recovery.Result = recovered;
+            await viewModel.RecoverAsync(context.Recovery.Candidate);
+            Assert.Equal("Budget", viewModel.SearchText);
+            Assert.Equal(new[] { other.Id, recovered.Id }.Order(), viewModel.FilteredRecordings.Select(item => item.Id).Order());
+            Assert.Same(selected, viewModel.SelectedRecording);
+            Assert.Empty(context.Queue.Jobs);
             viewModel.SearchText = "unmatched";
             await UntilAsync(() => viewModel.FilteredRecordings.Count == 0);
             Assert.Contains("No matching meetings", viewModel.LibraryMessage);
@@ -327,7 +1737,7 @@ public sealed class MainWindowTests
             await UntilAsync(() => viewModel.LibraryMessage.Contains("may be incomplete", StringComparison.Ordinal));
             Assert.False(File.Exists(recording.AudioPath));
             viewModel.SearchText = string.Empty;
-            await UntilAsync(() => viewModel.FilteredRecordings.Count == 2);
+            await UntilAsync(() => viewModel.FilteredRecordings.Count == 3);
             Assert.Equal("Retained handover decisions.", (await library.ReadTranscriptAsync(recording.Id, jobId,
                 CancellationToken.None)).Text!.Split(']', 2)[1].Trim());
             using (var lockedHistory = File.Open(Path.Combine(context.Directory, "search-history.json"),
@@ -338,8 +1748,14 @@ public sealed class MainWindowTests
                 viewModel.SelectedRecording = entry;
                 await UntilAsync(() => viewModel.Message.Contains("retained transcript could not be read", StringComparison.Ordinal));
                 Assert.Null(viewModel.Transcript);
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(recording.Id.ToString(), StringComparison.Ordinal) &&
+                    entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
                 viewModel.SearchText = "history unavailable";
                 await UntilAsync(() => viewModel.Message.Contains("Library search could not read", StringComparison.Ordinal));
+                Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                    entry.Message.Contains(nameof(IOException), StringComparison.Ordinal) &&
+                    entry.Message.Contains("search", StringComparison.OrdinalIgnoreCase));
             }
         }
         finally
@@ -366,7 +1782,13 @@ public sealed class MainWindowTests
             var download = context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(entry);
             await UntilAsync(() => context.ViewModel.ModelDownloadPercent == 25);
             Assert.True(context.ViewModel.IsDownloadingModel);
+            Assert.True(context.ViewModel.HasPendingViewWork);
             Assert.False(context.ViewModel.IsBusy);
+            Assert.False(context.ViewModel.IsModelDownloadIndeterminate);
+            var progress = Assert.IsType<System.Windows.Controls.ProgressBar>(window.FindName("ModelDownloadProgress"));
+            Assert.Equal(25, progress.Value);
+            Assert.False(progress.IsIndeterminate);
+            Assert.Equal("Transferred bytes estimate", System.Windows.Automation.AutomationProperties.GetItemStatus(progress));
             context.PrepareRecording();
             await context.ViewModel.StartCommand.ExecuteAsync(null);
             Assert.Equal("Recording", context.ViewModel.Status);
@@ -384,17 +1806,34 @@ public sealed class MainWindowTests
             }
             await download;
             Assert.False(context.ViewModel.IsDownloadingModel);
+            Assert.False(context.ViewModel.HasPendingViewWork);
             Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            Assert.Equal(context.Models.Package.Id, context.ViewModel.SelectedModel!.Id);
+            Assert.Equal(context.Models.Package.Id, context.ViewModel.ModelHeader);
             Assert.Equal("Recording", context.ViewModel.Status);
             if (outcome == "complete")
             {
                 Assert.Contains(context.ViewModel.DownloadedModels, model => model.Id == entry.Key);
+                Assert.Contains("Choose it from Downloaded models", context.ViewModel.ModelDownloadStatus);
+                context.ViewModel.SelectedModel = context.ViewModel.DownloadedModels.Single(model => model.Id == entry.Key);
+                await UntilAsync(() => !context.ViewModel.IsSelectingModel && context.Models.SelectedModelId == entry.Key);
+                Assert.Equal(entry.Key, context.ViewModel.SelectedModel!.Id);
+                Assert.Equal("small Q5_1", context.ViewModel.ModelHeader);
+                var header = Assert.IsType<System.Windows.Controls.Button>(window.FindName("ModelsButton"));
+                await UntilAsync(() => Equals("small Q5__1", header.Content));
+                Assert.Empty(context.Models.Downloads);
             }
             else
             {
                 Assert.DoesNotContain(context.ViewModel.DownloadedModels, model => model.Id == entry.Key);
                 Assert.Contains(outcome == "cancel" ? "cancelled" : "failed",
                     context.ViewModel.ModelDownloadStatus, StringComparison.OrdinalIgnoreCase);
+                if (outcome == "fail")
+                {
+                    Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                        entry.Message.Contains(nameof(System.Net.Http.HttpRequestException), StringComparison.Ordinal));
+                    Assert.Contains("fixture unavailable", context.ViewModel.Message);
+                }
             }
         }
         finally
@@ -460,10 +1899,19 @@ public sealed class MainWindowTests
             playback.Open(recording);
             await viewModel.DeleteRecordingAsync(false);
             Assert.False(File.Exists(recording.AudioPath));
+            Assert.Null(playback.RecordingId);
+            Assert.Null(viewModel.PlaybackSourcePath);
             Assert.True(viewModel.SelectedRecording!.AudioDeleted);
+            Assert.False(viewModel.HasPlayableRecording);
+            Assert.False(viewModel.IsDeletingRecording);
+            Assert.True(viewModel.CanDeleteRecording);
+            Assert.Contains("Audio deleted", viewModel.SelectedRecordingInformation);
+            Assert.Contains("Transcripts", viewModel.Message);
             var retained = await library.ReadTranscriptAsync(recording.Id, job.Id, CancellationToken.None);
             Assert.True(retained.Text == expectedText, string.Join(" ", retained.Issues.Select(issue => issue.Message)));
             await UntilAsync(() => viewModel.Transcript == expectedText && viewModel.CanCopyTranscript);
+            Assert.Equal(job.Id, viewModel.CompletedTranscriptJobId);
+            Assert.Equal("Completed transcript", viewModel.TranscriptReviewLabel);
             Assert.False(viewModel.CanRetranscribeSelectedRecording);
             await viewModel.RetryTranscriptionCommand.ExecuteAsync(null);
             Assert.Empty(queue.Jobs);
@@ -513,6 +1961,8 @@ public sealed class MainWindowTests
             Assert.Equal("Idle", context.ViewModel.Status);
             Assert.Empty(context.ViewModel.Recordings);
             Assert.Contains("permission", context.ViewModel.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Information &&
+                entry.Message.Contains("permission", StringComparison.Ordinal));
         }
         finally
         {
@@ -527,6 +1977,7 @@ public sealed class MainWindowTests
         var window = CreateWindow(context, new DesktopDialogs(), new DesktopEnvironment());
         try
         {
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
             var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
             content.Measure(new System.Windows.Size(980, 720));
             content.Arrange(new Rect(0, 0, 980, 720));
@@ -541,6 +1992,23 @@ public sealed class MainWindowTests
             Assert.True(readerOrigin.Y + reader.ActualHeight <= dockOrigin.Y,
                 $"Reader bottom {readerOrigin.Y + reader.ActualHeight}, capture top {dockOrigin.Y}.");
             Assert.True(library.ActualWidth > 0 && reader.ActualWidth > 0 && dock.ActualHeight > 0);
+            var emptyReader = VisualTexts(reader).ToArray();
+            Assert.Contains("Select a recording", emptyReader);
+            Assert.Contains("Your saved meetings and transcripts will appear here.", emptyReader);
+            var libraryMessage = Assert.IsType<TextBlock>(window.FindName("LibraryMessageText"));
+            Assert.Contains("No recordings", libraryMessage.Text);
+            Assert.False(context.ViewModel.CanDeleteRecording);
+            Assert.False(context.ViewModel.HasPlayableRecording);
+            Assert.False(context.ViewModel.CanRetranscribeSelectedRecording);
+            var recording = context.Engine.Result with { AudioPath = Path.Combine(context.Directory, "untitled-meeting.wav") };
+            context.ViewModel.Recordings.Add(recording);
+            var history = Assert.IsType<System.Windows.Controls.ListBox>(window.FindName("HistoryList"));
+            await UntilAsync(() => history.Items.Count == 1);
+            history.SelectedItem = recording;
+            await UntilAsync(() => VisualTexts(reader).Contains("untitled-meeting"));
+            Assert.Contains("English / 00:00:05", VisualTexts(reader));
+            Assert.Equal(string.Empty, libraryMessage.Text);
+            Assert.Equal(recording.Id, context.ViewModel.SelectedRecording!.Id);
         }
         finally
         {
@@ -687,12 +2155,27 @@ public sealed class MainWindowTests
             using var context = new DesktopTestContext();
             var environment = new DesktopEnvironment();
             var window = CreateWindow(context, new DesktopDialogs(), environment);
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+            var content = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+            content.Measure(new Size(980, 720));
+            content.Arrange(new Rect(0, 0, 980, 720));
+            content.UpdateLayout();
+            var start = Assert.IsType<System.Windows.Controls.Button>(window.FindName("StartButton"));
+            var pause = Assert.IsType<System.Windows.Controls.Button>(window.FindName("PauseButton"));
+            var resume = Assert.IsType<System.Windows.Controls.Button>(window.FindName("ResumeButton"));
+            var stop = Assert.IsType<System.Windows.Controls.Button>(window.FindName("StopButton"));
+            Assert.Equal(Visibility.Visible, start.Visibility);
+            Assert.Equal(Visibility.Collapsed, stop.Visibility);
             window.RefreshStatus();
             Assert.False(environment.PreventSleep.Last());
             Assert.Equal("Sound Recorder", environment.Texts.Last());
             Assert.Empty(environment.Balloons);
             context.PrepareRecording();
             await context.ViewModel.StartRecordingAsync(false);
+            await UntilAsync(() => pause.Visibility == Visibility.Visible);
+            Assert.Equal(Visibility.Collapsed, start.Visibility);
+            Assert.Equal(Visibility.Collapsed, resume.Visibility);
+            Assert.Equal(Visibility.Visible, stop.Visibility);
             context.Engine.CapturedDuration = RecordingFormat.WarningCapturedDuration - TimeSpan.FromTicks(1);
             window.RefreshStatus();
             Assert.True(environment.PreventSleep.Last());
@@ -708,10 +2191,17 @@ public sealed class MainWindowTests
             window.RefreshStatus();
             Assert.Single(environment.Balloons);
             await context.ViewModel.PauseCommand.ExecuteAsync(null);
+            await UntilAsync(() => resume.Visibility == Visibility.Visible);
+            Assert.Equal(Visibility.Collapsed, pause.Visibility);
+            Assert.Equal(Visibility.Visible, stop.Visibility);
             window.RefreshStatus();
             Assert.True(environment.PreventSleep.Last());
             Assert.Single(environment.Balloons);
             await context.ViewModel.StopAsync(false);
+            await UntilAsync(() => start.Visibility == Visibility.Visible);
+            Assert.Equal(Visibility.Collapsed, pause.Visibility);
+            Assert.Equal(Visibility.Collapsed, resume.Visibility);
+            Assert.Equal(Visibility.Collapsed, stop.Visibility);
             window.RefreshStatus();
             Assert.False(environment.PreventSleep.Last());
             Assert.Single(environment.Balloons);
@@ -819,19 +2309,48 @@ public sealed class MainWindowTests
         var dialogs = new DesktopDialogs { Answer = answer };
         var environment = new DesktopEnvironment();
         var window = CreateWindow(context, dialogs, environment);
-        context.PrepareRecording();
-        await context.ViewModel.StartRecordingAsync(false);
-        window.Close();
-        Assert.Equal("Recording", context.ViewModel.Status);
-        Assert.Equal(0, environment.Disposals);
-        var prompt = Assert.Single(dialogs.Prompts);
-        Assert.Equal("Keep running in the notification area, or stop active work and exit?", prompt.Message);
-        Assert.Equal("Active work", prompt.Title);
-        Assert.Equal(MessageBoxButton.YesNoCancel, prompt.Buttons);
-        Assert.Equal(MessageBoxImage.Question, prompt.Image);
-        Assert.Equal(MessageBoxResult.Yes, prompt.Default);
-        await context.ViewModel.StopAsync(false);
-        await window.RequestExitAsync();
+        var model = await context.Models.RegisterAsync("existing.zip", CancellationToken.None);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var selectionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken selectionToken = default;
+        context.Models.Selecting = token =>
+        {
+            selectionToken = token;
+            selectionStarted.SetResult();
+            return release.Task.WaitAsync(token);
+        };
+        try
+        {
+            await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+            context.ViewModel.SelectedModel = model;
+            await UntilAsync(() => context.ViewModel.IsSelectingModel);
+            await selectionStarted.Task;
+            context.PrepareRecording();
+            await context.ViewModel.StartRecordingAsync(false);
+            window.Close();
+            Assert.Equal("Recording", context.ViewModel.Status);
+            Assert.Equal(0, environment.Disposals);
+            Assert.True(context.ViewModel.IsSelectingModel);
+            Assert.False(selectionToken.IsCancellationRequested);
+            var prompt = Assert.Single(dialogs.Prompts);
+            Assert.Equal("Keep running in the notification area, or stop active work and exit?", prompt.Message);
+            Assert.Equal("Active work", prompt.Title);
+            Assert.Equal(MessageBoxButton.YesNoCancel, prompt.Buttons);
+            Assert.Equal(MessageBoxImage.Question, prompt.Image);
+            Assert.Equal(MessageBoxResult.Yes, prompt.Default);
+            release.SetResult();
+            await UntilAsync(() => !context.ViewModel.IsSelectingModel);
+            Assert.Equal(model.Id, context.Models.SelectedModelId);
+            Assert.Equal("Recording", context.ViewModel.Status);
+            Assert.Empty(context.Queue.Jobs);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await UntilAsync(() => !context.ViewModel.IsSelectingModel);
+            await context.ViewModel.StopAsync(false);
+            await window.RequestExitAsync();
+        }
     });
 
     [Fact]
@@ -1046,6 +2565,54 @@ public sealed class MainWindowTests
             context.ViewModel.Message);
         await window.RequestExitAsync();
     });
+
+    private sealed class JobHistoryBoundary(IRecordingLibrary library) : IRecordingLibrary
+    {
+        public IOException? Failure { get; set; }
+        public Task<IReadOnlyList<RecordingLibraryEntry>> LoadAsync(CancellationToken token) => library.LoadAsync(token);
+        public Task<IReadOnlyList<RecordingLibraryEntry>> SearchAsync(string query, CancellationToken token) => library.SearchAsync(query, token);
+        public Task<TranscriptReadResult> ReadTranscriptAsync(Guid recordingId, Guid jobId, CancellationToken token) =>
+            library.ReadTranscriptAsync(recordingId, jobId, token);
+        public Task<LibraryDeletionResult> DeleteRecordingAsync(Guid id, RecordingDeletionScope scope, CancellationToken token) =>
+            library.DeleteRecordingAsync(id, scope, token);
+        public Task<LibraryDeletionResult> DeleteJobHistoryAsync(Guid id, CancellationToken token) =>
+            Failure is { } failure ? Task.FromException<LibraryDeletionResult>(failure) : library.DeleteJobHistoryAsync(id, token);
+    }
+
+    private sealed class WorkspacePlaybackDevice : NAudio.Wave.IWavePlayer, NAudio.Wave.IWavePosition
+    {
+        public NAudio.Wave.PlaybackState PlaybackState { get; private set; }
+        public NAudio.Wave.WaveFormat OutputWaveFormat { get; private set; } = null!;
+        public float Volume { get; set; }
+        public long PositionBytes { get; set; }
+        public bool Disposed { get; private set; }
+        public Exception? PauseError { get; set; }
+        public Exception? DisposeError { get; set; }
+        public event EventHandler<NAudio.Wave.StoppedEventArgs>? PlaybackStopped;
+        public void Init(NAudio.Wave.IWaveProvider provider) => OutputWaveFormat = provider.WaveFormat;
+        public long GetPosition() => PositionBytes;
+        public void Play() => PlaybackState = NAudio.Wave.PlaybackState.Playing;
+        public void Pause()
+        {
+            if (PauseError is not null) throw PauseError;
+            PlaybackState = NAudio.Wave.PlaybackState.Paused;
+        }
+        public void Stop()
+        {
+            PlaybackState = NAudio.Wave.PlaybackState.Stopped;
+            PlaybackStopped?.Invoke(this, new(null));
+        }
+        public void Fail(Exception exception)
+        {
+            PlaybackState = NAudio.Wave.PlaybackState.Stopped;
+            PlaybackStopped?.Invoke(this, new(exception));
+        }
+        public void Dispose()
+        {
+            Disposed = true;
+            if (DisposeError is not null) throw DisposeError;
+        }
+    }
 
     private static async Task UntilAsync(Func<bool> condition)
     {

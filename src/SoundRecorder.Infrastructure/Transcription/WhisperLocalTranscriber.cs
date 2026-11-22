@@ -11,22 +11,29 @@ public sealed class WhisperLocalTranscriber : IJobTranscriber
 {
     private readonly ITranscriptionModelStore _models;
     private readonly ILogger<WhisperLocalTranscriber> _logger;
-    private readonly Func<string, string, Stream, CancellationToken,
+    private readonly Func<string, string, Stream, CancellationToken, IProgress<TranscriptionProgress>?,
         Task<IReadOnlyList<TranscriptSegment>>> _processAudio;
-    private readonly bool _nativeProgress;
 
     public WhisperLocalTranscriber(
         ITranscriptionModelStore models,
         ILogger<WhisperLocalTranscriber>? logger = null)
         : this(models, logger, ProcessWithWhisperAsync)
     {
-        _nativeProgress = true;
     }
 
     internal WhisperLocalTranscriber(
         ITranscriptionModelStore models,
         ILogger<WhisperLocalTranscriber>? logger,
         Func<string, string, Stream, CancellationToken,
+            Task<IReadOnlyList<TranscriptSegment>>> processAudio)
+        : this(models, logger, (model, language, audio, token, _) => processAudio(model, language, audio, token))
+    {
+    }
+
+    private WhisperLocalTranscriber(
+        ITranscriptionModelStore models,
+        ILogger<WhisperLocalTranscriber>? logger,
+        Func<string, string, Stream, CancellationToken, IProgress<TranscriptionProgress>?,
             Task<IReadOnlyList<TranscriptSegment>>> processAudio)
     {
         _models = models;
@@ -109,9 +116,7 @@ public sealed class WhisperLocalTranscriber : IJobTranscriber
     private Task<IReadOnlyList<TranscriptSegment>> ProcessAudioAsync(
         SavedRecording recording, string model, Stream audio,
         IProgress<TranscriptionProgress>? progress, CancellationToken cancellationToken) =>
-        _nativeProgress
-            ? ProcessWithWhisperAsync(model, ToWhisperLanguage(recording.Language), audio, cancellationToken, progress)
-            : _processAudio(model, ToWhisperLanguage(recording.Language), audio, cancellationToken);
+        _processAudio(model, ToWhisperLanguage(recording.Language), audio, cancellationToken, progress);
 
     private static void DeleteProcessingAudio(string temporaryAudioPath)
     {
@@ -154,13 +159,6 @@ public sealed class WhisperLocalTranscriber : IJobTranscriber
             writer.Write(buffer, 0, bytesRead);
         }
     }
-
-    private static async Task<IReadOnlyList<TranscriptSegment>> ProcessWithWhisperAsync(
-        string model,
-        string language,
-        Stream audio,
-        CancellationToken cancellationToken)
-        => await ProcessWithWhisperAsync(model, language, audio, cancellationToken, null);
 
     private static async Task<IReadOnlyList<TranscriptSegment>> ProcessWithWhisperAsync(
         string model, string language, Stream audio, CancellationToken cancellationToken,

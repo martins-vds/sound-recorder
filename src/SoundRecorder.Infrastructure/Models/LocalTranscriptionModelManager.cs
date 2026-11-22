@@ -28,7 +28,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         _httpClient = httpClient;
         _logger = logger ?? NullLogger<LocalTranscriptionModelManager>.Instance;
         Directory.CreateDirectory(_modelsDirectory);
-        LoadInventoryAsync(default).GetAwaiter().GetResult();
+        Task.Run(() => LoadInventoryAsync(default)).GetAwaiter().GetResult();
         LoadCurrentPackage();
     }
 
@@ -93,7 +93,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         await _inventoryGate.WaitAsync(cancellationToken);
         try
         {
-            var failures = await LoadInventoryAsync(cancellationToken);
+            var failures = await Task.Run(() => LoadInventoryAsync(cancellationToken), cancellationToken);
             _currentPackage = null;
             _currentModelPath = null;
             var selectionFailure = LoadCurrentPackage();
@@ -126,14 +126,17 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         bool onlyIfNoSelection = false)
     {
         InfrastructureLog.ModelImportStarted(_logger);
-        using var staging = new ModelStaging(_modelsDirectory);
+        var staging = new ModelStaging(_modelsDirectory);
         try
         {
-            TranscriptionModelPackage manifest;
-            using (var archive = ZipFile.OpenRead(packagePath))
-                manifest = await StageImportedPackageAsync(archive, staging.Path, cancellationToken);
-            return await CommitStagedModelAsync(
-                staging, manifest, activate, cancellationToken, onlyIfNoSelection);
+            using (staging)
+            {
+                TranscriptionModelPackage manifest;
+                using (var archive = ZipFile.OpenRead(packagePath))
+                    manifest = await StageImportedPackageAsync(archive, staging.Path, cancellationToken);
+                return await CommitStagedModelAsync(
+                    staging, manifest, activate, cancellationToken, onlyIfNoSelection);
+            }
         }
         catch (Exception exception)
         {
@@ -158,7 +161,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         await using (var source = modelEntry.Open())
         await using (var output = new FileStream(
             stagedModelPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-            81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            81920, FileOptions.Asynchronous))
         {
             await source.CopyToAsync(output, cancellationToken);
         }
@@ -241,25 +244,17 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
     {
         cancellationToken.ThrowIfCancellationRequested();
         var directory = Path.GetFileName(staging.Path);
-        try
+        var installed = Installed(directory, package);
+        if (identity is not null)
+            installed = WithLegacyIdentity(installed, identity);
+        await PublishManifestAsync(staging.Path, package, cancellationToken);
+        await ActivateIfRequestedAsync(installed, activate, onlyIfNoSelection, cancellationToken);
+        _inventory = new Dictionary<string, InstalledModel>(_inventory, StringComparer.Ordinal)
         {
-            var installed = Installed(directory, package);
-            if (identity is not null)
-                installed = WithLegacyIdentity(installed, identity);
-            await PublishManifestAsync(staging.Path, package, cancellationToken);
-            await ActivateIfRequestedAsync(installed, activate, onlyIfNoSelection, cancellationToken);
-            _inventory = new Dictionary<string, InstalledModel>(_inventory, StringComparer.Ordinal)
-            {
-                [installed.Model.Id] = installed
-            };
-            staging.Published = true;
-            return installed;
-        }
-        catch
-        {
-            Directory.Delete(staging.Path, recursive: true);
-            throw;
-        }
+            [installed.Model.Id] = installed
+        };
+        staging.Published = true;
+        return installed;
     }
 
     private static async Task PublishManifestAsync(
@@ -267,17 +262,9 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
     {
         // The verified manifest marks readiness; publishing must not require renaming an open directory.
         var temporary = Path.Combine(directory, $".manifest-{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(package), cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporary, Path.Combine(directory, "manifest.json"));
-        }
-        finally
-        {
-            if (File.Exists(temporary))
-                File.Delete(temporary);
-        }
+        await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(package), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        File.Move(temporary, Path.Combine(directory, "manifest.json"));
     }
 
     private async Task ActivateAsync(InstalledModel installed, CancellationToken cancellationToken)
@@ -462,7 +449,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
             if (!File.Exists(manifestPath))
                 continue;
             await LoadInventoryDirectoryAsync(
-                directory, manifestPath, inventory, failures, selection, cancellationToken).ConfigureAwait(false);
+                directory, manifestPath, inventory, failures, selection, cancellationToken);
         }
         _inventory = inventory;
         return failures;
@@ -475,11 +462,10 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         try
         {
             var installed = await ReadVerifiedInventoryModelAsync(
-                directory, manifestPath, cancellationToken).ConfigureAwait(false);
-            installed = await ApplyPersistedIdentityAsync(directory, installed, cancellationToken).ConfigureAwait(false);
-            installed = await ReserveSelectionIdentityAsync(directory, installed, selection, cancellationToken)
-                .ConfigureAwait(false);
-            await MergeInventoryArtifactAsync(directory, installed, inventory, cancellationToken).ConfigureAwait(false);
+                directory, manifestPath, cancellationToken);
+            installed = await ApplyPersistedIdentityAsync(directory, installed, cancellationToken);
+            installed = await ReserveSelectionIdentityAsync(directory, installed, selection, cancellationToken);
+            await MergeInventoryArtifactAsync(directory, installed, inventory, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException or UnauthorizedAccessException)
         {
@@ -498,8 +484,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
             string.Equals(installed.Package.Sha256, selectedPackage.Sha256, StringComparison.OrdinalIgnoreCase))
             return installed;
         var identity = $"{installed.Package.Id}@{installed.Package.Sha256.ToLowerInvariant()}";
-        await WriteLegacyIdentityAsync(Path.Combine(directory, "identity.json"), identity, cancellationToken)
-            .ConfigureAwait(false);
+        await WriteLegacyIdentityAsync(Path.Combine(directory, "identity.json"), identity, cancellationToken);
         return WithLegacyIdentity(installed, identity);
     }
 
@@ -508,12 +493,12 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
     {
         if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Linked model directories are unavailable. Re-import a regular model package.");
-        var json = await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        var json = await File.ReadAllTextAsync(manifestPath, cancellationToken);
         var package = JsonSerializer.Deserialize<TranscriptionModelPackage>(json, JsonSerializerOptions.Web)
             ?? throw new InvalidDataException("The model package manifest is invalid.");
         ValidateManifest(package);
         var installed = Installed(Path.GetFileName(directory), package);
-        var hash = await ComputeHashAsync(installed.Model.ModelPath, cancellationToken).ConfigureAwait(false);
+        var hash = await ComputeHashAsync(installed.Model.ModelPath, cancellationToken);
         if (!hash.Equals(package.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The model package failed its SHA-256 integrity check.");
         return installed;
@@ -526,7 +511,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         if (!File.Exists(identityPath))
             return installed;
         var identity = JsonSerializer.Deserialize<string>(
-            await File.ReadAllTextAsync(identityPath, cancellationToken).ConfigureAwait(false));
+            await File.ReadAllTextAsync(identityPath, cancellationToken));
         if (identity != $"{installed.Package.Id}@{installed.Package.Sha256.ToLowerInvariant()}")
             throw new InvalidDataException("The local model artifact identity is invalid.");
         return WithLegacyIdentity(installed, identity);
@@ -542,7 +527,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
                 return;
             var identity = $"{installed.Package.Id}@{installed.Package.Sha256.ToLowerInvariant()}";
             await WriteLegacyIdentityAsync(
-                Path.Combine(directory, "identity.json"), identity, cancellationToken).ConfigureAwait(false);
+                Path.Combine(directory, "identity.json"), identity, cancellationToken);
             installed = WithLegacyIdentity(installed, identity);
         }
         inventory[installed.Model.Id] = installed;
@@ -573,14 +558,14 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
             }
         };
 
-    private static async Task WriteLegacyIdentityAsync(
-        string path, string identity, CancellationToken cancellationToken)
+    private static Task WriteLegacyIdentityAsync(
+        string path, string identity, CancellationToken cancellationToken) => Task.Run(async () =>
     {
         var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
             await File.WriteAllTextAsync(
-                temporary, JsonSerializer.Serialize(identity), cancellationToken).ConfigureAwait(false);
+                temporary, JsonSerializer.Serialize(identity), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, path);
         }
@@ -589,7 +574,7 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
             if (File.Exists(temporary))
                 File.Delete(temporary);
         }
-    }
+    }, cancellationToken);
 
     private InstalledModel Installed(string directory, TranscriptionModelPackage package)
     {
@@ -610,15 +595,8 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
 
     private static bool IsStillVerified(InstalledModel installed)
     {
-        try
-        {
-            var file = new FileInfo(installed.Model.ModelPath);
-            return MatchesVerifiedFile(file, installed);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+        var file = new FileInfo(installed.Model.ModelPath);
+        return MatchesVerifiedFile(file, installed);
     }
 
     private static bool MatchesVerifiedFile(FileInfo file, InstalledModel installed) =>
@@ -698,16 +676,16 @@ public sealed partial class LocalTranscriptionModelManager : ILocalTranscription
         }
     }
 
-    private static async Task<string> ComputeHashAsync(
+    private static Task<string> ComputeHashAsync(
         string path,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => Task.Run(async () =>
     {
         await using var stream = File.OpenRead(path);
         if (stream.Length == 0)
             throw new InvalidDataException("The model file is empty. Re-import or download a complete model.");
-        var bytes = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        var bytes = await SHA256.HashDataAsync(stream, cancellationToken);
         return Convert.ToHexString(bytes);
-    }
+    }, cancellationToken);
 
     private sealed record CurrentModel(
         string Directory,

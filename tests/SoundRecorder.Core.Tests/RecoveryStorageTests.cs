@@ -82,6 +82,22 @@ public sealed class RecoveryStorageTests : IDisposable
     }
 
     [Fact]
+    public async Task RecoverAsync_DataHeaderAtEndOfCapture_IsNotMistakenForMissingDataChunk()
+    {
+        var source = Wave("empty-capture.wav", 0, 1);
+        var candidate = await Checkpoint(source, null);
+
+        var recording = await new LocalRecoveryStorage(_directory.Root).RecoverAsync(candidate, default);
+
+        Assert.Equal(RecordingOutcome.Recovered, recording.Outcome);
+        Assert.Equal(TimeSpan.Zero, recording.CapturedDuration);
+        using var reader = new WaveFileReader(recording.AudioPath);
+        Assert.Equal(0, reader.Length);
+        Assert.False(File.Exists(source));
+        Assert.False(File.Exists(candidate.CapturedAudioPath));
+    }
+
+    [Fact]
     public async Task RecoverAsync_TwoSources_UsesLongestCapturedDurationAndCleansBothSources()
     {
         var microphone = Wave("mic.wav", 480, 2);

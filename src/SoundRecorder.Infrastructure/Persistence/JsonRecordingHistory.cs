@@ -158,7 +158,7 @@ public sealed class JsonRecordingHistory : IRecordingHistory
                         cancellationToken: cancellationToken);
                 }
 
-                PublishHistory(temporaryPath);
+                AtomicSnapshotPublication.Publish(temporaryPath, _path);
             }
             finally
             {
@@ -177,25 +177,6 @@ public sealed class JsonRecordingHistory : IRecordingHistory
         {
             _gate.Release();
         }
-    }
-
-    private void PublishHistory(string temporaryPath)
-    {
-        if (File.Exists(_path))
-        {
-            var previousSnapshot = $"{temporaryPath}.previous";
-            try
-            {
-                File.Replace(temporaryPath, _path, previousSnapshot);
-            }
-            finally
-            {
-                if (File.Exists(previousSnapshot))
-                    File.Delete(previousSnapshot);
-            }
-        }
-        else
-            File.Move(temporaryPath, _path);
     }
 
     private async Task<IReadOnlyList<SavedRecording>> ReadAsync(
@@ -338,7 +319,6 @@ public sealed class JsonRecordingHistory : IRecordingHistory
 
     private static bool NeedsDeletionCompletion(PendingRecordingDeletion? pending) =>
         pending is not null && (pending.Scope == RecordingDeletionScope.AllArtifacts ||
-            pending.RemainingJobIds.Count > 0 ||
             pending.Artifacts.Any(artifact => artifact.State is ArtifactDeletionState.Pending or ArtifactDeletionState.Failed));
 
     private void LogFailure(Exception exception) =>

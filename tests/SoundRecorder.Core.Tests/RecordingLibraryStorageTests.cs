@@ -124,8 +124,9 @@ public sealed class RecordingLibraryStorageTests : IDisposable
         await history.RegisterOutputsAsync(first.Id, owned, default);
         var before = await File.ReadAllBytesAsync(path);
 
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var conflict = await Assert.ThrowsAsync<InvalidDataException>(() =>
             history.RegisterOutputsAsync(first.Id, owned with { Outputs = Outputs("different") }, default));
+        Assert.Contains("different transcript output pair", conflict.Message);
         await Assert.ThrowsAsync<InvalidDataException>(() =>
             history.RegisterOutputsAsync(second.Id, owned, default));
         await Assert.ThrowsAsync<InvalidDataException>(() =>

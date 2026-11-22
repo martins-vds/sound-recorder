@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Collections.Concurrent;
 
 namespace SoundRecorder.Core;
 
@@ -10,7 +9,6 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private readonly ITranscriptWriter _writer;
     private readonly ITranscriptionJobRepository _repository;
     private readonly ILogger<TranscriptionQueue> _logger;
-    private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _saveGate = new(1, 1);
     private readonly List<TranscriptionJob> _jobs = [];
     private CancellationTokenSource? _runningJobCancellation;
@@ -18,10 +16,11 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private Task? _worker;
     private readonly ITranscriptionModelStore? _models;
     private readonly IRecordingHistory? _history;
-    private readonly HashSet<Guid> _blockedRecordings = [];
-    private readonly Dictionary<Guid, TaskCompletionSource> _releases = [];
-    private readonly ConcurrentQueue<Action> _notifications = new();
-    private int _dispatching;
+    private readonly HashSet<Guid> _blockedRecordings = new();
+    private Guid _lastWorkerRecordingId;
+    private Task _lastWorkerRelease = Task.CompletedTask;
+    private readonly Queue<Action> _notifications = new();
+    private bool _dispatching;
 
     /// <summary>Asynchronous refresh notification; read the job's latest state on the observer's dispatcher.</summary>
     public event EventHandler<TranscriptionJob>? JobChanged;
@@ -129,7 +128,11 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
 
     private (bool Running, Task? Cancellation) BeginTermination(TranscriptionJob job, bool stop)
     {
-        if (job.Status == TranscriptionJobStatus.Queued) job.Status = TranscriptionJobStatus.Canceled;
+        if (job.Status == TranscriptionJobStatus.Queued)
+        {
+            job.IsTerminationPending = true;
+            job.Status = TranscriptionJobStatus.Canceled;
+        }
         var running = job.Status == TranscriptionJobStatus.Running;
         Task? cancellation = null;
         if (job.Status == TranscriptionJobStatus.Running && !job.IsTerminationPending)
@@ -247,16 +250,15 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     public async Task CancelRecordingAsync(Guid recordingId, CancellationToken cancellationToken)
     {
         TranscriptionJob[] related;
-        Task[] releases;
+        Task release;
         lock (_jobs)
         {
             _blockedRecordings.Add(recordingId);
             related = _jobs.Where(job => job.Recording.Id == recordingId).ToArray();
-            releases = related.Where(job => _releases.ContainsKey(job.Id))
-                .Select(job => _releases[job.Id].Task).ToArray();
+            release = _lastWorkerRecordingId == recordingId ? _lastWorkerRelease : Task.CompletedTask;
         }
         foreach (var job in related) await CancelAsync(job.Id, cancellationToken);
-        await Task.WhenAll(releases).WaitAsync(cancellationToken);
+        await release.WaitAsync(cancellationToken);
     }
 
     public async Task<TranscriptionJob> RetryAsync(
@@ -280,7 +282,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
 
     public async Task WaitForIdleAsync(CancellationToken cancellationToken)
     {
-        while (_worker is { } worker && !worker.IsCompleted)
+        while (WorkerSnapshot() is { } worker)
         {
             await worker.WaitAsync(cancellationToken);
         }
@@ -288,58 +290,69 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         _saveGate.Release();
     }
 
+    private Task? WorkerSnapshot()
+    {
+        lock (_jobs) return _worker;
+    }
+
     private void StartWorker()
     {
-        // Stryker disable once all: removing this guard only creates a redundant, gated worker task.
         lock (_jobs)
         {
-            if (_worker is { IsCompleted: false }) return;
+            if (_worker is not null) return;
             _worker = Task.Run(RunWorkerAsync);
         }
     }
 
     private async Task RunWorkerAsync()
     {
-        await _gate.WaitAsync();
         try
         {
-            while (NextQueuedJob() is { } job)
+            while (ClaimNextJob() is { } attempt)
             {
-                await RunAsync(job);
+                await RunAsync(attempt.Job, attempt.Cancellation, attempt.Release);
             }
         }
-        finally
+        catch
         {
-            _gate.Release();
             lock (_jobs)
             {
                 _worker = null;
-                // Stryker disable once all: this race guard is observable only if enqueue and worker teardown interleave.
-                if (NextQueuedJob() is not null) StartWorker();
+                StartWorker();
             }
+            throw;
         }
     }
 
-    private TranscriptionJob? NextQueuedJob()
+    private (TranscriptionJob Job, CancellationTokenSource Cancellation, TaskCompletionSource Release)? ClaimNextJob()
     {
         lock (_jobs)
         {
-            return _jobs
+            var job = _jobs
                 .Where(job => job.Status == TranscriptionJobStatus.Queued)
                 .OrderBy(job => job.CreatedAt)
                 .FirstOrDefault();
+            if (job is null)
+            {
+                _worker = null;
+                return null;
+            }
+            var cancellation = _runningJobCancellation = new CancellationTokenSource();
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _lastWorkerRecordingId = job.Recording.Id;
+            _lastWorkerRelease = release.Task;
+            job.WorkerReleaseCompleted = false;
+            job.Status = TranscriptionJobStatus.Running;
+            return (job, cancellation, release);
         }
     }
 
-    private async Task RunAsync(TranscriptionJob job)
+    private async Task RunAsync(TranscriptionJob job, CancellationTokenSource cancellation, TaskCompletionSource release)
     {
-        var lifetime = StartJob(job);
-        if (lifetime is null) return;
-        var (cancellation, release) = lifetime.Value;
-        ReportProgress(job, new(TranscriptionPhase.Preparing));
-        CoreLog.JobStarted(_logger, job.Id);
         try
         {
+            ReportProgress(job, new(TranscriptionPhase.Preparing));
+            CoreLog.JobStarted(_logger, job.Id);
             await ProcessJobAsync(job, cancellation);
         }
         catch (OperationCanceledException)
@@ -353,19 +366,6 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         finally
         {
             await ReleaseJobAsync(job, cancellation, release);
-        }
-    }
-
-    private (CancellationTokenSource Cancellation, TaskCompletionSource Release)? StartJob(TranscriptionJob job)
-    {
-        lock (_jobs)
-        {
-            if (job.Status != TranscriptionJobStatus.Queued) return null;
-            var cancellation = _runningJobCancellation = new CancellationTokenSource();
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _releases[job.Id] = release;
-            job.Status = TranscriptionJobStatus.Running;
-            return (cancellation, release);
         }
     }
 
@@ -384,6 +384,7 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         lock (_jobs)
         {
             cancellation.Token.ThrowIfCancellationRequested();
+            job.IsTerminationPending = true;
             job.Status = TranscriptionJobStatus.Succeeded;
         }
         CoreLog.JobSucceeded(_logger, job.Id);
@@ -422,18 +423,28 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private void CompleteCanceledJob(TranscriptionJob job)
     {
         var cleanupError = DiscardUnsuccessfulOutputs(job);
-        job.Status = cleanupError is not null ? TranscriptionJobStatus.Failed : job.InterruptionReason is null
+        var status = cleanupError is not null ? TranscriptionJobStatus.Failed : job.InterruptionReason is null
             ? TranscriptionJobStatus.Canceled : TranscriptionJobStatus.Interrupted;
-        job.Error = cleanupError;
+        MarkTerminal(job, status, cleanupError);
         CoreLog.JobCanceled(_logger, job.Id);
     }
 
     private void CompleteFailedJob(TranscriptionJob job, Exception exception)
     {
         var cleanupError = DiscardUnsuccessfulOutputs(job);
-        job.Status = TranscriptionJobStatus.Failed;
-        job.Error = cleanupError is null ? exception.Message : $"{exception.Message} {cleanupError}";
+        MarkTerminal(job, TranscriptionJobStatus.Failed,
+            cleanupError is null ? exception.Message : $"{exception.Message} {cleanupError}");
         CoreLog.JobFailed(_logger, exception, job.Id);
+    }
+
+    private void MarkTerminal(TranscriptionJob job, TranscriptionJobStatus status, string? error)
+    {
+        lock (_jobs)
+        {
+            job.IsTerminationPending = true;
+            job.Status = status;
+            job.Error = error;
+        }
     }
 
     private async Task ReleaseJobAsync(
@@ -444,17 +455,15 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         await CompleteCancellationCallbacksAsync(cancellationCompletion, job.Id);
         lock (_jobs)
         {
-            job.IsTerminationPending = false;
             cancellation.Dispose();
+            job.WorkerReleaseCompleted = true;
             _runningJobCancellation = null;
             _runningCancellationCompletion = null;
         }
         try { await SaveAsync(CancellationToken.None); }
         finally
         {
-            lock (_jobs) _releases.Remove(job.Id);
             release.TrySetResult();
-            Notify(job);
         }
     }
 
@@ -472,8 +481,77 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private async Task SaveAsync(CancellationToken cancellationToken)
     {
         await _saveGate.WaitAsync(cancellationToken);
-        try { await _repository.SaveAsync(Jobs, cancellationToken); }
+        try
+        {
+            var (jobs, checkpoints) = CapturePersistence();
+            await PersistCheckpointsAsync(jobs, checkpoints, cancellationToken);
+            CompleteCheckpoints(checkpoints);
+        }
         finally { _saveGate.Release(); }
+    }
+
+    private (TranscriptionJob[] Jobs, TranscriptionJob[] Checkpoints) CapturePersistence()
+    {
+        lock (_jobs)
+        {
+            return (_jobs.Select(PersistenceJob).ToArray(),
+                _jobs.Where(job => job.IsTerminationPending && job.WorkerReleaseCompleted).ToArray());
+        }
+    }
+
+    private static TranscriptionJob PersistenceJob(TranscriptionJob job) =>
+        job.HasTerminalCheckpointFailure
+            ? new(job.Id, job.Recording, job.CreatedAt, job.Status, job.Outputs,
+                job.ErrorBeforeTerminalCheckpoint, job.ModelId, job.InterruptionReason)
+            : job;
+
+    private async Task PersistCheckpointsAsync(
+        IReadOnlyList<TranscriptionJob> jobs, TranscriptionJob[] checkpoints, CancellationToken token)
+    {
+        try { await _repository.SaveAsync(jobs, token); }
+        catch (Exception exception)
+        {
+            FailCheckpoints(checkpoints, exception);
+            throw;
+        }
+    }
+
+    private void CompleteCheckpoints(TranscriptionJob[] checkpoints)
+    {
+        lock (_jobs)
+        {
+            foreach (var job in checkpoints)
+            {
+                if (job.HasTerminalCheckpointFailure) job.Error = job.ErrorBeforeTerminalCheckpoint;
+                job.HasTerminalCheckpointFailure = false;
+                job.IsTerminationPending = false;
+            }
+        }
+        foreach (var job in checkpoints) Notify(job);
+    }
+
+    private void FailCheckpoints(TranscriptionJob[] checkpoints, Exception exception)
+    {
+        lock (_jobs)
+        {
+            foreach (var job in checkpoints)
+            {
+                if (!job.HasTerminalCheckpointFailure) job.ErrorBeforeTerminalCheckpoint = job.Error;
+                job.HasTerminalCheckpointFailure = true;
+                job.Error = CheckpointError(job.ErrorBeforeTerminalCheckpoint, exception.Message);
+            }
+        }
+        foreach (var job in checkpoints)
+        {
+            CoreLog.JobFailed(_logger, exception, job.Id);
+            Notify(job);
+        }
+    }
+
+    private static string CheckpointError(string? original, string failure)
+    {
+        var checkpoint = $"Terminal history checkpoint could not be saved: {failure} Retry cancellation to persist this job.";
+        return $"{original} {checkpoint}".TrimStart();
     }
 
     private TranscriptionJob CreateJob(SavedRecording recording) =>
@@ -574,17 +652,29 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
 
     private void Dispatch(Action notification)
     {
-        _notifications.Enqueue(notification);
-        if (Interlocked.CompareExchange(ref _dispatching, 1, 0) != 0) return;
-        ThreadPool.QueueUserWorkItem(_ =>
+        lock (_notifications)
         {
-            do
-            {
-                while (_notifications.TryDequeue(out var callback))
-                    try { callback(); } catch { }
-                Interlocked.Exchange(ref _dispatching, 0);
-            } while (!_notifications.IsEmpty && Interlocked.CompareExchange(ref _dispatching, 1, 0) == 0);
-        });
+            _notifications.Enqueue(notification);
+            if (_dispatching) return;
+            _dispatching = true;
+        }
+        ThreadPool.QueueUserWorkItem(_ => DrainNotifications());
+    }
+
+    private void DrainNotifications()
+    {
+        while (NextNotification() is { } callback)
+            try { callback(); } catch { }
+    }
+
+    private Action? NextNotification()
+    {
+        lock (_notifications)
+        {
+            if (_notifications.TryDequeue(out var callback)) return callback;
+            _dispatching = false;
+            return null;
+        }
     }
 
     private sealed class JobProgress(Action<TranscriptionProgress> report) : IProgress<TranscriptionProgress>

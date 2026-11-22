@@ -427,6 +427,12 @@ public sealed class DesktopViewModelTests
         Assert.Null(context.Models.SelectedModelId);
         Assert.Equal(fails ? 0 : 1, context.ViewModel.DownloadedModels.Count);
         Assert.False(context.ViewModel.IsBusy);
+        if (fails)
+        {
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains(nameof(IOException), StringComparison.Ordinal));
+            Assert.DoesNotContain(context.Logger.Entries, entry => entry.Message.Contains("chosen.zip", StringComparison.Ordinal));
+        }
     }
 
     [Theory]
@@ -770,13 +776,18 @@ internal sealed class DesktopModels : ILocalTranscriptionModelManager
 {
     private readonly List<DownloadedTranscriptionModel> _registered = [];
     public TaskCompletionSource? CatalogGate { get; set; }
+    public TaskCompletionSource? VerificationGate { get; set; }
+    public long? CatalogTotalBytes { get; set; } = 4096;
+    public IProgress<ModelDownloadProgress>? CatalogProgress { get; private set; }
     public async Task<DownloadedTranscriptionModel> DownloadAsync(ModelCatalogEntry entry,
         IProgress<ModelDownloadProgress> progress, CancellationToken token)
     {
-        progress.Report(new(ModelDownloadPhase.Downloading, 1024, 4096));
+        CatalogProgress = progress;
+        progress.Report(new(ModelDownloadPhase.Downloading, 1024, CatalogTotalBytes));
         if (CatalogGate is not null) await CatalogGate.Task.WaitAsync(token);
         if (Error is not null) throw Error;
         progress.Report(new(ModelDownloadPhase.Verifying, 4096, 4096));
+        if (VerificationGate is not null) await VerificationGate.Task.WaitAsync(token);
         var model = new DownloadedTranscriptionModel(entry.Key, entry.DisplayName, Package.ModelFile, entry.Languages);
         _registered.Add(model);
         return model;
@@ -792,7 +803,8 @@ internal sealed class DesktopModels : ILocalTranscriptionModelManager
     {
         if (Selecting is not null) await Selecting(token);
         if (Error is not null) throw Error;
-        CurrentPackage = Package;
+        var model = _registered.First(item => item.Id == id);
+        CurrentPackage = Package with { Id = model.Id, Languages = model.Languages };
     }
     public async Task<DownloadedTranscriptionModel> RegisterAsync(string packagePath, CancellationToken token)
     {
@@ -848,7 +860,7 @@ internal sealed class DesktopHistory : IRecordingHistory
     public async Task<IReadOnlyList<SavedRecording>> LoadAsync(CancellationToken cancellationToken)
     {
         LoadStarted.TrySetResult();
-        if (LoadGate is not null) await LoadGate.Task;
+        if (LoadGate is not null) await LoadGate.Task.WaitAsync(cancellationToken);
         if (LoadError is not null) throw LoadError;
         return Items.ToArray();
     }
@@ -882,10 +894,20 @@ internal sealed class DesktopRecovery : IRecoveryStorage
 internal sealed class DesktopRepository : ITranscriptionJobRepository
 {
     public List<TranscriptionJob> Items { get; } = [];
+    public TaskCompletionSource? TerminalSaveGate { get; set; }
+    public TaskCompletionSource TerminalSaveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Exception? TerminalSaveError { get; set; }
     public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<TranscriptionJob>>(Items.ToArray());
-    public Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken cancellationToken) =>
-        Task.CompletedTask;
+    public async Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken cancellationToken)
+    {
+        if (jobs.Any(job => job.Status is not (TranscriptionJobStatus.Queued or TranscriptionJobStatus.Running)))
+        {
+            TerminalSaveStarted.TrySetResult();
+            if (TerminalSaveGate is not null) await TerminalSaveGate.Task.WaitAsync(cancellationToken);
+            if (TerminalSaveError is not null) throw TerminalSaveError;
+        }
+    }
 }
 
 internal sealed class DesktopTranscriber : IJobTranscriber
@@ -903,8 +925,13 @@ internal sealed class DesktopTranscriber : IJobTranscriber
     public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource CancellationRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource? CancellationGate { get; set; }
+    public Exception? CancellationError { get; set; }
     public async Task<TranscriptDocument> TranscribeAsync(SavedRecording recording, CancellationToken cancellationToken)
     {
+        using var registration = cancellationToken.Register(() =>
+        {
+            if (CancellationError is { } error) throw error;
+        });
         Started.TrySetResult();
         if (Block)
         {

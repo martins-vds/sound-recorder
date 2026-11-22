@@ -93,6 +93,7 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         var result = await library.DeleteJobHistoryAsync(output.JobId, default);
 
         Assert.Equal(LibraryDeletionStatus.Completed, result.Status);
+        Assert.Empty(result.Issues);
         Assert.Empty(await _fixture.Jobs.LoadAsync(default));
         var retained = await library.ReadTranscriptAsync(recording.Id, output.JobId, default);
         Assert.Equal("Transcript attempt 1", retained.Text);
@@ -212,6 +213,9 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
 
         Assert.Equal(LibraryDeletionStatus.Incomplete, result.Status);
         Assert.Equal(expected, Assert.Single(result.Issues).Code);
+        Assert.Contains(playback ? "Playback could not be closed" : "work could not be released",
+            result.Issues[0].Message);
+        Assert.Contains("retry", result.Issues[0].Message);
         var saved = Assert.Single(await _fixture.History.LoadAsync(default));
         Assert.False(saved.AudioDeleted);
         Assert.Equal(expected, saved.PendingDeletion!.Failure!.Code);
@@ -309,6 +313,8 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         Assert.NotNull(result);
         Assert.Equal(LibraryDeletionStatus.Incomplete, result.Status);
         Assert.Equal(LibraryFailureCode.HistoryDeleteFailed, Assert.Single(result.Issues).Code);
+        Assert.Contains("Job history could not be removed", result.Issues[0].Message);
+        Assert.Contains("retry", result.Issues[0].Message);
         Assert.Single(await _fixture.Jobs.LoadAsync(default));
         Assert.Equal(_fixture.Outputs, Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs);
         Assert.True(File.Exists(_fixture.Outputs[0].Outputs.TextPath));
@@ -350,6 +356,11 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
                 _fixture.Recording.Id, RecordingDeletionScope.AllArtifacts, default);
             Assert.Equal(LibraryDeletionStatus.Incomplete, result.Status);
             Assert.Contains(result.Issues, issue => issue.Code == LibraryFailureCode.PersistenceFailed);
+            Assert.Equal(2, result.Issues.Count);
+            Assert.Contains(result.Issues, issue => issue.Message.Contains("progress could not be saved"));
+            Assert.Contains(result.Issues, issue => issue.Message.Contains("latest deletion outcome could not be persisted"));
+            Assert.Contains(_fixture.Logger.Entries, entry => entry.Message.Contains("Recording deletion failed"));
+            Assert.Contains(_fixture.Logger.Entries, entry => entry.Message.Contains("Deletion failure persistence failed"));
             Assert.Equal(ArtifactDeletionState.Removed, result.PendingDeletion!.Artifacts[0].State);
             Assert.False(File.Exists(_fixture.Recording.AudioPath));
             Assert.True(File.Exists(_fixture.Outputs[0].Outputs.TextPath));
@@ -371,17 +382,25 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         var second = _fixture.Outputs[1].JobId;
         var fail = true;
         var calls = new List<Guid>();
+        IReadOnlyList<Guid>? remainingBeforeSecondRemoval = null;
         var library = _fixture.CreateLibrary(deleteJob: async (id, token) =>
         {
             calls.Add(id);
             if (id == second && fail)
+            {
+                remainingBeforeSecondRemoval = Assert.Single(await _fixture.History.LoadAsync(token))
+                    .PendingDeletion!.RemainingJobIds.ToArray();
                 throw new IOException("Controlled remaining-history failure");
+            }
             await _fixture.DeleteJobAsync(id, token);
         });
         var result = await library.DeleteRecordingAsync(_fixture.Recording.Id, RecordingDeletionScope.AllArtifacts, default);
         Assert.Equal(LibraryDeletionStatus.Incomplete, result.Status);
         Assert.Equal(second, Assert.Single(result.PendingDeletion!.RemainingJobIds));
+        Assert.Equal(new[] { second }, remainingBeforeSecondRemoval);
         Assert.Equal(LibraryFailureCode.HistoryDeleteFailed, Assert.Single(result.Issues).Code);
+        Assert.Contains("Associated job history could not be removed", result.Issues[0].Message);
+        Assert.Contains("retry", result.Issues[0].Message);
         Assert.Equal(second, Assert.Single(await _fixture.Jobs.LoadAsync(default)).Id);
         fail = false;
 
@@ -428,8 +447,9 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         var late = new OwnedTranscriptOutputs(Guid.NewGuid(),
             new(Path.Combine(_fixture.Root, "meeting.transcript-2.txt"), Path.Combine(_fixture.Root, "meeting.transcript-2.srt")));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             _fixture.History.RegisterOutputsAsync(current.Id, late, default));
+        Assert.Contains("publication is unavailable", error.Message);
         await _fixture.History.RegisterOutputsAsync(current.Id, _fixture.Outputs[0], default);
 
         Assert.Equal(before, await File.ReadAllBytesAsync(_fixture.HistoryPath));
@@ -458,6 +478,8 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
 
         Assert.Equal(LibraryDeletionStatus.Rejected, result.Status);
         Assert.Equal(LibraryFailureCode.OwnershipInvalid, Assert.Single(result.Issues).Code);
+        Assert.Contains("ownership changed", result.Issues[0].Message);
+        Assert.Contains("shared references", result.Issues[0].Message);
         Assert.False(File.Exists(_fixture.Recording.AudioPath));
         Assert.True(File.Exists(_fixture.Outputs[0].Outputs.TextPath));
         Assert.True(File.Exists(_fixture.Outputs[0].Outputs.SubtitlePath));
@@ -490,6 +512,7 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
             _fixture.Recording.Id, RecordingDeletionScope.AllArtifacts, default);
         Assert.Equal(LibraryDeletionStatus.Rejected, result.Status);
         Assert.Equal(LibraryFailureCode.DeletionConflict, Assert.Single(result.Issues).Code);
+        Assert.Contains("retry the original deletion scope", result.Issues[0].Message);
         Assert.Equal(before, await File.ReadAllBytesAsync(_fixture.HistoryPath));
         Assert.Empty(_fixture.CancelledRecordings);
         Assert.True(File.Exists(_fixture.Recording.AudioPath));
@@ -504,6 +527,7 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         var result = await _fixture.CreateLibrary().DeleteJobHistoryAsync(queued.Id, default);
         Assert.Equal(LibraryDeletionStatus.Rejected, result.Status);
         Assert.Equal(LibraryFailureCode.WorkerReleaseFailed, Assert.Single(result.Issues).Code);
+        Assert.Contains("wait for worker release", result.Issues[0].Message);
         Assert.Empty(_fixture.CancelledRecordings);
         Assert.Empty(_fixture.DeletedJobs);
         Assert.Equal(2, (await _fixture.Jobs.LoadAsync(default)).Count);
@@ -618,6 +642,7 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         var result = await library.DeleteRecordingAsync(_fixture.Recording.Id, RecordingDeletionScope.AllArtifacts, default);
 
         Assert.Equal(LibraryDeletionStatus.NotFound, result.Status);
+        Assert.Empty(result.Issues);
         Assert.Empty(_fixture.CancelledRecordings);
         Assert.Empty(_fixture.ReleasedPlayback);
         Assert.Empty(_fixture.DeletedJobs);
@@ -643,6 +668,8 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         Assert.False(recording.AudioDeleted);
         Assert.NotNull(recording.PendingDeletion);
         Assert.Equal(LibraryFailureCode.DeletionCanceled, recording.PendingDeletion.Failure!.Code);
+        Assert.Contains("interrupted", recording.PendingDeletion.Failure.Message);
+        Assert.Contains("retry", recording.PendingDeletion.Failure.Message);
         Assert.All(recording.PendingDeletion.Artifacts, artifact => Assert.Equal(ArtifactDeletionState.Pending, artifact.State));
         Assert.True(File.Exists(recording.AudioPath));
         Assert.Single(await _fixture.Jobs.LoadAsync(default));

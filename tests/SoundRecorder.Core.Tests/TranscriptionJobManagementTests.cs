@@ -1,11 +1,475 @@
 using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Transcription;
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 
 namespace SoundRecorder.Core.Tests;
 
 public sealed class TranscriptionJobManagementTests
 {
+    [Fact]
+    public async Task Queued_cancel_is_not_deletable_while_its_terminal_checkpoint_is_held()
+    {
+        var worker = new ControlledTranscriber();
+        var repository = new HeldCanceledRepository();
+        var queue = new TranscriptionQueue(worker, new Writer(), repository);
+        try
+        {
+            await queue.EnqueueAsync(Recording(), default);
+            await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await queue.EnqueueAsync(Recording(), default);
+            var queued = queue.Jobs[1];
+            var cancel = queue.CancelAsync(queued.Id, default);
+            await repository.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(queued.IsTerminationPending);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => queue.DeleteJobAsync(queued.Id, default));
+            repository.Publish.TrySetResult();
+            await cancel;
+            Assert.False(queued.IsTerminationPending);
+            await queue.DeleteJobAsync(queued.Id, default);
+        }
+        finally
+        {
+            repository.Publish.TrySetResult();
+            worker.Release.TrySetResult();
+            await queue.WaitForIdleAsync(default);
+        }
+    }
+
+    private sealed class HeldCanceledRepository : ITranscriptionJobRepository
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Publish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<TranscriptionJob>>([]);
+        public async Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken token)
+        {
+            if (jobs.Any(job => job.Status == TranscriptionJobStatus.Canceled))
+            {
+                Entered.TrySetResult();
+                await Publish.Task.WaitAsync(token);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Canceling_a_queued_recording_does_not_wait_for_an_unrelated_owned_worker()
+    {
+        var worker = new ControlledTranscriber();
+        var queue = new TranscriptionQueue(worker, new Writer(), new Repository());
+        try
+        {
+            await queue.EnqueueAsync(Recording(), default);
+            await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var target = Recording();
+            await queue.EnqueueAsync(target, default);
+
+            await queue.CancelRecordingAsync(target.Id, default).WaitAsync(TimeSpan.FromSeconds(1));
+
+            Assert.Equal(TranscriptionJobStatus.Running, queue.Jobs[0].Status);
+            Assert.NotEqual(target.Id, worker.Request!.Recording.Id);
+            Assert.Equal(TranscriptionJobStatus.Canceled, queue.Jobs[1].Status);
+        }
+        finally { worker.Release.TrySetResult(); await queue.WaitForIdleAsync(default); }
+    }
+
+    [Fact]
+    public async Task Processing_failure_diagnostics_are_preserved_in_normal_terminal_history_without_checkpoint_failure()
+    {
+        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", $"normal-failure-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var repository = new JsonTranscriptionJobRepository(Path.Combine(directory, "jobs.json"));
+            var worker = new ControlledTranscriber { Failure = new IOException("Native model could not recognize this audio.") };
+            worker.Release.TrySetResult();
+            var queue = new TranscriptionQueue(worker, new Writer(), repository);
+            await queue.EnqueueAsync(Recording(), default);
+            await queue.WaitForIdleAsync(default);
+
+            var saved = Assert.Single(await repository.LoadAsync(default));
+
+            Assert.Equal(TranscriptionJobStatus.Failed, saved.Status);
+            Assert.Equal("Native model could not recognize this audio.", saved.Error);
+            Assert.False(queue.Jobs[0].HasTerminalCheckpointFailure);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task Job_repository_publication_preserves_an_open_old_snapshot_while_new_history_becomes_visible()
+    {
+        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", $"job-snapshot-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "jobs.json");
+        try
+        {
+            var repository = new JsonTranscriptionJobRepository(path);
+            var first = new TranscriptionJob(Guid.NewGuid(), Recording(), DateTimeOffset.UtcNow,
+                TranscriptionJobStatus.Interrupted, null, null);
+            var second = new TranscriptionJob(Guid.NewGuid(), Recording(), DateTimeOffset.UtcNow,
+                TranscriptionJobStatus.Canceled, null, null);
+            await repository.SaveAsync([first], default);
+            await using (var oldSnapshot = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+            {
+                await repository.SaveAsync([second], default);
+                using var oldJson = await System.Text.Json.JsonDocument.ParseAsync(oldSnapshot);
+                Assert.Equal(first.Id, oldJson.RootElement[0].GetProperty("id").GetGuid());
+                Assert.Equal(second.Id, Assert.Single(await repository.LoadAsync(default)).Id);
+            }
+            Assert.Equal(new[] { path }, Directory.GetFiles(directory));
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task Job_repository_load_waits_for_its_active_publication_instead_of_racing_the_replacement_handle()
+    {
+        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", $"job-load-gate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        using var publish = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repository = new JsonTranscriptionJobRepository(Path.Combine(directory, "jobs.json"));
+        var first = new TranscriptionJob(Guid.NewGuid(), Recording(), DateTimeOffset.UtcNow, TranscriptionJobStatus.Interrupted, null, null);
+        var next = new TranscriptionJob(Guid.NewGuid(), Recording(), DateTimeOffset.UtcNow, TranscriptionJobStatus.Canceled, null, null);
+        await repository.SaveAsync([first], default);
+        Task? saving = null;
+        Task<IReadOnlyList<TranscriptionJob>>? loading = null;
+        try
+        {
+            saving = Task.Run(() => repository.SaveAsync(new PublishingJobs(next, () =>
+            {
+                entered.TrySetResult();
+                publish.Wait(TimeSpan.FromSeconds(5));
+            }), default));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            loading = repository.LoadAsync(default);
+
+            Assert.NotSame(loading, await Task.WhenAny(loading, Task.Delay(100)));
+
+            publish.Set();
+            await saving;
+            Assert.Equal(next.Id, Assert.Single(await loading).Id);
+        }
+        finally
+        {
+            publish.Set();
+            if (saving is not null) await saving;
+            if (loading is not null) await loading;
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private sealed class PublishingJobs(TranscriptionJob job, Action enumerate) : IReadOnlyList<TranscriptionJob>
+    {
+        public int Count => 1;
+        public TranscriptionJob this[int index] => index == 0 ? job : throw new IndexOutOfRangeException();
+        public IEnumerator<TranscriptionJob> GetEnumerator()
+        {
+            enumerate();
+            yield return job;
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task A_start_diagnostic_failure_releases_the_attempt_and_does_not_strand_later_jobs()
+    {
+        var worker = new ControlledTranscriber();
+        worker.Release.TrySetResult();
+        var queue = new TranscriptionQueue(worker, new Writer(), new Repository(), new StartFailureLogger());
+        await queue.EnqueueAsync(Recording(), default);
+
+        var idleFailure = await Record.ExceptionAsync(() => queue.WaitForIdleAsync(default));
+        Assert.Null(idleFailure);
+
+        var failed = queue.Jobs[0];
+        Assert.Equal(TranscriptionJobStatus.Failed, failed.Status);
+        Assert.Contains("Start diagnostic failed", failed.Error);
+        Assert.Equal(0, worker.Calls);
+        await queue.CancelRecordingAsync(failed.Recording.Id, default).WaitAsync(TimeSpan.FromSeconds(5));
+        var next = await queue.RetryAsync(Recording(), default);
+        await queue.WaitForIdleAsync(default);
+        Assert.Equal(TranscriptionJobStatus.Succeeded, next.Status);
+        Assert.Equal(1, worker.Calls);
+    }
+
+    private sealed class StartFailureLogger : ILogger<TranscriptionQueue>
+    {
+        private int _starts;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> format)
+        {
+            if (id.Id == 305 && Interlocked.Increment(ref _starts) == 1)
+                throw new IOException("Start diagnostic failed.");
+        }
+    }
+
+    [Fact]
+    public async Task Slow_observers_are_serialized_without_blocking_recognition()
+    {
+        using var release = new ManualResetEventSlim();
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overlap = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var active = 0;
+        var first = 0;
+        var received = 0;
+        var worker = new ControlledTranscriber();
+        var queue = new TranscriptionQueue(worker, new Writer(), new Repository());
+        queue.JobChanged += (_, _) =>
+        {
+            if (Interlocked.Increment(ref active) != 1) overlap.TrySetResult();
+            try
+            {
+                if (Interlocked.Exchange(ref first, 1) == 0)
+                {
+                    held.TrySetResult();
+                    release.Wait(TimeSpan.FromSeconds(5));
+                }
+                Interlocked.Increment(ref received);
+            }
+            finally { Interlocked.Decrement(ref active); }
+        };
+        try
+        {
+            await queue.EnqueueAsync(Recording(), default);
+            await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await held.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            foreach (var percent in new[] { 0, 37, 84 })
+                worker.Reporter!.Report(new(TranscriptionPhase.Recognizing, percent));
+            Assert.NotSame(overlap.Task, await Task.WhenAny(overlap.Task, Task.Delay(100)));
+            Assert.Equal(84, queue.Jobs[0].Progress!.Percent);
+            release.Set();
+            await WaitUntilAsync(() => Volatile.Read(ref received) >= 5);
+            await Task.Delay(20);
+            worker.Reporter!.Report(new(TranscriptionPhase.Recognizing, 100));
+            await WaitUntilAsync(() => Volatile.Read(ref received) >= 6);
+            Assert.False(overlap.Task.IsCompleted);
+        }
+        finally
+        {
+            release.Set();
+            worker.Release.TrySetResult();
+            await queue.WaitForIdleAsync(default);
+        }
+    }
+
+    [Fact]
+    public async Task Repeated_idle_to_queued_transitions_preserve_one_worker_and_fifo_after_queued_cancellation()
+    {
+        var worker = new ControlledTranscriber();
+        var queue = new TranscriptionQueue(worker, new Writer(), new Repository());
+        await queue.EnqueueAsync(Recording(), default);
+        await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var i = 0; i < 8; i++)
+        {
+            await queue.EnqueueAsync(Recording(), default);
+            await queue.CancelAsync(queue.Jobs.Last().Id, default);
+        }
+        worker.Release.TrySetResult();
+        await queue.WaitForIdleAsync(default);
+        Assert.Equal(1, worker.Calls);
+        for (var i = 0; i < 8; i++)
+        {
+            var job = await queue.RetryAsync(Recording(), default);
+            await queue.WaitForIdleAsync(default);
+            Assert.Equal(TranscriptionJobStatus.Succeeded, job.Status);
+        }
+        Assert.Equal(9, worker.Calls);
+        Assert.All(queue.Jobs.Skip(1).Take(8), job => Assert.Equal(TranscriptionJobStatus.Canceled, job.Status));
+    }
+
+    [Fact]
+    public async Task Final_history_write_failure_does_not_strand_the_next_queued_attempt()
+    {
+        var worker = new ControlledTranscriber();
+        var repository = new TerminalWriteFailureRepository();
+        var queue = new TranscriptionQueue(worker, new Writer(), repository);
+        await queue.EnqueueAsync(Recording(), default);
+        await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        repository.FirstJob = queue.Jobs[0].Id;
+        await queue.EnqueueAsync(Recording(), default);
+        var firstIdle = queue.WaitForIdleAsync(default);
+        worker.Release.TrySetResult();
+
+        var error = await Assert.ThrowsAsync<IOException>(() => firstIdle);
+        Assert.Contains("Final history write failed", error.Message);
+        await WaitUntilAsync(() => worker.Calls == 2);
+        await queue.WaitForIdleAsync(default);
+
+        Assert.True(repository.FailedOnce);
+        Assert.All(queue.Jobs, job => Assert.Equal(TranscriptionJobStatus.Succeeded, job.Status));
+    }
+
+    [Theory]
+    [InlineData("Stop")]
+    [InlineData("Succeeded")]
+    [InlineData("Failed")]
+    public async Task Stop_remains_pending_until_released_terminal_history_has_been_persisted(string outcome)
+    {
+        var repository = new HeldTerminalRepository();
+        var worker = new ControlledTranscriber { CaptureCancellationHandle = true };
+        if (outcome == "Failed") worker.Failure = new IOException("Recognition failed.");
+        var history = new History();
+        var queue = new TranscriptionQueue(worker, new Writer(), repository, history: history);
+        try
+        {
+            await queue.EnqueueAsync(history.Recording, default);
+            await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var stopped = queue.Jobs[0];
+            if (outcome == "Stop") await queue.StopAsync(stopped.Id, default);
+            else worker.Release.TrySetResult();
+            await repository.TerminalWrite.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => worker.CancellationHandle!.SafeWaitHandle.IsClosed);
+
+            Assert.True(stopped.IsTerminationPending);
+            Assert.False(stopped.HasTerminalCheckpointFailure);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => queue.DeleteJobAsync(stopped.Id, default));
+            Assert.Contains("wait for worker release", error.Message);
+
+            repository.Publish.TrySetResult();
+            await queue.WaitForIdleAsync(default);
+            Assert.False(stopped.IsTerminationPending);
+            Assert.False(stopped.HasTerminalCheckpointFailure);
+            await queue.DeleteJobAsync(stopped.Id, default);
+            Assert.Empty(queue.Jobs);
+        }
+        finally
+        {
+            repository.Publish.TrySetResult();
+            worker.Release.TrySetResult();
+            await queue.WaitForIdleAsync(default);
+        }
+    }
+
+    private sealed class HeldTerminalRepository : ITranscriptionJobRepository
+    {
+        public TaskCompletionSource TerminalWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Publish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<TranscriptionJob>>([]);
+        public async Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken token)
+        {
+            if (jobs.Any(job => job.Status is TranscriptionJobStatus.Interrupted or TranscriptionJobStatus.Succeeded or TranscriptionJobStatus.Failed))
+            {
+                TerminalWrite.TrySetResult();
+                await Publish.Task.WaitAsync(token);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("Stop")]
+    [InlineData("Succeeded")]
+    [InlineData("Failed")]
+    public async Task Failed_terminal_checkpoint_keeps_deletion_disabled_and_explicit_cancellation_retry_persists_it(string outcome)
+    {
+        var directory = Path.Combine(Environment.CurrentDirectory, "artifacts", $"terminal-checkpoint-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "jobs.json");
+        var repository = new RejectTerminalRepository(new JsonTranscriptionJobRepository(path));
+        var writeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var permitFailure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        repository.WriteEntered = writeEntered;
+        repository.PermitFailure = permitFailure.Task;
+        var worker = new ControlledTranscriber();
+        if (outcome == "Failed") worker.Failure = new IOException("Recognition failed.");
+        var history = new History();
+        var logger = new RecordingLogger<TranscriptionQueue>();
+        var seen = new ConcurrentQueue<JobObservation>();
+        var queue = new TranscriptionQueue(worker, new Writer(), repository, logger, history: history);
+        queue.JobChanged += (_, job) => seen.Enqueue(new(job.Id, job.Status, job.IsTerminationPending, job.Progress)
+        {
+            CheckpointFailed = job.HasTerminalCheckpointFailure,
+        });
+        try
+        {
+            await queue.EnqueueAsync(history.Recording, default);
+            await worker.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var stopped = queue.Jobs[0];
+            var idle = queue.WaitForIdleAsync(default);
+            repository.RejectTerminal = true;
+            if (outcome == "Stop") await queue.StopAsync(stopped.Id, default);
+            else worker.Release.TrySetResult();
+            await writeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(20);
+            seen.Clear();
+            permitFailure.TrySetResult();
+            await Assert.ThrowsAsync<IOException>(() => idle);
+            await WaitUntilAsync(() => seen.Any(value => value.CheckpointFailed && value.Pending));
+            Assert.True(stopped.IsTerminationPending);
+            Assert.True(stopped.HasTerminalCheckpointFailure);
+            Assert.Contains("Terminal history checkpoint", stopped.Error);
+            if (outcome == "Failed") Assert.Contains("Recognition failed", stopped.Error);
+            if (outcome == "Succeeded") Assert.Contains(903, logger.EventIds);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => queue.DeleteJobAsync(stopped.Id, default));
+            await Assert.ThrowsAsync<IOException>(() => queue.CancelAsync(stopped.Id, default));
+            Assert.True(stopped.HasTerminalCheckpointFailure);
+            Assert.Equal(TranscriptionJobStatus.Running, Assert.Single(await repository.LoadAsync(default)).Status);
+
+            repository.RejectTerminal = false;
+            permitFailure.TrySetResult();
+            await queue.CancelAsync(stopped.Id, default);
+
+            Assert.False(stopped.IsTerminationPending);
+            Assert.False(stopped.HasTerminalCheckpointFailure);
+            var saved = Assert.Single(await repository.LoadAsync(default));
+            Assert.Equal(outcome switch
+            {
+                "Stop" => TranscriptionJobStatus.Interrupted,
+                "Succeeded" => TranscriptionJobStatus.Succeeded,
+                _ => TranscriptionJobStatus.Failed,
+            }, saved.Status);
+            Assert.Equal(outcome == "Failed" ? "Recognition failed." : null, saved.Error);
+            Assert.Equal(saved.Error, stopped.Error);
+            await queue.DeleteJobAsync(stopped.Id, default);
+            Assert.Empty(queue.Jobs);
+        }
+        finally
+        {
+            repository.RejectTerminal = false;
+            worker.Release.TrySetResult();
+            await Record.ExceptionAsync(() => queue.WaitForIdleAsync(default));
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private sealed class RejectTerminalRepository(ITranscriptionJobRepository repository) : ITranscriptionJobRepository
+    {
+        public bool RejectTerminal { get; set; }
+        public TaskCompletionSource? WriteEntered { get; set; }
+        public Task? PermitFailure { get; set; }
+        public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(CancellationToken token) => repository.LoadAsync(token);
+        public async Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken token)
+        {
+            if (RejectTerminal && jobs.Any(job => job.Status is TranscriptionJobStatus.Interrupted or TranscriptionJobStatus.Succeeded or TranscriptionJobStatus.Failed))
+            {
+                WriteEntered?.TrySetResult();
+                if (PermitFailure is not null) await PermitFailure.WaitAsync(token);
+                throw new IOException("Terminal checkpoint storage is unavailable.");
+            }
+            await repository.SaveAsync(jobs, token);
+        }
+    }
+
+    private sealed class TerminalWriteFailureRepository : ITranscriptionJobRepository
+    {
+        public Guid FirstJob { get; set; }
+        public bool FailedOnce { get; private set; }
+        public Task<IReadOnlyList<TranscriptionJob>> LoadAsync(CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<TranscriptionJob>>([]);
+        public Task SaveAsync(IReadOnlyList<TranscriptionJob> jobs, CancellationToken token)
+        {
+            if (!FailedOnce && jobs.Any(job => job.Id == FirstJob && job.Status == TranscriptionJobStatus.Succeeded))
+            {
+                FailedOnce = true;
+                throw new IOException("Final history write failed once.");
+            }
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task Failed_residual_outputs_can_leave_job_history_after_durable_full_deletion_without_becoming_a_transcript()
     {
@@ -193,7 +657,10 @@ public sealed class TranscriptionJobManagementTests
         }
     }
 
-    private sealed record JobObservation(Guid Id, TranscriptionJobStatus Status, bool Pending, TranscriptionProgress? Progress);
+    private sealed record JobObservation(Guid Id, TranscriptionJobStatus Status, bool Pending, TranscriptionProgress? Progress)
+    {
+        public bool CheckpointFailed { get; init; }
+    }
 
     [Theory]
     [InlineData(false)]
@@ -389,6 +856,7 @@ public sealed class TranscriptionJobManagementTests
             await queue.EnqueueAsync(Recording(), default);
             var queued = queue.Jobs[1];
             await queue.CancelAsync(queued.Id, default);
+            Assert.False(queued.IsTerminationPending);
 
             restored = new TranscriptionQueue(new ControlledTranscriber(), new Writer(), new JsonTranscriptionJobRepository(path));
             await restored.RestoreAsync(default);
@@ -1096,6 +1564,7 @@ public sealed class TranscriptionJobManagementTests
         public IProgress<TranscriptionProgress>? Reporter { get; private set; }
         public TranscriptionRequest? Request { get; private set; }
         public bool IgnoreCancellation { get; set; }
+        public Exception? Failure { get; set; }
         public bool CaptureCancellationHandle { get; set; }
         public Action? CancellationCallback { get; set; }
         public WaitHandle? CancellationHandle { get; private set; }
@@ -1115,6 +1584,7 @@ public sealed class TranscriptionJobManagementTests
             try
             {
                 await Release.Task.WaitAsync(IgnoreCancellation ? CancellationToken.None : token);
+                if (Failure is not null) throw Failure;
                 return new(request.Recording, request.Recording.Language, []);
             }
             finally { Finished.TrySetResult(); }

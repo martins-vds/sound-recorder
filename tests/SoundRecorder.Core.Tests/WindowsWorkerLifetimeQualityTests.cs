@@ -1,12 +1,138 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using SoundRecorder.Infrastructure.Transcription;
 
 namespace SoundRecorder.Core.Tests;
 
 public sealed class WindowsWorkerLifetimeQualityTests
 {
+    [Fact]
+    [Trait("type", "IntegrationTests")]
+    public async Task Start_AssignmentFailure_WaitsForOwnedOutputDrainAndClosesTheExactProcessHandle()
+    {
+        using var unblock = new ManualResetEventSlim();
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Process? started = null;
+        SafeProcessHandle? handle = null;
+        var failure = new Win32Exception(5);
+        var attempt = Task.Run(() => Record.Exception(() => WindowsTranscriptionWorker.Start(
+            Path.Combine(AppContext.BaseDirectory, "SoundRecorder.ProcessTestHost.exe"),
+            () => new RejectingLifetime(_ => throw failure),
+            info =>
+            {
+                started = Process.Start(info)!;
+                handle = started.SafeHandle;
+                started.OutputDataReceived += (_, line) =>
+                {
+                    if (line.Data != "{\"Started\":true}") return;
+                    received.TrySetResult();
+                    unblock.Wait(TimeSpan.FromSeconds(5));
+                };
+                started.BeginOutputReadLine();
+                started.StandardInput.WriteLine("{\"ModelPath\":\"hang\"}");
+                started.StandardInput.Close();
+                received.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                return started;
+            })));
+        try
+        {
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.NotSame(attempt, await Task.WhenAny(attempt, Task.Delay(100)));
+            unblock.Set();
+            Assert.Same(failure, await attempt);
+            Assert.True(handle!.IsClosed);
+        }
+        finally
+        {
+            unblock.Set();
+            await attempt;
+            if (started is not null && handle?.IsClosed == false)
+            {
+                await StopAsync(started);
+                started.Dispose();
+            }
+        }
+    }
+
+    [Fact]
+    [Trait("type", "IntegrationTests")]
+    public async Task DisposeAsync_WaitsForPublicProcessOutputDrainBeforeClosingOwnedHandles()
+    {
+        using var unblock = new ManualResetEventSlim();
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SafeProcessHandle? handle = null;
+        var worker = WindowsTranscriptionWorker.Start(
+            Path.Combine(AppContext.BaseDirectory, "SoundRecorder.ProcessTestHost.exe"), WindowsProcessJob.Create,
+            info =>
+            {
+                var process = Process.Start(info)!;
+                handle = process.SafeHandle;
+                process.OutputDataReceived += (_, line) =>
+                {
+                    if (line.Data != "{\"Started\":true}") return;
+                    received.TrySetResult();
+                    unblock.Wait(TimeSpan.FromSeconds(5));
+                };
+                process.BeginOutputReadLine();
+                return process;
+            });
+        try
+        {
+            await worker.Input.WriteLineAsync("{\"ModelPath\":\"hang\"}");
+            worker.Input.Close();
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var disposal = worker.DisposeAsync().AsTask();
+            Assert.NotSame(disposal, await Task.WhenAny(disposal, Task.Delay(100)));
+            Assert.False(handle!.IsClosed);
+            unblock.Set();
+            await disposal;
+            Assert.True(handle.IsClosed);
+        }
+        finally
+        {
+            unblock.Set();
+            if (handle?.IsClosed != true) await worker.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    [Trait("type", "IntegrationTests")]
+    public async Task DisposeAsync_ReportsAnOwnedDiagnosticPipeFailureRatherThanLeavingAnUnobservedPump()
+    {
+        Process? observed = null;
+        SafeProcessHandle? handle = null;
+        var worker = WindowsTranscriptionWorker.Start(
+            Path.Combine(AppContext.BaseDirectory, "SoundRecorder.ProcessTestHost.exe"), WindowsProcessJob.Create,
+            info =>
+            {
+                observed = Process.Start(info)!;
+                handle = observed.SafeHandle;
+                return observed;
+            });
+        try
+        {
+            await worker.Input.WriteLineAsync("{\"ModelPath\":\"hang\"}");
+            worker.Input.Close();
+            Assert.Equal("{\"Started\":true}", await worker.Output.ReadLineAsync());
+            var pipe = Assert.IsType<FileStream>(observed!.StandardError.BaseStream);
+            Assert.True(CancelIoEx(pipe.SafeFileHandle, IntPtr.Zero), $"CancelIoEx failed: {Marshal.GetLastPInvokeError()}");
+            var error = await Record.ExceptionAsync(() => worker.DisposeAsync().AsTask());
+            Assert.True(error is IOException or ObjectDisposedException or OperationCanceledException,
+                $"The owned diagnostic pipe fault was not propagated: {error}");
+            Assert.True(handle!.IsClosed);
+        }
+        finally
+        {
+            if (handle?.IsClosed == false) await worker.DisposeAsync();
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CancelIoEx(SafeHandle file, IntPtr overlapped);
+
     [Fact]
     public void Create_KernelCannotCreateJob_PreservesErrorAndClosesInvalidHandle()
     {
