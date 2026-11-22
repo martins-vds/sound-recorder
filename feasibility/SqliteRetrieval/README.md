@@ -33,6 +33,21 @@ output alongside actual hardware/SDK inventory, retained for 14 days even on
 failure. Native ARM64 extension support and real-model/resource acceptance remain
 separate gates; adding this workflow alone supplies no executed x64 evidence.
 
+Executed [CI run 45083294690](https://github.com/martins-vds/sound-recorder/actions/runs/45083294690)
+at head `69b5e4908ef4279545255bdc51cccc526045daa8` provides native x64 evidence:
+the 14 evaluation and 15 portable cases passed, and the native probe reported
+`Process=X64; RID=win-x64`, SQLite `3.53.4` and sqlite-vec `v0.1.7-alpha.2.1`.
+Thus x64 extension loading succeeded; its comparison failed at `ExecuteReader`
+because the harness supplied two ordering terms:
+**“Only a single 'ORDER BY distance' clause is allowed on vec0 KNN queries.”**
+That failure is a query bug, not a missing x64 extension asset.
+
+The native fixture now uses only `ORDER BY v.distance`, as required by vec0.
+Its three controlled distances are distinct, so the existing exact ordinal,
+excerpt reference, timestamp and cosine assertions remain unchanged; no tie
+ordering or assertion weakening is needed. A new x64 run must still establish
+comparison green. Native ARM64 loading/source-build blockers remain separate.
+
 Measurement cases include indexing, close/reopen, first query, database size,
 cumulative query allocations, and test-process peak working set. Peak working
 set covers the entire test process, not just retrieval. They are single-run
@@ -91,7 +106,9 @@ architectures, accumulates dot products/norms in float64, and computes cosine
 similarity (higher is nearer). No unit normalization is assumed. The native
 probe specifies `distance_metric=cosine` explicitly (do not accept default L2),
 uses the same vectors, and compares `1 - distance` with portable scores within
-`1e-6`. Both are exact scans, not approximate/global-coverage answers. Pooling,
+`1e-6`. Its KNN ordering is only distance, per the
+[upstream query constraints](https://alexgarcia.xyz/sqlite-vec/features/knn.html).
+Both are exact scans, not approximate/global-coverage answers. Pooling,
 normalization and chunking labels are compatibility metadata; this harness does
 not actually pool model output. Real dimensions/configuration remain undecided.
 
@@ -183,12 +200,14 @@ ARM64 PE identity/exports/license notices/hash, then run the controlled native
 comparison against portable retrieval. That route remains unexecuted.
 
 **Recommendation:** carry portable SQLite BLOB + exact cosine forward as the
-minimal dual-RID candidate, with native x64 execution and downstream model/scale
-measurements still required. Do not choose the connector/extension as a
+minimal dual-RID candidate, with downstream model/scale measurements still
+required. CI has executed portable retrieval and extension loading on native
+x64; the corrected native comparison awaits a green rerun.
+Do not choose the connector/extension as a
 dual-architecture default while the ARM64 loading gap remains. **Issue #2 stays
 blocked/incomplete:** extension comparison never reached retrieval on ARM64;
-native x64 execution is not available on this host. Native SQLite ARM64 success
-does not establish either missing criterion.
+the x64 comparison has not yet passed. Native SQLite ARM64 success does not
+establish either missing criterion.
 
 ## Quality gates
 
