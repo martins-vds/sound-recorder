@@ -11,7 +11,8 @@ From this dedicated worktree root, using .NET SDK 10.0.404 and PowerShell 7:
 
 ```powershell
 .\feasibility\Evaluation\Generate.ps1
-dotnet test .\feasibility\Evaluation\Generator.Tests\Evaluation.Generator.Tests.csproj
+dotnet restore .\feasibility\Evaluation\Generator.Tests\Evaluation.Generator.Tests.csproj --locked-mode
+dotnet test .\feasibility\Evaluation\Generator.Tests\Evaluation.Generator.Tests.csproj --no-restore
 ```
 
 `Generate.ps1` refuses an existing `generated` directory. To repeat, preserve the
@@ -22,6 +23,20 @@ to CRLF so checked asset hashes remain stable on a fresh checkout.
 The console generator uses the SDK only; its xUnit test harness restores the
 four pinned test packages in its project. There are no model dependencies.
 Do not add these projects to the application solution.
+
+Issue #8 adds [native x64 CI](../../.github/workflows/transcript-feasibility.yml)
+on pushes to `feasibility/local-transcript-analysis`. Push is the initial trigger:
+`workflow_dispatch` is only available once the workflow exists on the default
+branch. The workflow restores checked dependency locks, regenerates the synthetic
+corpus on a fresh checkout and requires all 14 Evaluation, 15 portable SQLite,
+and one native extension tests to pass without skips. Failures remain failures.
+TRX (including synthetic measurements/native version output), actual OS/CPU/RAM
+inventory, SDK identity and generated manifest are uploaded even on failure with
+14-day retention. Only synthetic fixtures are processed; no weights are downloaded.
+Hosted Windows x64 is not Windows 11 or a measured 16-GB model profile, and this
+workflow does not establish offline inference, model packaging, grounding, capture
+priority, or acceptance. A successful native run remains required evidence for
+issues #2/#5/#8; workflow configuration alone does not satisfy those tickets.
 
 The generator public seam is `CorpusGenerator.Write(writer, seed, blocks,
 timestamps)`: one line is emitted at a time, using only the twenty authored seed
