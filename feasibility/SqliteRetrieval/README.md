@@ -21,7 +21,8 @@ dotnet publish .\feasibility\SqliteRetrieval\SqliteRetrieval.csproj --runtime wi
 
 The separate native-extension probe is intentionally a real loading test, not a
 skip or a test expecting failure. It currently fails on native Windows ARM64.
-It must pass before claiming an extension comparison or ARM64 extension support.
+It must pass on the claimed architecture before claiming extension comparison
+or support. It has passed on native x64; ARM64 extension support is not claimed.
 Running on x64 emulation would not establish ARM64 support. Publishing this
 library stages RID assets; it is neither an installer nor native execution proof.
 
@@ -30,10 +31,11 @@ runs the complete 15-test portable suite and the one native comparison after
 locked restores. Both must execute and pass; unavailable `vec0.dll` is an explicit
 failure, never a skip. TRX records synthetic measurements and native version
 output alongside actual hardware/SDK inventory, retained for 14 days even on
-failure. Native ARM64 extension support and real-model/resource acceptance remain
-separate gates; adding this workflow alone supplies no executed x64 evidence.
+failure. Execution evidence comes from the runs below, not workflow existence.
+Native ARM64 extension support and real-model/resource acceptance are separate
+from the portable SQLite candidate evaluation.
 
-Executed [CI run 45083294690](https://github.com/martins-vds/sound-recorder/actions/runs/45083294690)
+Historical red [CI run 45083294690](https://github.com/martins-vds/sound-recorder/actions/runs/45083294690)
 at head `69b5e4908ef4279545255bdc51cccc526045daa8` provides native x64 evidence:
 the 14 evaluation and 15 portable cases passed, and the native probe reported
 `Process=X64; RID=win-x64`, SQLite `3.53.4` and sqlite-vec `v0.1.7-alpha.2.1`.
@@ -45,8 +47,19 @@ That failure is a query bug, not a missing x64 extension asset.
 The native fixture now uses only `ORDER BY v.distance`, as required by vec0.
 Its three controlled distances are distinct, so the existing exact ordinal,
 excerpt reference, timestamp and cosine assertions remain unchanged; no tie
-ordering or assertion weakening is needed. A new x64 run must still establish
-comparison green. Native ARM64 loading/source-build blockers remain separate.
+ordering or assertion weakening was needed. The rerun below verifies comparison
+green with those same assertions.
+
+**Native x64 green:** [CI run 45083847781](https://github.com/martins-vds/sound-recorder/actions/runs/45083847781)
+at head `57895fd8d73906eae5026a06dee8e8235760f432` succeeded:
+**14 evaluation cases, 15 portable SQLite cases, and 1 native comparison passed**.
+The runner was native OS/process X64, Windows Server 2025, approximately 16 GB
+RAM. Native probe output recorded SQLite `3.53.4` and sqlite-vec
+`v0.1.7-alpha.2.1`. The comparison exercised the identical controlled vectors,
+ordinal ranking, stable excerpt references, timestamps and cosine scores.
+Together with the earlier 15 passing cases on native Windows ARM64, this proves
+portable loading/storage/retrieval and lifecycle checks on both target
+architectures, plus extension-versus-portable comparison on x64.
 
 Measurement cases include indexing, close/reopen, first query, database size,
 cumulative query allocations, and test-process peak working set. Peak working
@@ -201,13 +214,18 @@ comparison against portable retrieval. That route remains unexecuted.
 
 **Recommendation:** carry portable SQLite BLOB + exact cosine forward as the
 minimal dual-RID candidate, with downstream model/scale measurements still
-required. CI has executed portable retrieval and extension loading on native
-x64; the corrected native comparison awaits a green rerun.
-Do not choose the connector/extension as a
-dual-architecture default while the ARM64 loading gap remains. **Issue #2 stays
-blocked/incomplete:** extension comparison never reached retrieval on ARM64;
-the x64 comparison has not yet passed. Native SQLite ARM64 success does not
-establish either missing criterion.
+required. **Issue #2 candidate evaluation is complete for this portable
+alternative:** native ARM64 and x64 portable checks pass, and the controlled
+native extension comparison passes on x64. The ticket and design Q22 explicitly
+permit evaluating a portable alternative when ARM64 sqlite-vec distribution
+is unavailable; they do not require executing the rejected extension on ARM64.
+
+Retain missing ARM64 extension assets and the unavailable local compiler as
+explicit limitations of that extension route and reasons not to choose the
+connector/extension as a dual-architecture default. They are not remaining
+blockers for the tested portable candidate. No ARM64 extension execution,
+custom binary, final model selection, numerical performance approval, production
+integration, or complete product installer certification is claimed.
 
 ## Quality gates
 
@@ -230,7 +248,7 @@ The tests explicitly target the native ARM64 SDK architecture when applicable
 because Stryker/VSTest otherwise requests an unavailable x64 host for AnyCPU.
 This does not add an emulated x64 runtime. Full handwritten harness source is
 analyzed; measurements are excluded from quality runs because deterministic
-seam tests cover their behavior. The extension probe is separate and remains
-failed, not ignored evidence. CRAP excludes constructors; Stryker's automatic
+seam tests cover their behavior. The separate extension probe passes on native
+x64 and still fails on ARM64; neither result is ignored. CRAP excludes constructors; Stryker's automatic
 compile-error/duplicate-block filters are reported separately from evaluated
 mutants. Require the unrounded mutation score > 98%, not just tool exit zero.
