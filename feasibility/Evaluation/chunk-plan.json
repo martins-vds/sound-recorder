@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Deterministic overlap/coverage probe; these are experimental fixture chunks, not approved production context budgets.",
+  "minuteWindows": [
+    { "chunkId": "c1", "firstExcerpt": "s000001", "lastExcerpt": "s000008" },
+    { "chunkId": "c2", "firstExcerpt": "s000007", "lastExcerpt": "s000014" },
+    { "chunkId": "c3", "firstExcerpt": "s000013", "lastExcerpt": "s000020" }
+  ],
+  "largeWindowRule": "One-based windows start at 1 + 6*k; end at min(start+7,N); stop when end=N. Never create new excerpt identities for overlap.",
+  "recursionProbe": "Use the same experimental chunk plan; group at most four child summaries per reduction node and repeat until one root. Record actual tokenizer input/output counts and every node's source-reference union. If the candidate cannot fit a node, record the incompatibility; do not silently truncate.",
+  "deduplicationExpected": "A launch statement repeated in s000002/s000003/s000008 remains one date-10 claim. Overlapping s000007/s000013/s000014 retain their original references. Numbered batch decisions must not be collapsed into one undifferentiated claim.",
+  "incompleteProbe": {
+    "omit": "Final chunk at every input size",
+    "minuteMissingExcerpt": "s000020",
+    "12hourMissingExcerpt": "s014400",
+    "required": "Declare coverage incomplete; report covered and missing ranges; never label the decision list or absence claim exhaustive."
+  },
+  "boundaryProbe": "Place cancellation after each committed chunk and each reduction node; also request cancellation while a native call is active. Interrupted child output must not enter the committed reference union."
+}
