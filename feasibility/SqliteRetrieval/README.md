@@ -137,6 +137,43 @@ license notices, repeatable artifact hashes and native loading/retrieval checks.
 The upstream release workflow currently builds only Windows x86_64; no custom
 ARM64 build or unofficial DLL is supplied here.
 
+### Alternate ARM64 source-build route
+
+The follow-up checked an existing-toolchain build, rather than treating missing
+release assets as impossibility proof. Pin `v0.1.9` to commit
+`e9f598abfa0c06b328d8fe5da9c3760cce74be10`.
+The public Windows release recipe uses MSVC `/LD /O2 /Ivendor/` on
+`sqlite-vec.c`; `scripts/vendor.sh` obtains SQLite 3.45.3 extension headers from
+`https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip`.
+The source exposes `sqlite3_vec_init` and enables ARM NEON only when
+`SQLITE_VEC_ENABLE_NEON` is defined. A first scalar ARM64 build should not
+enable that optional SIMD path without compiler validation.
+
+On the available host, these explicit probes found no existing compiler:
+
+```powershell
+Get-Command cl.exe,clang.exe,clang-cl.exe,gcc.exe,zig.exe -ErrorAction SilentlyContinue
+& $env:ComSpec /c 'cl.exe /nologo /?'
+```
+
+The command lookup returned no compilers. The `cl.exe` probe returned exit 1,
+**“'cl.exe' is not recognized as an internal or external command”**.
+Both `C:\Program Files\Microsoft Visual Studio` and its Program Files (x86)
+counterpart were absent, as were the Installer `vswhere.exe`, the standard
+Windows Kits 10 root and `C:\Program Files\LLVM\bin\clang-cl.exe`.
+Visual Studio setup/SxS registry keys and the VS/VC/Windows SDK environment
+variables were also absent.
+
+Consequently no compiler environment could be initialized, no source compilation
+was attempted, and no extension DLL/hash or controlled native comparison was
+produced. No compiler/SDK was installed. This establishes an **existing-toolchain
+blocker on this host**, not that ARM64 source compilation is impossible.
+When an approved ARM64 toolchain is available, the pending route is: pin source
+and generated version header, obtain the specified SQLite extension headers,
+initialize the ARM64 MSVC environment, build a loadable scalar DLL, verify its
+ARM64 PE identity/exports/license notices/hash, then run the controlled native
+comparison against portable retrieval. That route remains unexecuted.
+
 **Recommendation:** carry portable SQLite BLOB + exact cosine forward as the
 minimal dual-RID candidate, with native x64 execution and downstream model/scale
 measurements still required. Do not choose the connector/extension as a
