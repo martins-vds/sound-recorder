@@ -4,6 +4,20 @@
 
 This repository implements the version-one product contract in C#/.NET. Treat `GLOSSARY.md` and the files under `tests\SoundRecorder.Core.Tests\Features\` as the behavioral source of truth; maintain a single canonical copy of each feature file.
 
+## Agent skills
+
+### Issue tracker
+
+For issues, specs, ticket dependencies, and closure, read [GitHub tracker rules](../docs/agents/issue-tracker.md).
+
+### Triage labels
+
+Before triaging or labelling tickets, read [the canonical label mapping](../docs/agents/triage-labels.md).
+
+### Domain docs
+
+Before exploring domain behavior, read [the single-context domain rules](../docs/agents/domain.md).
+
 ## Build and validation
 
 - Build: `dotnet build SoundRecorder.slnx`
