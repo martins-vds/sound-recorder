@@ -30,7 +30,7 @@ public sealed class NativeComparisonTests(ITestOutputHelper output)
         command.CommandText = """
             SELECT v.rowid,m.reference,m.timestamp_ms,v.distance FROM vectors v
             JOIN metadata m ON m.ordinal=v.rowid
-            WHERE v.embedding MATCH '[1,0,0]' AND k=3 ORDER BY v.distance,v.rowid
+            WHERE v.embedding MATCH '[1,0,0]' AND k=3 ORDER BY v.distance
             """;
         var actual = new List<Match>();
         using (var reader = command.ExecuteReader())

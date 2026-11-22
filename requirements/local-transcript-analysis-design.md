@@ -26,6 +26,21 @@ artifacts and emulated execution do not establish native acceptance.
 GitHub ticket #7 remains the human technical and numerical approval gate.
 Feature integration and implementation remain **NOT AUTHORIZED**.
 
+Subsequent explicit approvals on 2026-11-22:
+
+- Download the pinned Qwen2.5-7B-Instruct Q4_K_M two-shard generation model
+  and multilingual Nomic Embed Text v2-MoE Q8_0 embedding model, totaling
+  5,195,298,752 bytes, for local feasibility evaluation. GitHub ticket #4
+  records the approval; exact revisions, URLs, sizes, and SHA-256 hashes belong
+  to its candidate profile. Store weights outside Git and temporary worktrees.
+- Add and run a feasibility-only GitHub Actions workflow on a native Windows
+  x64 hosted runner, including pushing the integration branch and workflow to
+  this repository. GitHub ticket #8 tracks this supporting evidence. Measure
+  the actual runner profile; native execution alone does not prove resource
+  thresholds or release acceptance.
+
+These approvals do not select the final models or approve numerical thresholds.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
