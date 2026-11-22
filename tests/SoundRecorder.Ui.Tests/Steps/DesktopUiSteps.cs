@@ -621,7 +621,7 @@ public sealed class DesktopUiSteps
     [When("the user confirms all-artifacts deletion")]
     public void ConfirmRetainedArtifactsDeletion()
     {
-        if (!_application!.GetAllTopLevelWindows(_automation!).Any(window => window.Name == "Delete recording artifacts?"))
+        if (FindDialog("Delete recording artifacts?") is null)
         {
             OpenRecordingDeletion();
         }
@@ -1693,14 +1693,17 @@ public sealed class DesktopUiSteps
         Window? dialog = null;
         WaitUntil(() =>
         {
-            dialog = _window?.FindFirstDescendant(cf => cf.ByControlType(ControlType.Window).And(cf.ByName(title)))
-                ?.AsWindow() ?? _application?.GetAllTopLevelWindows(_automation!)
-                .FirstOrDefault(window => window.Name == title);
+            dialog = FindDialog(title);
             return dialog is not null;
         }, $"Dialog '{title}' did not appear.", () =>
             string.Join(", ", _application!.GetAllTopLevelWindows(_automation!).Select(window => window.Name)));
         return dialog!;
     }
+
+    private Window? FindDialog(string title) =>
+        _window?.FindFirstDescendant(cf => cf.ByControlType(ControlType.Window).And(cf.ByName(title)))
+            ?.AsWindow() ?? _application?.GetAllTopLevelWindows(_automation!)
+            .FirstOrDefault(window => window.Name == title);
 
     [Then(@"the recording history has (\d+) rows?")]
     public void HistoryCount(int count) =>
