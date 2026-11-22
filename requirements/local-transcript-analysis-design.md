@@ -12,6 +12,20 @@ and a follow-up decision round; product baseline approval is not feature
 implementation authorization.
 No feasibility code or measurements are authorized by this documentation turn.
 
+## Feasibility execution authorization - 2026-11-22
+
+After creating the feasibility ticket graph, the user explicitly authorized
+execution of GitHub tickets #2-#6 on an integration branch, including isolated
+C# harnesses, dependency restoration, and measurements available on this machine.
+This supersedes the earlier documentation-only restriction for feasibility work,
+not the restriction on feature implementation.
+
+Exact model files and download sizes require separate user approval before
+download. Tests requiring unavailable native hardware remain blocked; compiled
+artifacts and emulated execution do not establish native acceptance.
+GitHub ticket #7 remains the human technical and numerical approval gate.
+Feature integration and implementation remain **NOT AUTHORIZED**.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
@@ -184,7 +198,8 @@ neither substitutes for the other.
 
 Feasibility must measure first-answer latency and full indexing and summary
 duration. Numerical performance and resource thresholds must be approved before
-feature coding. This requirement does not authorize running feasibility work now.
+feature coding. This requirement alone does not authorize feasibility execution; the separate
+2026-11-22 authorization above defines the permitted work.
 
 ### Q19 — Compatible chunk resumability
 
@@ -229,8 +244,8 @@ The product baseline Q1–Q23 is approved and its interview is complete.
 
 The next phase is feasibility validation, followed by a decision round approving
 exact technical choices and numerical thresholds. Feature implementation remains
-**NOT AUTHORIZED**. This turn authorizes documentation only, not feasibility code
-or measurements; no feasibility or measured results are claimed.
+**NOT AUTHORIZED**. The 2026-11-21 turn authorized documentation only, not
+feasibility code or measurements; no feasibility or measured results were claimed.
 
 ## Pending choices — blocked by feasibility evidence
 
@@ -245,8 +260,8 @@ or measurements; no feasibility or measured results are claimed.
   behavior, including the 12-hour stress case.
 
 These are the remaining technical and numerical choices, not permission to begin
-work. Full feature implementation remains **NOT AUTHORIZED**. Feasibility code
-and measurements also require separate authorization; none are authorized this
-turn. Resolve and approve the technical choices and numerical thresholds in the
+feature work. Full feature implementation remains **NOT AUTHORIZED**.
+Feasibility execution is limited to the separate 2026-11-22 authorization above.
+Resolve and approve the technical choices and numerical thresholds in the
 follow-up decision round, and obtain feature implementation authorization before
 feature coding.
