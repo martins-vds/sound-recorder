@@ -41,9 +41,11 @@ public sealed class ClaimLedger : IDisposable
             CREATE TABLE run(identity TEXT NOT NULL, status TEXT NOT NULL, detail TEXT);
             CREATE TABLE claims(id INTEGER PRIMARY KEY, record TEXT NOT NULL UNIQUE);
             CREATE TABLE source(id TEXT NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL,
+                start INTEGER, end INTEGER, text TEXT NOT NULL, PRIMARY KEY(id,offset,length));
+            CREATE TABLE original(id TEXT NOT NULL, offset INTEGER NOT NULL, length INTEGER NOT NULL,
                 start INTEGER, end INTEGER, text TEXT NOT NULL, PRIMARY KEY(id,offset));
             CREATE TABLE evidence(claim INTEGER NOT NULL REFERENCES claims(id), source TEXT NOT NULL,
-                offset INTEGER NOT NULL, PRIMARY KEY(claim,source,offset));
+                offset INTEGER NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(claim,source,offset,length));
             CREATE TABLE source_length(id TEXT PRIMARY KEY, length INTEGER NOT NULL);
             CREATE TABLE batches(id INTEGER PRIMARY KEY, prompt_tokens INTEGER, output_budget INTEGER,
                 finish TEXT, generated_tokens INTEGER, limitation TEXT);
@@ -75,10 +77,13 @@ public sealed class ClaimLedger : IDisposable
     public IEnumerable<ClaimEvidence> ReadEvidence(long claimId)
     {
         using var command = connection.CreateCommand();
+        using var schema = connection.CreateCommand();
+        schema.CommandText = "SELECT count(*) FROM pragma_table_info('evidence') WHERE name='length'";
+        var rangeJoin = (long)schema.ExecuteScalar()! == 1 ? " AND s.length=e.length" : "";
         command.CommandText = """
             SELECT s.id,s.offset,s.length,s.start,s.end,s.text FROM evidence e
-            JOIN source s ON s.id=e.source AND s.offset=e.offset WHERE e.claim=$claim ORDER BY s.id,s.offset
-            """;
+            JOIN source s ON s.id=e.source AND s.offset=e.offset
+            """ + rangeJoin + " WHERE e.claim=$claim ORDER BY s.id,s.offset,s.length";
         command.Parameters.AddWithValue("$claim", claimId);
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -102,13 +107,21 @@ public sealed class ClaimLedger : IDisposable
 
     internal void AddSource(ClaimEvidence source)
     {
-        Execute("INSERT OR IGNORE INTO source VALUES($id,$offset,$length,$start,$end,$text)",
+        AddAndValidateSource("source", source, " AND length=$length");
+    }
+
+    internal void AddOriginal(ClaimEvidence source) => AddAndValidateSource("original", source, "");
+
+    private void AddAndValidateSource(string table, ClaimEvidence source, string lengthPredicate)
+    {
+        Execute($"INSERT OR IGNORE INTO {table} VALUES($id,$offset,$length,$start,$end,$text)",
             ("$id", source.SourceId), ("$offset", source.Offset), ("$length", source.Length),
             ("$start", source.StartMs), ("$end", source.EndMs), ("$text", source.Quote));
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT length,start,end,text FROM source WHERE id=$id AND offset=$offset";
+        command.CommandText = $"SELECT length,start,end,text FROM {table} WHERE id=$id AND offset=$offset{lengthPredicate}";
         command.Parameters.AddWithValue("$id", source.SourceId);
         command.Parameters.AddWithValue("$offset", source.Offset);
+        command.Parameters.AddWithValue("$length", source.Length);
         using var reader = command.ExecuteReader();
         reader.Read();
         if (reader.GetInt32(0) != source.Length || !Equals(reader.GetValue(1), (object?)source.StartMs ?? DBNull.Value) ||
@@ -118,14 +131,16 @@ public sealed class ClaimLedger : IDisposable
         }
     }
 
-    internal void AddBatch(IEnumerable<ExtractedClaim> claims, ClaimEvidence evidence, int promptTokens,
+    internal void AddBatch(IEnumerable<ExtractedClaim> claims, IReadOnlyList<ClaimEvidence> evidence, int promptTokens,
         int budget, GenerationResult generated, string? limitation)
     {
         using var transaction = connection.BeginTransaction();
         activeTransaction = transaction;
         try
         {
-            foreach (var claim in claims) AddClaim(claim.Record, evidence);
+            foreach (var claim in claims)
+                foreach (var reference in claim.References)
+                    AddClaim(claim.Record, evidence[reference]);
             RecordBatch(promptTokens, budget, generated, limitation);
             transaction.Commit();
         }
@@ -137,8 +152,8 @@ public sealed class ClaimLedger : IDisposable
         var json = JsonSerializer.Serialize(record);
         Execute("INSERT OR IGNORE INTO claims(record) VALUES($record)", ("$record", json));
         Execute("""
-            INSERT OR IGNORE INTO evidence SELECT id,$source,$offset FROM claims WHERE record=$record
-            """, ("$source", evidence.SourceId), ("$offset", evidence.Offset), ("$record", json));
+            INSERT OR IGNORE INTO evidence SELECT id,$source,$offset,$length FROM claims WHERE record=$record
+            """, ("$source", evidence.SourceId), ("$offset", evidence.Offset), ("$length", evidence.Length), ("$record", json));
     }
 
     internal void RecordBatch(int promptTokens, int budget, GenerationResult generated, string? limitation) =>

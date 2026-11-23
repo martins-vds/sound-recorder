@@ -337,7 +337,7 @@ public sealed class PipelineTests
                     "pt-BR", TimeSpan.FromSeconds(30));
 
             Assert.Equal(AnalysisStatus.Completed, result.Status);
-            Assert.InRange(result.MaximumLiveSourceCharacters, 1, 8192);
+            Assert.InRange(result.MaximumLiveSourceCharacters, 6658, 16384);
             Assert.All(backend.Prompts, prompt => Assert.True(backend.CountTokens(prompt) + 256 < 1400));
             Assert.All(backend.Prompts, prompt => Assert.DoesNotContain("<|end|>", prompt));
             Assert.True(guarded.SpareReads > 0);
@@ -345,17 +345,22 @@ public sealed class PipelineTests
             using var ledger = ClaimLedger.Open(result.LedgerPath);
             var claim = Assert.Single(ledger.ReadClaims());
             var pieces = ledger.ReadEvidence(claim.Id).Where(e => e.SourceId == "long").OrderBy(e => e.Offset).ToArray();
-            Assert.Equal(original, string.Concat(pieces.Select(e => e.Quote)));
             long offset = 0;
+            var reconstructed = new System.Text.StringBuilder();
             foreach (var piece in pieces)
             {
-                Assert.Equal(offset, piece.Offset);
+                Assert.True(piece.Offset <= offset);
+                Assert.Equal(original.Substring((int)piece.Offset, piece.Length), piece.Quote);
                 Assert.Equal(piece.Quote.Length, piece.Length);
                 Assert.Equal(12000, piece.StartMs);
                 Assert.Equal(24000, piece.EndMs);
                 Assert.DoesNotContain("\uFFFD", piece.Quote);
-                offset += piece.Length;
+                var start = (int)Math.Min(piece.Length, offset - piece.Offset);
+                reconstructed.Append(piece.Quote[start..]);
+                offset = Math.Max(offset, piece.Offset + piece.Length);
             }
+            Assert.Equal(original, reconstructed.ToString());
+            Assert.Equal(original.Length, offset);
             Assert.Equal(200 + pieces.Length, ledger.ReadEvidence(claim.Id).Count());
 
             async IAsyncEnumerable<ExcerptInput> Sources()
@@ -377,12 +382,15 @@ public sealed class PipelineTests
         Directory.CreateDirectory(directory);
         try
         {
-            var backend = new GenerationDouble("") { Responses =
+            var backend = new GenerationDouble("")
+            {
+                Responses =
             [
                 Structured("Ana"),
                 Structured("Ana"),
                 Structured("Bea")
-            ] };
+            ]
+            };
             var path = Path.Combine(directory, "claims.sqlite");
             var result = await new GenerationProbe(backend).SummarizeAsync(
                 new("attempt", new string('a', 64)), Sources(), path, "en", TimeSpan.FromSeconds(5));
@@ -427,7 +435,8 @@ public sealed class PipelineTests
             owner = new { state = "Stated", value = owner },
             deadline = new { state = "Stated", value = "Friday" },
             qualifiers = new[] { "unverified" }, references = new[] { 0 }
-        } }, limitation = (string?)null
+        } },
+        limitation = (string?)null
     });
     [Fact]
     public async Task GenerateAsync_NativeLengthFinish_ReturnsExplicitIncompleteResult()
@@ -456,35 +465,40 @@ internal sealed class PackingBackend(string response) : IGenerationBackend
     {
         Prompts.Add(prompt);
         if (OnGenerate is not null) await OnGenerate(prompt, outputTokens, cancellationToken);
-        return new GenerationResult(response, GenerationFinish.Completed, 2);
+        using var input = JsonDocument.Parse(prompt[(prompt.IndexOf('\n') + 1)..]);
+        var output = JsonNode.Parse(response)!;
+        foreach (var claim in output["claims"]!.AsArray())
+            claim!["references"] = new JsonArray(Enumerable.Range(0, input.RootElement.GetProperty("excerpts").GetArrayLength())
+                .Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+        return new GenerationResult(output.ToJsonString(), GenerationFinish.Completed, 2);
     }
 }
 
 internal sealed class GuardedSourceReader(TextReader inner) : TextReader
 {
-public int MaximumReadRequest { get; private set; }
-public int SpareReads { get; private set; }
+    public int MaximumReadRequest { get; private set; }
+    public int SpareReads { get; private set; }
 
-public override ValueTask<int> ReadBlockAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
-{
-    Assert.InRange(buffer.Length, 1, 1024);
-    MaximumReadRequest = Math.Max(MaximumReadRequest, buffer.Length);
-    return inner.ReadBlockAsync(buffer, cancellationToken);
-}
+    public override ValueTask<int> ReadBlockAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+    {
+        Assert.InRange(buffer.Length, 1, 1024);
+        MaximumReadRequest = Math.Max(MaximumReadRequest, buffer.Length);
+        return inner.ReadBlockAsync(buffer, cancellationToken);
+    }
 
-public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
-{
-    Assert.Equal(1, buffer.Length);
-    SpareReads++;
-    return inner.ReadAsync(buffer, cancellationToken);
-}
+    public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
+    {
+        Assert.Equal(1, buffer.Length);
+        SpareReads++;
+        return inner.ReadAsync(buffer, cancellationToken);
+    }
 
-public override Task<string> ReadToEndAsync(CancellationToken cancellationToken) =>
-    throw new InvalidOperationException("Whole-excerpt draining is not permitted by this source boundary.");
+    public override Task<string> ReadToEndAsync(CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("Whole-excerpt draining is not permitted by this source boundary.");
 
-protected override void Dispose(bool disposing)
-{
-    if (disposing) inner.Dispose();
-    base.Dispose(disposing);
-}
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) inner.Dispose();
+        base.Dispose(disposing);
+    }
 }

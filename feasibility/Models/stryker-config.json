@@ -3,7 +3,7 @@
     "project": "Models.Harness.csproj",
     "configuration": "Release",
     "mutation-level": "Complete",
-    "test-case-filter": "type!=IntegrationTests|purpose=NativeAdapterSmoke",
+    "test-case-filter": "type!=IntegrationTests|purpose=NativeAdapterSmoke|purpose=PhiMiniNative",
     "concurrency": 2,
     "thresholds": { "high": 99, "low": 99, "break": 99 },
     "reporters": ["progress", "html", "json"]

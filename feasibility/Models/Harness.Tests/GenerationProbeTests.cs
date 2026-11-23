@@ -14,7 +14,7 @@ public sealed class GenerationProbeTests
         Directory.CreateDirectory(directory);
         try
         {
-            var backend = new GenerationDouble(ClaimOutput);
+            var backend = new GenerationDouble(ClaimOutput) { SingleRangeOnly = true };
             var result = await new GenerationProbe(backend).ExtractAsync(new("attempt", new string('a', 64)),
                 Sources(), Path.Combine(directory, "claims.sqlite"), "en", TimeSpan.FromSeconds(5));
             Assert.Equal(AnalysisStatus.Failed, result.Status);
@@ -28,6 +28,7 @@ public sealed class GenerationProbeTests
             {
                 yield return new("s000001", 10, 20, new StringReader("same source"));
                 await Task.Yield();
+                yield return new("s000002", 10, 20, new StringReader("other source"));
                 yield return new("s000001", start, end, new StringReader("same source"));
             }
         }
@@ -82,7 +83,7 @@ public sealed class GenerationProbeTests
             var result = await new GenerationProbe(backend).ExtractAsync(new("attempt", new string('a', 64)),
                 Sources(sameId: true), Path.Combine(directory, "claims.sqlite"), "pt-BR", TimeSpan.FromSeconds(5));
             Assert.Equal(AnalysisStatus.Failed, result.Status);
-            Assert.Equal(1, backend.Calls);
+            Assert.Equal(0, backend.Calls);
             Assert.Contains("changed", result.Detail);
         }
         finally { Directory.Delete(directory, true); }
@@ -115,6 +116,7 @@ public sealed class GenerationProbeTests
 
 internal sealed class GenerationDouble(string response) : IGenerationBackend
 {
+    public bool SingleRangeOnly { get; init; }
     public int TokenCount { get; init; } = 10;
     public string[]? Responses { get; init; }
     public GenerationFinish[]? Finishes { get; init; }
@@ -122,7 +124,12 @@ internal sealed class GenerationDouble(string response) : IGenerationBackend
     public List<string> Prompts { get; } = [];
     public int Calls { get; private set; }
     public string RenderPrompt(string instruction, string input) => instruction + "\n" + input;
-    public int CountTokens(string prompt) => TokenCount;
+    public int CountTokens(string prompt)
+    {
+        using var input = System.Text.Json.JsonDocument.Parse(prompt[(prompt.IndexOf('\n') + 1)..]);
+        return (SingleRangeOnly || Responses is not null || Finishes is not null) &&
+            input.RootElement.GetProperty("excerpts").GetArrayLength() > 1 ? 4096 : TokenCount;
+    }
     public Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
     {
         Prompts.Add(prompt);

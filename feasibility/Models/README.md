@@ -1,5 +1,38 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Issue #11 continuation: context grouping and explicit faults (v3)
+
+The current pipeline groups up to four fresh original ranges / 4,096 original
+characters when the **final native-token-counted prompt plus stage reserve fits**.
+Local indices resolve to those exact ranges. It does not isolate tiny conflicting
+reports that fit together. Oversized source windows carry at most 256 characters
+of word-aligned overlap; original Unicode offsets/timestamps remain unchanged.
+Unique source coverage uses interval endpoints, not a sum of overlapping lengths.
+Stable original read blocks are checked on disk independently of overlapping
+prompt windows, which are keyed by source ID, offset **and length**.
+
+Expected I/O/data/JSON/SQLite failures produce explicit failed artifacts.
+Unexpected faults also persist `Failed`, but **rethrow their original exception**;
+unrelated cancellation is not misrepresented as user cancellation.
+
+Known-gold public-seam tests exercise both conflicting tiny excerpts in one
+request, complete owner/deadline relationships crossing the 1,024-character read
+boundary, exact local-index resolution and bounded multi-range token packing.
+Initial model semantics remain **UNVERIFIED**; no model outputs are repaired.
+
+Native crash diagnostics replay only the captured Portuguese sixth call and
+its necessary six-call prefix, using cached Phi and frozen exact v2 native
+configuration. Single, prefix, coverage and original 100-ms observer replays have
+not reproduced the earlier crash. This is not a claim that it is fixed.
+Quality selections now include only bounded `PhiMiniNative` and
+`NativeAdapterSmoke` purpose tests, never long `RealModelTests`.
+
+Current settings: [pipeline-profile.json](pipeline-profile.json).
+Current exact closure/runtime/gate evidence:
+[pipeline-continuation.md](pipeline-continuation.md).
+The following v2 section and [pipeline-validation.md](pipeline-validation.md)
+retain their original experiment and failing-gate identities/results.
+
 ## Issue #11: streamed structured ledger (v2)
 
 The current harness replaces the v1 in-memory source/tree reduction with

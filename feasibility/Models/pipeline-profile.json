@@ -1,7 +1,7 @@
 {
-  "profileId": "sr-structured-ledger-v2",
-  "status": "INCOMPLETE: Issue #11 strict quality gates fail and cached native Portuguese summary aborted; initial extraction remains semantically UNVERIFIED; no production approval",
-  "generationFiles": "Reuse exact file inventory in phi-mini-candidate-profile.json for the one approved cached validation. Historical model profiles and reports retain their original runtime settings.",
+  "profileId": "sr-structured-ledger-v3",
+  "status": "INCOMPLETE: context grouping and fault surfacing corrected; full-owner CRAP 7 passes, mutation 425/518 fails >98, original native crash not reproduced by bounded exact replays; initial extraction remains semantically UNVERIFIED",
+  "generationFiles": "Reuse exact approved cached file inventory. Historical v2 profile/report are preserved at commit 6522aba and in private issue-11 evidence; frozen crash replays use the captured v2 native configuration, not these changed context-grouping settings.",
   "embeddingFiles": "Unchanged candidate-profile.json Nomic inventory; diagnostic local questions only",
   "runtime": {
     "contextTokens": 4096,
@@ -9,7 +9,7 @@
     "answerOutputTokens": 512,
     "spareContextTokensMinimum": 1,
     "historyTokens": 0,
-    "grammar": "structured-candidate-gbnf-v2; typed kind, explicit owner/deadline states, qualifiers, original range position 0",
+    "grammar": "structured-candidate-gbnf-v3; typed kind, explicit owner/deadline states, qualifiers, bounded original range positions 0-3",
     "finishObservation": "Actual sampled token.IsEndOfGeneration(vocab); otherwise native MaxTokens exhaustion, never text retokenization",
     "summaryDeadlineMinutes": 20,
     "questionDeadlineMinutes": 2,
@@ -19,8 +19,10 @@
   "streaming": {
     "sourceReadCharacters": 1024,
     "surrogateBoundarySpareCharacters": 1,
-    "batchOriginalRanges": 1,
-    "packing": "Count final rendered prompt; shrink oversized ranges on complete Unicode scalar boundaries until prompt plus stage reserve fits. Never skip or retime a source range.",
+    "batchOriginalRanges": 4,
+    "batchOriginalCharacters": 4096,
+    "overlapCharactersMaximum": 256,
+    "packing": "Count final rendered prompt while grouping fresh ranges that fit the stage reserve. Oversized ranges shrink on complete Unicode scalar boundaries and carry bounded word-aligned overlap. Original coverage is interval union, never overlapping-length sum; no skipped or retimed source ranges.",
     "offsetUnit": "UTF-16 code units in the original excerpt",
     "metadataLimits": { "attemptId": 128, "excerptId": 128, "question": 1024, "language": 16 },
     "recordLimits": { "claimsPerBatch": 16, "statement": 512, "fieldValue": 128, "qualifiers": 8, "qualifierValue": 128, "references": 16 }
@@ -31,7 +33,9 @@
     "temporaryStorage": "FILE",
     "merge": "Only exact serialized structured equality, including qualifier order, with disk-indexed keys and evidence union",
     "commit": "Each validated generation batch atomically commits records, evidence and diagnostics",
-    "readers": "ReadClaims, ReadEvidence, ReadBatches stream independently; ReadRun reports exact ownership and terminal status",
+    "readers": "ReadClaims, ReadEvidence, ReadBatches stream independently; ReadRun reports ownership and last persisted status. ReadEvidence retains compatibility with archived v2 ledgers.",
+    "sourceConsistency": "Validate stable original read blocks independently of overlapping prompt windows; resolve each reference by source ID, original offset and length",
+    "faults": "Expected I/O/data/JSON/SQLite failures produce Failed results; unexpected faults persist Failed and rethrow the same cause",
     "semanticVerification": "UNVERIFIED; generated statements are never authoritative transcript evidence",
     "proseReduction": "Not implemented or needed for required-record preservation"
   }
