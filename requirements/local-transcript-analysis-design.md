@@ -59,6 +59,30 @@ and native compatibility; Portuguese support in the model card is not
 grounding or release evidence. The frozen corpus, prior rejection evidence,
 quality gates, and feature-implementation restriction remain unchanged.
 
+## Approved feasibility pipeline corrections - 2026-11-23
+
+The user requested all four extraction/reduction review corrections and confirmed
+the public test interfaces before implementation. This authorizes changes to the
+isolated feasibility harness, not application feature implementation:
+
+- Stream source excerpts into a disk-backed ledger of structured transcript
+  claims and source references. Native prompts and live processing state remain
+  bounded; reducers must not reattach the complete original transcript.
+- Preserve claim kind, stated owner/deadline or their explicit absence, and
+  qualifications in deterministic merging. Combine only equal structured claims
+  and union their evidence; retain conflicts and non-equal claims rather than
+  guessing semantic equivalence. Initial extraction still requires semantic
+  evaluation; source traversal or valid citations alone do not establish truth.
+- Return explicit completed-versus-token-limited generation outcomes with
+  stage-specific budgets, preserving honest context and cancellation failures.
+- Run question and summary diagnostics independently, each with its own deadline.
+  Question work must not consume a summary request's diagnostic budget.
+
+One bounded validation run with the already-downloaded Phi-mini model is approved.
+No new model downloads, automatic tuning, relaxed quality gates, or final
+profile/performance approval are included. Earlier experiment reports retain
+their original results and configuration identities.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
