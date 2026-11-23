@@ -1,6 +1,4 @@
-using SoundRecorder.Core;
-
-namespace SoundRecorder.Infrastructure.Analysis;
+namespace SoundRecorder.Core;
 
 /// <summary>One immutable successful output pair, never a recording-wide "latest" alias.</summary>
 public sealed record TranscriptAnalysisRequest(Guid AttemptId, TranscriptOutputs Outputs, string Language, string? Question);

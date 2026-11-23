@@ -3,7 +3,7 @@ using System.Text;
 using LLama.Common;
 using LLama.Native;
 using LLama.Sampling;
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 
 namespace Models.Harness.Tests;

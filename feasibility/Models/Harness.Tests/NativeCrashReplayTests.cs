@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text;
 using System.Diagnostics;
 using LLama.Common;
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 
 namespace Models.Harness.Tests;

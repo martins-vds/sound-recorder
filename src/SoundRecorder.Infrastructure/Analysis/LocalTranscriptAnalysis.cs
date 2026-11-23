@@ -1,4 +1,5 @@
-using Models.Harness;
+using SoundRecorder.Analysis;
+using SoundRecorder.Core;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -6,7 +7,7 @@ using System.Text;
 
 namespace SoundRecorder.Infrastructure.Analysis;
 
-/// <summary>Narrow experimental adapter over the approved feasibility pipeline, without downloads.</summary>
+/// <summary>Local analysis adapter over the production-owned pipeline, without downloads.</summary>
 public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifactDirectory,
     IGenerationBackend? generation = null, IEmbeddingBackend? embedding = null) : ILocalTranscriptAnalysis, ILocalAnalysisDiagnostics
 {

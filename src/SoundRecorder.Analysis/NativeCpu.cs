@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using LLama.Native;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>A model-free native load observation, not a model compatibility verdict.</summary>
 public sealed record CpuProbeResult(Architecture ProcessArchitecture, Architecture OsArchitecture, bool GpuOffload);

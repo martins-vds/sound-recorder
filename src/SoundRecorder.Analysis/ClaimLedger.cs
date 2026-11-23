@@ -1,7 +1,7 @@
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>Explicit presence or absence of a stated owner/deadline.</summary>
 public sealed record ClaimField(string State, string? Value);

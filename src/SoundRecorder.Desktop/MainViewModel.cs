@@ -11,7 +11,6 @@ using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
 using SoundRecorder.Infrastructure.Privacy;
-using SoundRecorder.Infrastructure.Analysis;
 
 namespace SoundRecorder.Desktop;
 

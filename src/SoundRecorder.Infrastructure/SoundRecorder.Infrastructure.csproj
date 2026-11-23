@@ -2,7 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SoundRecorder.Core\SoundRecorder.Core.csproj" />
-    <ProjectReference Include="..\..\feasibility\Models\Harness\Models.Harness.csproj" />
+    <ProjectReference Include="..\SoundRecorder.Analysis\SoundRecorder.Analysis.csproj" />
   </ItemGroup>
 
   <ItemGroup>

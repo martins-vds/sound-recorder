@@ -1,4 +1,4 @@
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 
 namespace Models.Harness.Tests;

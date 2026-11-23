@@ -1,4 +1,3 @@
-using SoundRecorder.Infrastructure.Analysis;
 using SoundRecorder.Core;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;

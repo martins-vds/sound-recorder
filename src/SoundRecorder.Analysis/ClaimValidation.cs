@@ -1,4 +1,4 @@
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 internal static class ClaimValidation
 {

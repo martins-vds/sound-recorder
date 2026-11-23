@@ -13,7 +13,7 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
     <PackageReference Include="coverlet.collector" Version="10.1.0" />
-    <ProjectReference Include="..\Harness\Models.Harness.csproj" />
+    <ProjectReference Include="..\..\..\src\SoundRecorder.Analysis\SoundRecorder.Analysis.csproj" />
     <ProjectReference Include="..\..\Evaluation\Generator\Evaluation.Generator.csproj" />
     <None Include="..\..\Evaluation\fixtures\*.seed.json" Link="Evaluation\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\Evaluation\corpus-manifest.json" Link="Evaluation\corpus-manifest.json" CopyToOutputDirectory="PreserveNewest" />

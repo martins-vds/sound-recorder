@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 using Xunit.Abstractions;
 

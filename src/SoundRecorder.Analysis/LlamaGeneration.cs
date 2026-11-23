@@ -1,7 +1,7 @@
 using System.Text;
 using LLama.Common;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>Generation-only LLamaSharp CPU adapter; files must already be approved and installed locally.</summary>
 public sealed class LlamaGeneration : IGenerationBackend, IDisposable

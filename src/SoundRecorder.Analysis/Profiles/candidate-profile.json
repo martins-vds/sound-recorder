@@ -1,0 +1,54 @@
+{
+  "profileId": "sr-model-candidate-v1",
+  "status": "exact three files and sizes approved for local feasibility evaluation on 2026-11-22; not final product selection",
+  "generationRepository": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+  "generationRevision": "bb5d59e06d9551d752d08b292a50eb208b07ab1f",
+  "embeddingRepository": "nomic-ai/nomic-embed-text-v2-moe-GGUF",
+  "embeddingRevision": "ffbcf4c99e5d617dda10ec8c0e9f75754b0cbb80",
+  "license": "Apache-2.0 for both model roles",
+  "downloadBytes": 5195298752,
+  "cachePathInstruction": "Set SR_APPROVED_MODEL_DIRECTORY to the explicitly approved shared model cache outside the worktree. Reuse only files matching these exact bytes and SHA-256 hashes; never download or select another model automatically.",
+  "runtimeProfile": {
+    "library": "LLamaSharp 0.30.0 / LLamaSharp.Backend.Cpu 0.30.0",
+    "llamaCppRevision": "815a2a5915f22ce6a760c676389c5dfe8535c08f",
+    "threads": 4,
+    "gpuLayers": 0,
+    "generationContextTokens": 4096,
+    "generationBatchAndUBatch": 128,
+    "baselineDiagnosticOutputTokens": 768,
+    "boundedStructuredOutputTokens": 512,
+    "generationGrammar": "candidate-json-gbnf-v1; exact short sNNNNNN syntax; managed source-existence checks; no semantic-support guarantee",
+    "samplingSeed": 42,
+    "temperature": 0,
+    "embeddingContextBatchAndUBatch": 512,
+    "embeddingDimensions": 768,
+    "embeddingPooling": "mean",
+    "embeddingNormalization": "L2",
+    "queryPrefix": "search_query: ",
+    "documentPrefix": "search_document: ",
+    "historyTokens": 0
+  },
+  "files": [
+    {
+      "role": "generation",
+      "name": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+      "bytes": 3993201344,
+      "sha256": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+    },
+    {
+      "role": "generation",
+      "name": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+      "bytes": 689872288,
+      "sha256": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a",
+      "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/bb5d59e06d9551d752d08b292a50eb208b07ab1f/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
+    },
+    {
+      "role": "embedding",
+      "name": "nomic-embed-text-v2-moe.Q8_0.gguf",
+      "bytes": 512225120,
+      "sha256": "06e7a7e594a26985523c18383aba4aad39fe6e14f08ffc6ab5b554e1ccdc3cff",
+      "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe-GGUF/resolve/ffbcf4c99e5d617dda10ec8c0e9f75754b0cbb80/nomic-embed-text-v2-moe.Q8_0.gguf"
+    }
+  ]
+}

@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Encodings.Web;
 using System.Text.Unicode;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>In-process model seam; token counts include the serialized chat template.</summary>
 public interface IGenerationBackend

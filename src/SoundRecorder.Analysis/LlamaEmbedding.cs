@@ -2,7 +2,7 @@ using System.Text;
 using LLama.Common;
 using LLama.Native;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>Separate multilingual embedding model; never uses generation hidden states as retrieval vectors.</summary>
 public sealed class LlamaEmbedding : IEmbeddingBackend, IDisposable
