@@ -56,6 +56,7 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
             var outcome = await GenerateAsync(request, snapshot, identity, probe, ledgerPath, language, progress, token);
             token.ThrowIfCancellationRequested();
             progress.Report("Resolving exact original evidence");
+            token.ThrowIfCancellationRequested();
             var result = Present(outcome);
             return request.Question is null ? result : result with
             {

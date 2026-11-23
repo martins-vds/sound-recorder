@@ -9,6 +9,26 @@ namespace SoundRecorder.Core.Tests;
 
 public sealed class TranscriptAnalysisTests
 {
+    [Fact]
+    public async Task AnalyzeAsync_CancelledWhileResolvingEvidence_DoesNotPublishCompletedCandidates()
+    {
+        using var context = new DesktopTestContext();
+        using var cancellation = new CancellationTokenSource();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var progress = new AnalysisProgress
+        {
+            OnReport = phase =>
+            {
+                if (phase == "Resolving exact original evidence") cancellation.Cancel();
+            }
+        };
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), outputs, "English", null), progress, cancellation.Token));
+    }
+
     [Theory]
     [InlineData(true, 20)]
     [InlineData(false, 513)]
@@ -925,6 +945,11 @@ public sealed class TranscriptAnalysisTests
     private sealed class AnalysisProgress : IProgress<string>
     {
         public List<string> Phases { get; } = [];
-        public void Report(string value) => Phases.Add(value);
+        public Action<string>? OnReport { get; init; }
+        public void Report(string value)
+        {
+            Phases.Add(value);
+            OnReport?.Invoke(value);
+        }
     }
 }
