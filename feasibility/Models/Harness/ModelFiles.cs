@@ -20,6 +20,10 @@ public static class ModelFiles
     public static PinnedModelFile[] Qwen3Files()
         => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.qwen3-candidate-profile.json"));
 
+    /// <summary>Reads only the separately approved issue #10 Phi-4-mini generation file.</summary>
+    public static PinnedModelFile[] PhiMiniFiles()
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.phi-mini-candidate-profile.json"));
+
     /// <summary>Reads profile data through a replaceable local resource transport.</summary>
     public static PinnedModelFile[] CandidateFiles(Func<Stream?> openProfile)
     {

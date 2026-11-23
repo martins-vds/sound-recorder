@@ -1,5 +1,35 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Issue #10: separately approved Phi-4-mini comparison
+
+[phi-mini-candidate-profile.json](phi-mini-candidate-profile.json) pins only the
+approved Unsloth conversion of **3.8B Phi-4-mini-instruct**, not full 14B Phi-4
+or Phi-3.5. It preserves both Qwen profiles and the approved Nomic embedding.
+The actual GGUF and Microsoft card use
+`<|system|>…<|end|><|user|>…<|end|><|assistant|>` without added newlines.
+Native tokenization adds neither BOS nor EOS; EOS is 200020 (`<|end|>`), not
+the distinct padding token. Microsoft’s greedy example is used, not Qwen3
+ChatML/non-thinking sampling. Existing 4,096/768/zero-history budgets, grammar,
+literal reference-union validation and 20-minute per-language safe-boundary
+diagnostic cancellation remain. No model/template/source/output repair.
+
+```powershell
+.\feasibility\Models\DownloadApprovedModels.ps1 -Cache $env:SR_APPROVED_MODEL_DIRECTORY -ProfileFile phi-mini-candidate-profile.json
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "purpose=PhiMiniNative"
+$env:SR_EVAL_PROFILE = "phi-mini"
+$env:SR_EVAL_PHASE = "issue-10-phi-mini"
+$env:SR_EVAL_SKIP_CANCELLATION = "1"
+$env:SR_EVAL_RUN_DIRECTORY = "<approved-private-report-root>\runs"
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RealModelTests"
+```
+
+The one bounded comparison and exact quality gaps are recorded in
+[phi-mini-comparison.md](phi-mini-comparison.md). Do not rerun it or infer
+production acceptance from native compatibility. Raw evidence remains private.
+The full-owner mutation run uses `--test-case-filter "type!=IntegrationTests"`
+to avoid native generations per mutant; native smoke evidence is retained
+separately, with all handwritten production sources still in mutation scope.
+
 ## Issue #9: separately approved bounded alternate
 
 The single approved Qwen3-8B Q4_K_M file is pinned separately in

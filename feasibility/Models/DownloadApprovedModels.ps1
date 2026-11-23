@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory = $true)][string]$Cache,
-    [ValidateSet('candidate-profile.json', 'qwen3-candidate-profile.json')][string]$ProfileFile = 'candidate-profile.json')
+    [ValidateSet('candidate-profile.json', 'qwen3-candidate-profile.json', 'phi-mini-candidate-profile.json')][string]$ProfileFile = 'candidate-profile.json')
 
 $ErrorActionPreference = 'Stop'
 $profile = Get-Content (Join-Path $PSScriptRoot $ProfileFile) -Raw | ConvertFrom-Json
