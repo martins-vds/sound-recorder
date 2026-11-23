@@ -11,5 +11,7 @@
     <EmbeddedResource Include="..\phi-mini-candidate-profile.json" Link="phi-mini-candidate-profile.json" />
     <PackageReference Include="LLamaSharp" Version="[0.30.0]" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="[0.30.0]" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.0]" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="[3.0.5]" />
   </ItemGroup>
 </Project>

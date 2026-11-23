@@ -1,5 +1,144 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Focused #11 quality follow-up (v4)
+
+All four pipeline corrections and their context/overlap/fault regressions are
+implemented. Final full-owner validation passed: **175 deterministic/model-free
+plus five tiny native tests**, CRAP maximum **7**, and mutation
+**99.0079365079365%** (499/504, including five detected timeouts; configured
+99 threshold exited zero). All ten handwritten owner sources match the report.
+See [the final verification](pipeline-quality-followup.md#final-verification-after-resuming)
+for exact scope, commands, limitations and persistent private evidence.
+Earlier v2/v3 gate failures below are historical snapshots, not current results.
+Model selection remains incomplete; the v4 request contract has no claimed
+real-model semantic pass.
+
+The current request transports `task`, selected `language`, question, source
+ranges and a bounded JSON `outputSchema`. The semantic instruction still treats
+source text as untrusted and requires grounding/qualifications; duplicated
+schema/limit prose has been removed. Managed validation and native grammar
+remain enforced independently, with no silent repair or relaxed limits.
+`ReadCoverage` streams unique completed source lengths so callers can observe
+coverage without counting repeated overlap. Canonical original read blocks own
+source consistency; derived evidence-window insertion does not duplicate that
+validation.
+
+Focused public-seam checks cover actionable error reasons, exact field/reference/
+metadata/timeline limits, original-order token packing, word/surrogate overlap,
+archived-v2/current evidence-reader joins, explicit model-family file selection,
+Qwen/Phi wire protocol, and actual native context/disposal boundaries.
+No private database queries are used as assertions; golden SQLite input setup
+is followed only by public artifact readers.
+
+The separately approved fresh Portuguese summary executed **exactly one** test
+with normal model/ledger/collector/observer context, 20-minute request limit,
+local minidump/hang collection: **passed**, 142.5991994 s test / 137.3030807 s
+request, five bounded calls. No dump was produced. It used the frozen pre-v4
+v3 request bytes and does **not** establish a cause/fix for the original abort
+or semantic acceptance. No further full comparison was run.
+
+Exact final strict gate results and persistent raw evidence:
+[pipeline-quality-followup.md](pipeline-quality-followup.md).
+
+## Issue #11 continuation: context grouping and explicit faults (v3)
+
+The current pipeline groups up to four fresh original ranges / 4,096 original
+characters when the **final native-token-counted prompt plus stage reserve fits**.
+Local indices resolve to those exact ranges. It does not isolate tiny conflicting
+reports that fit together. Oversized source windows carry at most 256 characters
+of word-aligned overlap; original Unicode offsets/timestamps remain unchanged.
+Unique source coverage uses interval endpoints, not a sum of overlapping lengths.
+Stable original read blocks are checked on disk independently of overlapping
+prompt windows, which are keyed by source ID, offset **and length**.
+
+Expected I/O/data/JSON/SQLite failures produce explicit failed artifacts.
+Unexpected faults also persist `Failed`, but **rethrow their original exception**;
+unrelated cancellation is not misrepresented as user cancellation.
+
+Known-gold public-seam tests exercise both conflicting tiny excerpts in one
+request, complete owner/deadline relationships crossing the 1,024-character read
+boundary, exact local-index resolution and bounded multi-range token packing.
+Initial model semantics remain **UNVERIFIED**; no model outputs are repaired.
+
+Native crash diagnostics replay only the captured Portuguese sixth call and
+its necessary six-call prefix, using cached Phi and frozen exact v2 native
+configuration. Single, prefix, coverage and original 100-ms observer replays have
+not reproduced the earlier crash. This is not a claim that it is fixed.
+Quality selections now include only bounded `PhiMiniNative` and
+`NativeAdapterSmoke` purpose tests, never long `RealModelTests`.
+
+Current settings: [pipeline-profile.json](pipeline-profile.json).
+Current exact closure/runtime/gate evidence:
+[pipeline-continuation.md](pipeline-continuation.md).
+The following v2 section and [pipeline-validation.md](pipeline-validation.md)
+retain their original experiment and failing-gate identities/results.
+
+## Issue #11: streamed structured ledger (v2)
+
+The current harness replaces the v1 in-memory source/tree reduction with
+`GenerationProbe.ExtractAsync` / `SummarizeAsync` and independently timed
+`AnswerAsync`. All consume `IAsyncEnumerable<ExcerptInput>` with a disposable
+`TextReader` body and an explicit new ledger path. They return `AnalysisResult`,
+not an accumulated claim array or tree. `ClaimLedger.Open` exposes streamed
+`ReadClaims`, `ReadEvidence`, `ReadBatches` and exact-ownership `ReadRun`.
+The feasibility-only API break is deliberate; callers/tests have moved together.
+
+[pipeline-profile.json](pipeline-profile.json) freezes v2 settings separately
+from every historical model profile. Final model prompts are counted with the
+native tokenizer. A singleton original-range batch bounds both input and record
+shape; oversized excerpts are read in 1,024-character blocks plus one surrogate
+spare, then packed/split on complete Unicode scalars without dropping text.
+Offsets remain original UTF-16 positions, and original saved-audio timestamps
+are never interpolated. Metadata and candidate fields have explicit limits;
+invalid/excessive records fail instead of truncating or repairing JSON.
+
+SQLite persists original ranges and structured candidate claims: kind,
+statement, explicit `Stated`/`Absent` owner and deadline values, and qualifiers.
+Only exact structured equality deduplicates; evidence unions and keys stay
+disk-backed. Conflicts/non-equal records remain separate, including different
+qualifier order. Quotes come from resolved original references, not model
+recopying. **Initial extraction is semantically UNVERIFIED.** Valid references
+or a completed traversal do not establish entailment or recall. Optional prose
+does not rewrite or replace the preserved records; no prose reducer is needed.
+
+`IGenerationBackend.GenerateAsync` and the native adapter return
+`GenerationResult(Text, Finish, GeneratedTokens)`. The sampling override
+observes actual native EOG, including the case where identical valid text ends
+at a length cap without EOG. Failed/cancelled calls retain sampled-token counts
+but cannot become successful analyses. Stage reserves are 1,024 extraction and
+512 answer tokens in a 4,096 context. `Partial`, `TokenLimited`, `Cancelled` and
+`Failed` are honest artifact states, not complete summaries.
+
+Question and summary native diagnostics are separate test cases and requests.
+Each summary owns 20 minutes; each question owns 2 minutes (including retrieval),
+with a separate 20-minute question-suite cost guard. Question time is not
+standalone summary latency. The one authorized cached Phi validation selects
+the frozen local-assigned-action question and both original minute summaries;
+it does not repeat all previous profile experiments.
+
+```powershell
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "type!=IntegrationTests"
+# Only within the explicitly approved one cached validation:
+$env:SR_EVAL_PROFILE = "phi-mini"
+$env:SR_EVAL_PHASE = "issue-11-ledger-v2"
+$env:SR_EVAL_QUERY_ID = "local-assigned-action"
+$env:SR_EVAL_RUN_DIRECTORY = "<private-local-report-root>"
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "FullyQualifiedName~RealModelTests|purpose=PhiMiniNative"
+```
+
+Raw source/prompt/ledger/coverage traces remain local; do not upload them.
+The x64 workflow runs deterministic v2 tests and real native SQLite persistence
+without weights, retaining its existing native-extension checks. Native x64
+model inference, capture/offline/release evidence and human profile approval
+remain separate gates. See [pipeline-validation.md](pipeline-validation.md) for
+the exact current outcome and strict quality evidence.
+
+## Historical v1 profile records
+
+The following sections retain the original measured settings, commands and
+rejections at their recorded commits. They are not the v2 runtime instructions;
+do not reinterpret their budgets/results as measurements of the new pipeline.
+
 ## Issue #10: separately approved Phi-4-mini comparison
 
 [phi-mini-candidate-profile.json](phi-mini-candidate-profile.json) pins only the

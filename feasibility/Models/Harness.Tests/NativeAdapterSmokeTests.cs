@@ -28,12 +28,11 @@ public sealed class NativeAdapterSmokeTests
             {
                 prompt += " word";
             }
-            await foreach (var token in model.InferAsync(prompt + suffix,
-                context, new(4, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None))
-            {
-                text.Append(token);
-            }
-            Assert.Equal("OK", text.ToString());
+            var result = await model.InferAsync(prompt + suffix,
+                context, new(4, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None);
+            Assert.Equal("OK", result.Text);
+            await Assert.ThrowsAnyAsync<Exception>(()=>model.InferAsync(prompt+suffix+string.Concat(Enumerable.Repeat(" word",256)),
+                context,new(4,"""root ::= "OK" """,42,0,ContextOverflowStrategy.ThrowException),CancellationToken.None));
         }
         finally
         {
@@ -64,6 +63,8 @@ public sealed class NativeAdapterSmokeTests
             model.Dispose();
         }
         Assert.ThrowsAny<Exception>(() => model.CountTokens("source", true, true, Encoding.UTF8));
+        var disposed = await Assert.ThrowsAnyAsync<Exception>(() => model.EmbedAsync("search_document: source", CancellationToken.None));
+        Assert.False(string.IsNullOrWhiteSpace(disposed.Message));
     }
 
     private static NativeContextOptions CpuContext(string file, uint context, bool embedding)

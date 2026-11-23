@@ -8,8 +8,9 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 {
     private const string CandidateGrammar = """
         root ::= "{" ws "\"claims\"" ws ":" ws "[" ws (claim (ws "," ws claim)*)? ws "]" ws "," ws "\"limitation\"" ws ":" ws (string | "null") ws "}" ws
-        claim ::= "{" ws "\"text\"" ws ":" ws string ws "," ws "\"evidenceIds\"" ws ":" ws "[" ws id (ws "," ws id)* ws "]" ws "}"
-        id ::= "\"s" [0-9] [0-9] [0-9] [0-9] [0-9] [0-9] "\""
+        claim ::= "{" ws "\"kind\"" ws ":" ws ("\"Topic\"" | "\"Decision\"" | "\"Action\"" | "\"Report\"") ws "," ws "\"statement\"" ws ":" ws string ws "," ws "\"owner\"" ws ":" ws field ws "," ws "\"deadline\"" ws ":" ws field ws "," ws "\"qualifiers\"" ws ":" ws "[" ws (string (ws "," ws string)*)? ws "]" ws "," ws "\"references\"" ws ":" ws "[" ws reference (ws "," ws reference)* ws "]" ws "}"
+        reference ::= [0-3]
+        field ::= "{" ws "\"state\"" ws ":" ws ("\"Absent\"" ws "," ws "\"value\"" ws ":" ws "null" | "\"Stated\"" ws "," ws "\"value\"" ws ":" ws string) ws "}"
         string ::= "\"" ([^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""
         ws ::= [ \t\n\r]*
         """;
@@ -92,7 +93,7 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
     /// <inheritdoc />
     public int CountTokens(string prompt) => weights.CountTokens(prompt, true, true, Encoding.UTF8);
     /// <inheritdoc />
-    public async Task<string> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
+    public async Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
     {
         LastGeneratedTokens = 0;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(outputTokens);
@@ -105,14 +106,16 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
             ? new NativeGenerationOptions(outputTokens, CandidateGrammar, 42, 0.7f, ContextOverflowStrategy.ThrowException)
                 { TopK = 20, TopP = 0.8f, MinP = 0, PresencePenalty = 1.5f }
             : new NativeGenerationOptions(outputTokens, CandidateGrammar, 42, 0, ContextOverflowStrategy.ThrowException);
-        var text = new StringBuilder();
-        await foreach (var piece in weights.InferAsync(prompt, parameters, inference, cancellationToken))
+        try
         {
-            LastGeneratedTokens++;
-            text.Append(piece);
+            var result = await weights.InferAsync(prompt, parameters, inference, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
         }
-        cancellationToken.ThrowIfCancellationRequested();
-        return text.ToString();
+        finally
+        {
+            LastGeneratedTokens = weights.LastGeneratedTokens;
+        }
     }
     /// <inheritdoc />
     public void Dispose() => weights.Dispose();

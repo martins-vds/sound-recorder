@@ -34,6 +34,7 @@ _Avoid_: Recording excerpt, unattributed quote
 
 **Transcript claim**:
 A candidate interpretation of content in one transcript, with its source excerpt references and stated qualifications. It is not an independently verified real-world fact.
+Initial model extraction remains semantically unverified; a resolvable reference does not by itself establish that the transcript supports the claim.
 _Avoid_: Verified fact, transcript summary
 
 **Transcript summary**:

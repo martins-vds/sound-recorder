@@ -13,6 +13,36 @@ namespace Models.Harness.Tests;
 public sealed class PhiMiniNativeTests
 {
     [Fact]
+    public async Task InferAsync_ActualSampledEogVersusOneTokenCap_DistinguishesIdenticalValidText()
+    {
+        var files = ModelFiles.PhiMiniFiles();
+        await ModelFiles.VerifyAsync(ApprovedCache(), files);
+        var context = new NativeContextOptions(Path.Combine(ApprovedCache(), files.Single().Name))
+        {
+            ContextSize = 128, GpuLayerCount = 0, NoKqvOffload = true, OpOffload = false,
+            Threads = 4, BatchThreads = 4, BatchSize = 32, UBatchSize = 32
+        };
+        using var model = await LlamaNativeModel.LoadAsync(context, CancellationToken.None);
+        const string prompt = "<|system|>Reply OK.<|end|><|user|>Confirm.<|end|><|assistant|>";
+        var completed = await model.InferAsync(prompt, context,
+            new(8, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None);
+        var limited = await model.InferAsync(prompt, context,
+            new(1, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None);
+        Assert.Equal("OK", completed.Text);
+        Assert.Equal("OK", limited.Text);
+        Assert.Equal(GenerationFinish.Completed, completed.Finish);
+        Assert.Equal(GenerationFinish.TokenLimit, limited.Finish);
+        Assert.Equal(1, completed.GeneratedTokens);
+        Assert.Equal(1, limited.GeneratedTokens);
+        var root = Environment.GetEnvironmentVariable("SR_EVAL_RUN_DIRECTORY")
+            ?? Path.Combine(Directory.GetCurrentDirectory(), "runs");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "native-finish-proof-v2.json"), JsonSerializer.Serialize(new
+        {
+            prompt, context, completed, limited, observation = "native Sample override observes token.IsEndOfGeneration(vocab)"
+        }));
+    }
+    [Fact]
     public async Task Tokenize_ApprovedPhiMini_RecognizesExactRoleTokensWithoutAddingBosOrEos()
     {
         var directory = ApprovedCache();
@@ -48,10 +78,11 @@ public sealed class PhiMiniNativeTests
             var prompt = generation.RenderPrompt(
                 """Return only JSON {"claims":[],"limitation":"OK"}.""", "Confirm.");
             var text = await generation.GenerateAsync(prompt, 64, CancellationToken.None);
-            var output = JsonSerializer.Deserialize<CandidateOutput>(text, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            using var output = JsonDocument.Parse(text.Text);
             Assert.NotNull(output);
-            Assert.Empty(output.Claims);
-            Assert.Equal("OK", output.Limitation);
+            Assert.Empty(output.RootElement.GetProperty("claims").EnumerateArray());
+            Assert.Equal("OK", output.RootElement.GetProperty("limitation").GetString());
+            Assert.Equal(GenerationFinish.Completed, text.Finish);
             Assert.InRange(generation.LastGeneratedTokens, 1, 63);
             Assert.True(generation.NativeModelBytes > 0);
             Assert.True(generation.CountTokens(prompt) < 4096 - 64);
