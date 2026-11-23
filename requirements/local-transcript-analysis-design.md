@@ -50,6 +50,15 @@ evidence, frozen corpus, and strict quality gates remain unchanged. This is
 permission to evaluate another candidate, not final model selection or feature
 implementation authorization.
 
+On 2026-11-23, the user approved one bounded evaluation of
+Phi-4-mini-instruct Q4_K_M, the 3.8B mini model rather than full 14B Phi-4.
+GitHub ticket #10 records the pinned Unsloth GGUF conversion, MIT license,
+revision, SHA-256, and exact 2,491,874,272-byte download. Reuse the existing
+embedding candidate and external cache. Verify the actual Phi chat template
+and native compatibility; Portuguese support in the model card is not
+grounding or release evidence. The frozen corpus, prior rejection evidence,
+quality gates, and feature-implementation restriction remain unchanged.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
