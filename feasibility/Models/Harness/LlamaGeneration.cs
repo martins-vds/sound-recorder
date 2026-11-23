@@ -15,6 +15,7 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
         """;
     private readonly INativeModel weights;
     private readonly NativeContextOptions parameters;
+    private readonly bool qwen3;
 
     /// <summary>Non-EOG sampled tokens yielded by the most recent call, including partial output on failure.</summary>
     public int LastGeneratedTokens { get; private set; }
@@ -23,15 +24,20 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
     /// <summary>Loaded GGUF metadata for freezing the actual tokenizer/configuration identity.</summary>
     public IReadOnlyDictionary<string, string> Metadata => weights.Metadata;
 
-    private LlamaGeneration(INativeModel weights, NativeContextOptions parameters)
+    private LlamaGeneration(INativeModel weights, NativeContextOptions parameters, bool qwen3)
     {
         this.weights = weights;
         this.parameters = parameters;
+        this.qwen3 = qwen3;
     }
 
     /// <summary>Checks every generation shard before loading the first shard.</summary>
     public static async Task<LlamaGeneration> LoadAsync(string directory, CancellationToken cancellationToken = default)
         => await LoadAsync(directory, LlamaNativeModel.LoadAsync, cancellationToken);
+
+    /// <summary>Explicitly loads the separately pinned non-thinking alternate, never as a fallback.</summary>
+    public static Task<LlamaGeneration> LoadQwen3Async(string directory, CancellationToken cancellationToken = default)
+        => LoadAsync(directory, LlamaNativeModel.LoadAsync, ModelFiles.VerifyAsync, cancellationToken, qwen3: true);
 
     /// <summary>Uses a replaceable native loader after the same pinned local-file verification.</summary>
     public static async Task<LlamaGeneration> LoadAsync(string directory, NativeModelLoader loader,
@@ -40,9 +46,9 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 
     /// <summary>Tests native policy deterministically without replacing or downloading the approved model files.</summary>
     public static async Task<LlamaGeneration> LoadAsync(string directory, NativeModelLoader loader,
-        ModelFileVerifier verifier, CancellationToken cancellationToken = default)
+        ModelFileVerifier verifier, CancellationToken cancellationToken = default, bool qwen3 = false)
     {
-        var files = ModelFiles.CandidateFiles().Where(f => f.Role == "generation").ToArray();
+        var files = (qwen3 ? ModelFiles.Qwen3Files() : ModelFiles.CandidateFiles()).Where(f => f.Role == "generation").ToArray();
         await verifier(directory, files, cancellationToken);
         var parameters = new NativeContextOptions(Path.Combine(directory, files[0].Name))
         {
@@ -52,11 +58,12 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
         var weights = await loader(parameters, cancellationToken);
         try
         {
-            if (weights.Metadata["general.architecture"] != "qwen2")
+            var architecture = qwen3 ? "qwen3" : "qwen2";
+            if (weights.Metadata["general.architecture"] != architecture)
             {
-                throw new InvalidDataException("The pinned generation model is not qwen2.");
+                throw new InvalidDataException($"The pinned generation model is not {architecture}.");
             }
-            return new(weights, parameters);
+            return new(weights, parameters, qwen3);
         }
         catch
         {
@@ -67,7 +74,8 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 
     /// <inheritdoc />
     public string RenderPrompt(string instruction, string input) =>
-        $"<|im_start|>system\n{instruction}<|im_end|>\n<|im_start|>user\n{input}<|im_end|>\n<|im_start|>assistant\n";
+        $"<|im_start|>system\n{instruction}{(qwen3 ? " /no_think" : "")}<|im_end|>\n<|im_start|>user\n{input}<|im_end|>\n<|im_start|>assistant\n" +
+        (qwen3 ? "<think>\n\n</think>\n\n" : "");
     /// <inheritdoc />
     public int CountTokens(string prompt) => weights.CountTokens(prompt, true, true, Encoding.UTF8);
     /// <inheritdoc />
@@ -80,7 +88,10 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
         {
             throw new InvalidDataException("Native generation context budget exceeded; no truncation.");
         }
-        var inference = new NativeGenerationOptions(outputTokens, CandidateGrammar, 42, 0, ContextOverflowStrategy.ThrowException);
+        var inference = qwen3
+            ? new NativeGenerationOptions(outputTokens, CandidateGrammar, 42, 0.7f, ContextOverflowStrategy.ThrowException)
+                { TopK = 20, TopP = 0.8f, MinP = 0, PresencePenalty = 1.5f }
+            : new NativeGenerationOptions(outputTokens, CandidateGrammar, 42, 0, ContextOverflowStrategy.ThrowException);
         var text = new StringBuilder();
         await foreach (var piece in weights.InferAsync(prompt, parameters, inference, cancellationToken))
         {

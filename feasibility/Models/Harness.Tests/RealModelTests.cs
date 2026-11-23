@@ -23,23 +23,29 @@ public sealed class RealModelTests
             throw new InvalidOperationException("Model run blocked: approve the exact files/sizes first, then set SR_APPROVED_MODEL_DIRECTORY.");
         }
         var fixture = EvaluationFixture.Minute(language);
+        var qwen3 = Environment.GetEnvironmentVariable("SR_EVAL_PROFILE") == "qwen3";
+        using var boundedRun = new CancellationTokenSource(qwen3 ? TimeSpan.FromMinutes(20) : Timeout.InfiniteTimeSpan);
         using var log = new RunLog(language);
         log.Write("start", new
         {
-            fixture.Identity, language, profile = "sr-model-candidate-v1", historyTokens = 0,
+            fixture.Identity, language, profile = qwen3 ? "sr-model-qwen3-nonthinking-v1" : "sr-model-candidate-v1", historyTokens = 0,
             diagnosticPhase = Environment.GetEnvironmentVariable("SR_EVAL_PHASE") ?? "baseline",
             contextTokens = 4096, outputTokens = 768,
             processArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
             osArchitecture = RuntimeInformation.OSArchitecture.ToString(),
             framework = RuntimeInformation.FrameworkDescription,
             harnessAssemblySha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(typeof(GenerationProbe).Assembly.Location))),
-            candidateFiles = ModelFiles.CandidateFiles()
+            candidateFiles = qwen3 ? ModelFiles.Qwen3Files().Concat(ModelFiles.CandidateFiles().Where(f => f.Role == "embedding")) : ModelFiles.CandidateFiles(),
+            diagnosticLimitMinutes = qwen3 ? 20 : (int?)null,
+            cancellationBoundary = "safe native boundary, not immediate abort"
         });
         try
         {
-            using var embedding = await LlamaEmbedding.LoadAsync(directory);
+            using var embedding = await LlamaEmbedding.LoadAsync(directory, boundedRun.Token);
             log.Write("embedding-loaded", new { embedding.NativeModelBytes, embedding.Metadata });
-            using var generation = await LlamaGeneration.LoadAsync(directory);
+            using var generation = qwen3
+                ? await LlamaGeneration.LoadQwen3Async(directory, boundedRun.Token)
+                : await LlamaGeneration.LoadAsync(directory, boundedRun.Token);
             log.Write("generation-loaded", new { generation.NativeModelBytes, generation.Metadata });
             log.Write("source-token-inventory", new
             {
@@ -64,11 +70,11 @@ public sealed class RealModelTests
                     Excerpt[] evidence = fixture.Excerpts;
                     if (scope == "local")
                     {
-                        var matches = await retriever.RetrieveAsync(question, fixture.Excerpts);
+                        var matches = await retriever.RetrieveAsync(question, fixture.Excerpts, cancellationToken: boundedRun.Token);
                         log.Write("retrieval", new { queryId = id, matches, wholeSourceCoverage = false });
                         evidence = matches.Select(m => m.Excerpt).ToArray();
                     }
-                    var result = await probe.AnswerAsync(fixture.Identity, evidence, question, language);
+                    var result = await probe.AnswerAsync(fixture.Identity, evidence, question, language, boundedRun.Token);
                     log.Write("candidate-answer", new { queryId = id, scope, result, semanticScore = (double?)null });
                 }
                 catch (Exception error)
@@ -80,7 +86,7 @@ public sealed class RealModelTests
             try
             {
                 IReadOnlyList<Excerpt>[] portions = fixture.Excerpts.Chunk(5).Select(p => (IReadOnlyList<Excerpt>)p).ToArray();
-                var root = await probe.MapReduceAsync(fixture.Identity, portions, language);
+                var root = await probe.MapReduceAsync(fixture.Identity, portions, language, boundedRun.Token);
                 Assert.Equal(fixture.Excerpts.Select(e => e.Id), root.CoveredIds);
                 log.Write("recursive-candidate", new { root, semanticScore = (double?)null });
             }
@@ -151,7 +157,9 @@ public sealed class RealModelTests
 
         public RunLog(string language)
         {
-            var directory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "runs",
+            var root = Environment.GetEnvironmentVariable("SR_EVAL_RUN_DIRECTORY") ??
+                Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "runs");
+            var directory = Path.GetFullPath(Path.Combine(root,
                 $"{Environment.GetEnvironmentVariable("SR_EVAL_PHASE") ?? "baseline"}-{DateTime.UtcNow:yyyyMMddTHHmmss}-{language}-{Guid.NewGuid():N}"));
             Directory.CreateDirectory(directory);
             path = Path.Combine(directory, "events.jsonl");

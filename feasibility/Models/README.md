@@ -1,5 +1,34 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Issue #9: separately approved bounded alternate
+
+The single approved Qwen3-8B Q4_K_M file is pinned separately in
+[qwen3-candidate-profile.json](qwen3-candidate-profile.json). It does not replace
+the rejected Qwen2.5 profile or the approved Nomic embedding. No other weights
+or production changes are authorized.
+
+```powershell
+.\feasibility\Models\DownloadApprovedModels.ps1 -Cache $env:SR_APPROVED_MODEL_DIRECTORY -ProfileFile qwen3-candidate-profile.json
+$env:SR_EVAL_PROFILE = "qwen3"
+$env:SR_EVAL_PHASE = "issue-9-qwen3"
+$env:SR_EVAL_SKIP_CANCELLATION = "1"
+# Optional: absolute, private external report directory, not a model directory.
+$env:SR_EVAL_RUN_DIRECTORY = "<approved-private-report-root>\runs"
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-restore --filter "FullyQualifiedName~RealModelTests"
+```
+
+The alternate uses the official non-thinking ChatML assistant prefill
+`<think>\n\n</think>\n\n`, plus `/no_think`, not stripped generated reasoning.
+The final serialized prompt includes that prefix in its actual token budget.
+Sampling differs deliberately from old greedy decoding: temperature 0.7,
+top-p 0.8, top-k 20, min-p 0, presence penalty 1.5, seed 42. Other pinned
+LLamaSharp defaults (including a 64-token penalty window) are recorded in the
+profile. Context remains 4,096, output reserve 768 and history zero; no YaRN,
+32k thinking output, context shifting, identity repair or relaxed reference-union
+validation. The alternate diagnostic has a 20-minute per-language cancellation
+request limit at the existing safe native boundary, not an immediate abort promise.
+See [qwen3-comparison.md](qwen3-comparison.md) for the bounded comparison and gaps.
+
 **Latest follow-up: reject the current generation profile for evidence-preserving
 recursive analysis.** The original twenty-excerpt minute trees still lose required
 evidence after stronger prompts and grammar. See

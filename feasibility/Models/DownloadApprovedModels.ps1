@@ -1,8 +1,9 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$Cache)
+param([Parameter(Mandatory = $true)][string]$Cache,
+    [ValidateSet('candidate-profile.json', 'qwen3-candidate-profile.json')][string]$ProfileFile = 'candidate-profile.json')
 
 $ErrorActionPreference = 'Stop'
-$profile = Get-Content (Join-Path $PSScriptRoot 'candidate-profile.json') -Raw | ConvertFrom-Json
+$profile = Get-Content (Join-Path $PSScriptRoot $ProfileFile) -Raw | ConvertFrom-Json
 $cachePath = [IO.Path]::GetFullPath($Cache, (Get-Location).ProviderPath)
 New-Item -ItemType Directory -Path $cachePath -Force | Out-Null
 $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($cachePath))

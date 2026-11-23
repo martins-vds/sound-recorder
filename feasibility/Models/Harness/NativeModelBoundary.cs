@@ -38,7 +38,13 @@ public sealed record NativeContextOptions(string ModelPath)
 }
 
 /// <summary>Managed inference policy; constructing it never initializes a native backend.</summary>
-public sealed record NativeGenerationOptions(int MaxTokens, string Grammar, uint Seed, float Temperature, ContextOverflowStrategy OverflowStrategy);
+public sealed record NativeGenerationOptions(int MaxTokens, string Grammar, uint Seed, float Temperature, ContextOverflowStrategy OverflowStrategy)
+{
+    public int TopK { get; init; } = 40;
+    public float TopP { get; init; } = 0.9f;
+    public float MinP { get; init; } = 0.1f;
+    public float PresencePenalty { get; init; }
+}
 
 /// <summary>Thin LLamaSharp implementation of the native boundary; no model selection or fallback.</summary>
 public sealed class LlamaNativeModel : INativeModel
@@ -78,7 +84,8 @@ public sealed class LlamaNativeModel : INativeModel
     {
         using var sampling = new DefaultSamplingPipeline
         {
-            Seed = settings.Seed, Temperature = settings.Temperature, Grammar = new Grammar(settings.Grammar, "root")
+            Seed = settings.Seed, Temperature = settings.Temperature, Grammar = new Grammar(settings.Grammar, "root"),
+            TopK = settings.TopK, TopP = settings.TopP, MinP = settings.MinP, PresencePenalty = settings.PresencePenalty
         };
         var inference = new InferenceParams
         {
