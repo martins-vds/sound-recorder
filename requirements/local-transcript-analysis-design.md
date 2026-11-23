@@ -110,6 +110,21 @@ stale results, recording/transcription exclusion, evidence inspection, cancellat
 and errors are in scope. One short cached-model smoke test is authorized;
 the 12-hour stress test and full release-acceptance campaign are not.
 
+## Continuing the validated integration - 2026-11-23
+
+The user reported that the walking skeleton worked well and that local-model
+response time, while high, was acceptable. They then authorized continuing
+implementation. Treat this as positive manual integration feedback, not semantic
+or release acceptance.
+
+The next slice hardens the working adapter and desktop lifecycle at the same
+confirmed test interfaces: source/timestamp fidelity, bounded context, exact
+attempt ownership, cancellation and competing capture/transcription intent,
+and meaningful behavioral coverage of the remaining quality gaps. Preserve
+the current model and working manual-validation artifact. The 12-hour test,
+new model downloads and automatic tuning remain excluded. Final model quality,
+distribution and release claims still require their separate evidence.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
