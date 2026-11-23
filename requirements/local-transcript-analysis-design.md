@@ -41,6 +41,15 @@ Subsequent explicit approvals on 2026-11-22:
 
 These approvals do not select the final models or approve numerical thresholds.
 
+After the measured Qwen2.5 generation profile failed evidence-preserving minute
+analysis, the user approved one bounded bilingual comparison of the official
+Qwen3-8B Q4_K_M generation model, retaining the existing embedding candidate.
+GitHub ticket #9 records its exact approved revision, URL, SHA-256, and
+5,027,783,488-byte download into the external cache. The original rejection
+evidence, frozen corpus, and strict quality gates remain unchanged. This is
+permission to evaluate another candidate, not final model selection or feature
+implementation authorization.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
