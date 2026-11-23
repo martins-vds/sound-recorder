@@ -6,6 +6,38 @@ namespace Models.Harness.Tests;
 public sealed class GenerationProbeTests
 {
     [Fact]
+    public async Task MapReduceAsync_RootLosesInputEvidence_FailsInsteadOfClaimingComplete()
+    {
+        var backend = new GenerationDouble(Output("s000001"))
+        {
+            Responses = [Output("s000001"), Output("s000002"), Output("s000001")]
+        };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new GenerationProbe(backend)
+            .MapReduceAsync(new("attempt", new string('a', 64)),
+                [[new("s000001", null, null, "first")], [new("s000002", null, null, "second")]], "en"));
+        Assert.Contains("s000002", error.Message);
+    }
+    [Fact]
+    public async Task MapAsync_NoSource_ReportsMissingEvidenceBeforeGeneration()
+    {
+        var backend = new GenerationDouble("""{"claims":[],"limitation":"none"}""");
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new GenerationProbe(backend).MapAsync(new("attempt", new string('a', 64)), [], "en"));
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        Assert.Contains("source", error.Message);
+        Assert.Equal(0, backend.Calls);
+    }
+
+    [Fact]
+    public async Task MapAsync_CancelledInOnlyCall_DoesNotReturnCompletedNode()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var backend = new GenerationDouble(Output("s000001")) { OnGenerate = cancellation.Cancel };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new GenerationProbe(backend)
+            .MapAsync(new("attempt", new string('a', 64)), [new("s000001", null, null, "source")], "en", cancellation.Token));
+    }
+
+    [Fact]
     public async Task MapAsync_ExactExcerpt_ReturnsIdentityAndCandidateEvidence()
     {
         var backend = new GenerationDouble("""{"claims":[{"text":"Ana checks logs.","evidenceIds":["s000006"]}],"limitation":null}""");
@@ -17,6 +49,7 @@ public sealed class GenerationProbeTests
         Assert.Equal(["s000006"], result.CoveredIds);
         Assert.Equal("Ana checks logs.", Assert.Single(result.Output.Claims).Text);
         Assert.Equal(["s000006"], result.Output.Claims[0].EvidenceIds);
+        Assert.Empty(result.Children);
     }
 
     [Theory]
@@ -26,8 +59,11 @@ public sealed class GenerationProbeTests
     {
         var backend = new GenerationDouble("""{"claims":[],"limitation":"No evidence."}""") { TokenCount = promptTokens };
         var probe = new GenerationProbe(backend, contextTokens: 20, outputTokens: 4);
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             probe.MapAsync(new("attempt", new string('a', 64)), [new("s000001", null, null, "source")], "en"));
+        Assert.Contains(promptTokens.ToString(), error.Message);
+        Assert.Contains("4", error.Message);
+        Assert.Contains("20", error.Message);
         Assert.Equal(0, backend.Calls);
     }
 
@@ -39,11 +75,13 @@ public sealed class GenerationProbeTests
     [InlineData("""{"claims":[{"text":"","evidenceIds":["s000001"]}],"limitation":null}""")]
     [InlineData("""{"claims":[{"text":"mixed references","evidenceIds":["s000001","s999999"]}],"limitation":null}""")]
     [InlineData("""{"claims":[null],"limitation":null}""")]
+    [InlineData("null")]
     public async Task MapAsync_UnresolvableOrEmptyOutput_RejectsSuccessShape(string response)
     {
         var probe = new GenerationProbe(new GenerationDouble(response));
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             probe.MapAsync(new("attempt", new string('a', 64)), [new("s000001", null, null, "source")], "en"));
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
     }
 
     [Fact]
@@ -111,7 +149,8 @@ public sealed class GenerationProbeTests
         var backend = new GenerationDouble(Output("s000001"));
         await Assert.ThrowsAsync<InvalidDataException>(() => new GenerationProbe(backend).MapReduceAsync(
             new("attempt", new string('a', 64)),
-            [[new("s000001", null, null, "first")], [new("s000001", null, null, "changed")]], "en"));
+            [[new("s000001", null, null, "first"), new("s000002", null, null, "unchanged")],
+             [new("s000001", null, null, "changed")]], "en"));
         Assert.Equal(0, backend.Calls);
     }
 
@@ -123,6 +162,7 @@ public sealed class GenerationProbeTests
         var result = await new GenerationProbe(backend).AnswerAsync(fixture.Identity,
             [fixture.Excerpts[5]], "Quem vai verificar os registros de acesso e até quando?", fixture.Language);
         Assert.Equal(fixture.Identity, result.Identity);
+        Assert.Empty(result.Children);
         Assert.Contains("Quem vai verificar", Assert.Single(backend.Prompts));
         Assert.Contains("pt-BR", backend.Prompts[0]);
         Assert.Contains("s000006", backend.Prompts[0]);

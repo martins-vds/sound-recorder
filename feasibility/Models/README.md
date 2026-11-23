@@ -1,5 +1,13 @@
 # Issue #4: bilingual in-process model feasibility
 
+**Latest follow-up: reject the current generation profile for evidence-preserving
+recursive analysis.** The original twenty-excerpt minute trees still lose required
+evidence after stronger prompts and grammar. See
+[minute-v2-rejection.md](minute-v2-rejection.md) for exact failed ledger obligations,
+the improved native/transport seams, mutation 86.95652173913044% (still failing),
+and persistent private evidence paths. No issue-completion or human-entailment
+approval is claimed.
+
 **Status: exact files approved for local evaluation; issue #4 is NOT complete.**
 The user approved the three pinned files on 2026-11-22. This approval does not
 select a production library/model or establish a supported resource profile.

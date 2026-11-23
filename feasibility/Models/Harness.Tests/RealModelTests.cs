@@ -27,6 +27,7 @@ public sealed class RealModelTests
         log.Write("start", new
         {
             fixture.Identity, language, profile = "sr-model-candidate-v1", historyTokens = 0,
+            diagnosticPhase = Environment.GetEnvironmentVariable("SR_EVAL_PHASE") ?? "baseline",
             contextTokens = 4096, outputTokens = 768,
             processArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
             osArchitecture = RuntimeInformation.OSArchitecture.ToString(),
@@ -88,15 +89,22 @@ public sealed class RealModelTests
                 errors.Add($"reduction: {error.GetType().Name}: {error.Message}");
                 log.Write("reduction-failure", new { type = error.GetType().Name, error.Message });
             }
-            using var cancellation = new CancellationTokenSource();
-            using var requested = cancellation.Token.Register(() => log.Write("native-cancel-request", new { delayMs = 100 }));
-            cancellation.CancelAfter(100);
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                probe.AnswerAsync(fixture.Identity, fixture.Excerpts, "Summarize the supplied evidence.", language, cancellation.Token));
-            log.Write("native-cancel-acknowledged", new { immediateInterruptionProven = false });
-            var fresh = await probe.AnswerAsync(fixture.Identity, [fixture.Excerpts[5]],
-                language == "en" ? "Who verifies the access logs?" : "Quem verifica os registros de acesso?", language);
-            log.Write("fresh-call-after-cancellation", new { result = fresh });
+            if (Environment.GetEnvironmentVariable("SR_EVAL_SKIP_CANCELLATION") != "1")
+            {
+                using var cancellation = new CancellationTokenSource();
+                using var requested = cancellation.Token.Register(() => log.Write("native-cancel-request", new { delayMs = 100 }));
+                cancellation.CancelAfter(100);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    probe.AnswerAsync(fixture.Identity, fixture.Excerpts, "Summarize the supplied evidence.", language, cancellation.Token));
+                log.Write("native-cancel-acknowledged", new { immediateInterruptionProven = false });
+                var fresh = await probe.AnswerAsync(fixture.Identity, [fixture.Excerpts[5]],
+                    language == "en" ? "Who verifies the access logs?" : "Quem verifica os registros de acesso?", language);
+                log.Write("fresh-call-after-cancellation", new { result = fresh });
+            }
+            else
+            {
+                log.Write("cancellation-not-repeated", new { previousNativeObservationRetained = true });
+            }
             Assert.True(errors.Count == 0, string.Join("\n", errors));
         }
         catch (Exception error)
@@ -144,7 +152,7 @@ public sealed class RealModelTests
         public RunLog(string language)
         {
             var directory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "runs",
-                $"{DateTime.UtcNow:yyyyMMddTHHmmss}-{language}-{Guid.NewGuid():N}"));
+                $"{Environment.GetEnvironmentVariable("SR_EVAL_PHASE") ?? "baseline"}-{DateTime.UtcNow:yyyyMMddTHHmmss}-{language}-{Guid.NewGuid():N}"));
             Directory.CreateDirectory(directory);
             path = Path.Combine(directory, "events.jsonl");
             sampler = new Timer(_ => Write("memory-sample", new { nominalIntervalMs = 100, observer = "in-process diagnostic" }),

@@ -5,6 +5,36 @@ namespace Models.Harness.Tests;
 
 public sealed class EmbeddingProbeTests
 {
+    [Theory]
+    [InlineData(0, 512)]
+    [InlineData(2, 0)]
+    public async Task RetrieveAsync_InvalidNativeConfiguration_RejectsBeforeEmbedding(int dimensions, int context)
+    {
+        var backend = new EmbeddingDouble([[1, 0]]);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            new EmbeddingProbe(backend, dimensions, context).RetrieveAsync("question", [new("s000001", null, null, "source")]));
+        Assert.Empty(backend.Inputs);
+    }
+
+    [Fact]
+    public async Task RetrieveAsync_EqualScoresAndExactContextBoundary_ReturnsStableSourceOrder()
+    {
+        var backend = new EmbeddingDouble([[1, 0], [1, 0], [1, 0]]) { TokenCount = 512 };
+        var matches = await new EmbeddingProbe(backend, dimensions: 2).RetrieveAsync("question",
+            [new("s000002", null, null, "second"), new("s000001", null, null, "first")], topK: 2);
+        Assert.Equal(["s000001", "s000002"], matches.Select(m => m.Excerpt.Id));
+    }
+
+    [Fact]
+    public async Task RetrieveAsync_AlreadyCancelled_RejectsBeforeEmbedding()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var backend = new EmbeddingDouble([[1, 0]]);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new EmbeddingProbe(backend, dimensions: 2)
+            .RetrieveAsync("question", [new("s000001", null, null, "source")], cancellationToken: cancellation.Token));
+        Assert.Empty(backend.Inputs);
+    }
     [Fact]
     public async Task RetrieveAsync_PortugueseQuery_UsesTaskPrefixesAndNormalizedCosine()
     {
@@ -30,16 +60,26 @@ public sealed class EmbeddingProbeTests
     public async Task RetrieveAsync_InvalidNativeVector_ReportsFailure(float[] vector)
     {
         var probe = new EmbeddingProbe(new EmbeddingDouble([vector]), dimensions: 2);
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             probe.RetrieveAsync("query", [new("s000001", null, null, "source")]));
+        if (vector.All(value => value == 0))
+        {
+            Assert.Contains("normal", error.Message);
+        }
+        else
+        {
+            Assert.Contains("2", error.Message);
+        }
     }
 
     [Fact]
     public async Task RetrieveAsync_PrefixAndSpecialTokensExceedContext_FailsBeforeNativeCall()
     {
         var backend = new EmbeddingDouble([[1, 0], [1, 0]]) { TokenCount = 513 };
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             new EmbeddingProbe(backend, dimensions: 2).RetrieveAsync("query", [new("s000001", null, null, "source")]));
+        Assert.Contains(backend.TokenCount.ToString(), error.Message);
+        Assert.Contains("512", error.Message);
         Assert.Empty(backend.Inputs);
     }
 
@@ -69,9 +109,20 @@ public sealed class EmbeddingProbeTests
     public async Task RetrieveAsync_NoSource_ReportsMissingEvidenceBeforeInference()
     {
         var backend = new EmbeddingDouble([[1, 0]]);
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
             new EmbeddingProbe(backend, dimensions: 2).RetrieveAsync("question", []));
+        Assert.Contains("source", error.Message);
         Assert.Empty(backend.Inputs);
+    }
+
+    [Fact]
+    public async Task RetrieveAsync_CancelledDuringLastDocument_DoesNotPublishPartialMatches()
+    {
+        using var cancellation = new CancellationTokenSource();
+        EmbeddingDouble? backend = null;
+        backend = new EmbeddingDouble([[1, 0], [1, 0]]) { OnEmbed = () => { if (backend!.Inputs.Count == 2) cancellation.Cancel(); } };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new EmbeddingProbe(backend, dimensions: 2)
+            .RetrieveAsync("query", [new("s000001", null, null, "source")], cancellationToken: cancellation.Token));
     }
 }
 

@@ -6,13 +6,20 @@ namespace Models.Harness;
 /// <summary>One exact local candidate file; a URL is approval metadata, never a download instruction.</summary>
 public sealed record PinnedModelFile(string Role, string Name, long Bytes, string Sha256, string Url);
 
+/// <summary>Replaceable local integrity boundary; native inference cannot start before it succeeds.</summary>
+public delegate Task ModelFileVerifier(string directory, IReadOnlyList<PinnedModelFile> files, CancellationToken cancellationToken);
+
 /// <summary>Checks local files without network access or native inference.</summary>
 public static class ModelFiles
 {
     /// <summary>Reads the embedded, proposed file identities.</summary>
     public static PinnedModelFile[] CandidateFiles()
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.candidate-profile.json"));
+
+    /// <summary>Reads profile data through a replaceable local resource transport.</summary>
+    public static PinnedModelFile[] CandidateFiles(Func<Stream?> openProfile)
     {
-        using var stream = typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.candidate-profile.json")
+        using var stream = openProfile()
             ?? throw new InvalidDataException("Embedded candidate profile is missing.");
         using var document = JsonDocument.Parse(stream);
         return document.RootElement.GetProperty("files").Deserialize<PinnedModelFile[]>(

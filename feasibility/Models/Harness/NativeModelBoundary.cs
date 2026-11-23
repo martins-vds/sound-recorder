@@ -1,0 +1,104 @@
+using System.Text;
+using System.Runtime.CompilerServices;
+using LLama;
+using LLama.Common;
+using LLama.Sampling;
+using LLama.Native;
+
+namespace Models.Harness;
+
+/// <summary>Replaceable native model/resource boundary, separate from policy and file integrity.</summary>
+public interface INativeModel : IDisposable
+{
+    IReadOnlyDictionary<string, string> Metadata { get; }
+    ulong SizeInBytes { get; }
+    int EmbeddingSize { get; }
+    int CountTokens(string text, bool addSpecial, bool parseSpecial, Encoding encoding);
+    IAsyncEnumerable<string> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions inference, CancellationToken cancellationToken);
+    void InitializeEmbedding(NativeContextOptions context);
+    Task<IReadOnlyList<float[]>> EmbedAsync(string input, CancellationToken cancellationToken);
+}
+
+/// <summary>One in-process native load; callers retain explicit role and integrity validation.</summary>
+public delegate Task<INativeModel> NativeModelLoader(NativeContextOptions parameters, CancellationToken cancellationToken);
+
+/// <summary>Managed CPU/context settings; no LLamaSharp constructors run during model-free policy tests.</summary>
+public sealed record NativeContextOptions(string ModelPath)
+{
+    public uint ContextSize { get; init; }
+    public int GpuLayerCount { get; init; }
+    public bool NoKqvOffload { get; init; }
+    public bool? OpOffload { get; init; }
+    public int Threads { get; init; }
+    public int BatchThreads { get; init; }
+    public uint BatchSize { get; init; }
+    public uint UBatchSize { get; init; }
+    public bool Embeddings { get; init; }
+    public LLamaPoolingType PoolingType { get; init; } = LLamaPoolingType.Unspecified;
+}
+
+/// <summary>Managed inference policy; constructing it never initializes a native backend.</summary>
+public sealed record NativeGenerationOptions(int MaxTokens, string Grammar, uint Seed, float Temperature, ContextOverflowStrategy OverflowStrategy);
+
+/// <summary>Thin LLamaSharp implementation of the native boundary; no model selection or fallback.</summary>
+public sealed class LlamaNativeModel : INativeModel
+{
+    private readonly LLamaWeights weights;
+    private readonly ModelParams parameters;
+    private LLamaEmbedder? embedder;
+
+    private LlamaNativeModel(LLamaWeights weights, ModelParams parameters)
+    {
+        this.weights = weights;
+        this.parameters = parameters;
+    }
+
+    public IReadOnlyDictionary<string, string> Metadata => weights.Metadata;
+    public ulong SizeInBytes => weights.SizeInBytes;
+    public int EmbeddingSize => weights.EmbeddingSize;
+
+    public static async Task<INativeModel> LoadAsync(NativeContextOptions options, CancellationToken cancellationToken)
+    {
+        NativeCpu.Probe();
+        var parameters = new ModelParams(options.ModelPath)
+        {
+            ContextSize = options.ContextSize, GpuLayerCount = options.GpuLayerCount,
+            NoKqvOffload = options.NoKqvOffload, OpOffload = options.OpOffload,
+            Threads = options.Threads, BatchThreads = options.BatchThreads, BatchSize = options.BatchSize,
+            UBatchSize = options.UBatchSize, Embeddings = options.Embeddings, PoolingType = options.PoolingType
+        };
+        return new LlamaNativeModel(await LLamaWeights.LoadFromFileAsync(parameters, cancellationToken), parameters);
+    }
+
+    public int CountTokens(string text, bool addSpecial, bool parseSpecial, Encoding encoding) =>
+        weights.Tokenize(text, addSpecial, parseSpecial, encoding).Length;
+
+    public async IAsyncEnumerable<string> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions settings,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var sampling = new DefaultSamplingPipeline
+        {
+            Seed = settings.Seed, Temperature = settings.Temperature, Grammar = new Grammar(settings.Grammar, "root")
+        };
+        var inference = new InferenceParams
+        {
+            MaxTokens = settings.MaxTokens, SamplingPipeline = sampling, OverflowStrategy = settings.OverflowStrategy
+        };
+        var executor = new StatelessExecutor(weights, parameters) { ApplyTemplate = false };
+        await foreach (var piece in executor.InferAsync(prompt, inference, cancellationToken))
+        {
+            yield return piece;
+        }
+    }
+
+    public void InitializeEmbedding(NativeContextOptions context) => embedder = new LLamaEmbedder(weights, parameters);
+
+    public Task<IReadOnlyList<float[]>> EmbedAsync(string input, CancellationToken cancellationToken) =>
+        (embedder ?? throw new InvalidOperationException("Embedding context has not been initialized.")).GetEmbeddings(input, cancellationToken);
+
+    public void Dispose()
+    {
+        embedder?.Dispose();
+        weights.Dispose();
+    }
+}
