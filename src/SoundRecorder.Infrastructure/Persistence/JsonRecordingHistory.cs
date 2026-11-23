@@ -108,19 +108,26 @@ public sealed class JsonRecordingHistory : IRecordingHistory
         if (existing is not null)
         {
             EnsureSameOutputPair(existing, outputs);
-            if (existing.Language is not null || outputs.Language is null) return false;
-            history[index] = recording with
-            {
-                TranscriptOutputs = recording.TranscriptOutputs.Select(item => item.JobId == outputs.JobId
-                    ? item with { Language = outputs.Language } : item).ToArray()
-            };
-            return true;
+            return RetainAttemptLanguage(history, index, existing, outputs);
         }
 
         EnsurePublicationAvailable(recording);
         history[index] = recording with
         {
             TranscriptOutputs = [.. recording.TranscriptOutputs, outputs],
+        };
+        return true;
+    }
+
+    private static bool RetainAttemptLanguage(List<SavedRecording> history, int index,
+        OwnedTranscriptOutputs existing, OwnedTranscriptOutputs outputs)
+    {
+        if (existing.Language is not null || outputs.Language is null) return false;
+        var recording = history[index];
+        history[index] = recording with
+        {
+            TranscriptOutputs = recording.TranscriptOutputs.Select(item => item.JobId == outputs.JobId
+                ? item with { Language = outputs.Language } : item).ToArray()
         };
         return true;
     }

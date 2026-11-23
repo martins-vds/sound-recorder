@@ -888,11 +888,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RetryRecordingCoreAsync(SavedRecording? recording)
     {
-        if (!await WaitForPendingModelSelectionAsync())
+        if (!await CanRetryAfterModelSelectionAsync())
         {
             return;
         }
-        if (_closingView) return;
         if (recording is null)
         {
             Message = "Select a recording or job to transcribe again.";
@@ -913,8 +912,11 @@ public sealed partial class MainViewModel : ObservableObject
         RefreshJobs();
     }
 
-    private async Task<bool> WaitForPendingModelSelectionAsync() =>
-        _modelSelection is not { IsCompleted: false } selection || await selection;
+    private async Task<bool> CanRetryAfterModelSelectionAsync()
+    {
+        var selected = _modelSelection is not { IsCompleted: false } selection || await selection;
+        return selected && !_closingView;
+    }
 
     private async Task EnqueueAfterSelectionAsync(SavedRecording recording, Task<bool> selection)
     {

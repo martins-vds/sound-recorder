@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <ReqnrollUseIntermediateOutputPathForCodeBehind>true</ReqnrollUseIntermediateOutputPathForCodeBehind>
+    <PlatformTarget Condition="'$(NETCoreSdkRuntimeIdentifier)' == 'win-arm64'">ARM64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>

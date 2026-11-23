@@ -45,18 +45,7 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
             var run = Path.Combine(artifactDirectory, request.AttemptId.ToString("N"), Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(run);
             var snapshot = Path.Combine(run, "source.txt");
-            var subtitleSnapshot = Path.ChangeExtension(snapshot, ".srt");
-            await using (var subtitles = File.Open(request.Outputs.SubtitlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            await using (var source = File.Open(request.Outputs.TextPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            await using (var destination = File.Create(snapshot))
-            {
-                await source.CopyToAsync(destination, token);
-                await using var subtitleDestination = File.Create(subtitleSnapshot);
-                await subtitles.CopyToAsync(subtitleDestination, token);
-            }
-            foreach (var _ in SavedTranscriptSources.Read(snapshot, subtitleSnapshot, token)) { }
-            var hash = await PairHashAsync(snapshot, subtitleSnapshot, token);
-            var identity = new TranscriptIdentity(request.AttemptId.ToString("N"), hash);
+            var identity = await SnapshotAsync(request, snapshot, token);
             progress.Report("Verifying and loading cached Phi-mini (no downloads)");
             if (generation is null) NativeCpu.Probe();
             using var nativeGeneration = generation is null
@@ -64,21 +53,7 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
             var backend = generation ?? nativeGeneration!;
             var probe = new GenerationProbe(backend);
             var ledgerPath = Path.Combine(run, "claims.sqlite");
-            AnalysisResult outcome;
-            if (request.Question is { } question)
-            {
-                progress.Report("Retrieving original excerpts with the cached embedding model");
-                var matches = await RetrieveAsync(question, snapshot, token);
-                progress.Report("Generating an UNVERIFIED answer candidate from retrieved excerpts");
-                outcome = await probe.AnswerAsync(identity, Inputs(matches, token),
-                    ledgerPath, question, language, TimeSpan.FromMinutes(3), token);
-            }
-            else
-            {
-                progress.Report("Generating UNVERIFIED summary candidates from original excerpts");
-                outcome = await probe.SummarizeAsync(identity, Inputs(snapshot, token), ledgerPath,
-                    language, TimeSpan.FromMinutes(5), token);
-            }
+            var outcome = await GenerateAsync(request, snapshot, identity, probe, ledgerPath, language, progress, token);
             token.ThrowIfCancellationRequested();
             progress.Report("Resolving exact original evidence");
             var result = Present(outcome);
@@ -89,6 +64,40 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
         }
 
         finally { InferenceGate.Release(); }
+    }
+
+    private static async Task<TranscriptIdentity> SnapshotAsync(TranscriptAnalysisRequest request,
+        string snapshot, CancellationToken token)
+    {
+        var subtitleSnapshot = Path.ChangeExtension(snapshot, ".srt");
+        await using (var subtitles = File.Open(request.Outputs.SubtitlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        await using (var source = File.Open(request.Outputs.TextPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        await using (var destination = File.Create(snapshot))
+        {
+            await source.CopyToAsync(destination, token);
+            await using var subtitleDestination = File.Create(subtitleSnapshot);
+            await subtitles.CopyToAsync(subtitleDestination, token);
+        }
+        foreach (var _ in SavedTranscriptSources.Read(snapshot, subtitleSnapshot, token)) { }
+        var hash = await PairHashAsync(snapshot, subtitleSnapshot, token);
+        return new(request.AttemptId.ToString("N"), hash);
+    }
+
+    private async Task<AnalysisResult> GenerateAsync(TranscriptAnalysisRequest request, string snapshot,
+        TranscriptIdentity identity, GenerationProbe probe, string ledgerPath, string language,
+        IProgress<string> progress, CancellationToken token)
+    {
+        if (request.Question is { } question)
+        {
+            progress.Report("Retrieving original excerpts with the cached embedding model");
+            var matches = await RetrieveAsync(question, snapshot, token);
+            progress.Report("Generating an UNVERIFIED answer candidate from retrieved excerpts");
+            return await probe.AnswerAsync(identity, Inputs(matches, token),
+                ledgerPath, question, language, TimeSpan.FromMinutes(3), token);
+        }
+        progress.Report("Generating UNVERIFIED summary candidates from original excerpts");
+        return await probe.SummarizeAsync(identity, Inputs(snapshot, token), ledgerPath,
+            language, TimeSpan.FromMinutes(5), token);
     }
 
     private static async Task<string> PairHashAsync(string text, string subtitles, CancellationToken token)

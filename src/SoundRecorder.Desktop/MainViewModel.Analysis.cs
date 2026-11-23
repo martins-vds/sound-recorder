@@ -160,8 +160,9 @@ public sealed partial class MainViewModel
             return null;
         var job = FindAnalysisJob(recording.Id, attempt);
         var pair = FindAnalysisOutputs(recording, attempt, job);
-        var language = recording.TranscriptOutputs.FirstOrDefault(item => item.JobId == attempt)?.Language ?? job?.Language;
-        return pair is null || language is not ("English" or "Brazilian Portuguese") ? null :
+        var retainedLanguage = RetainedAttemptLanguage(recording, attempt, job);
+        var language = Languages.FirstOrDefault(choice => choice == retainedLanguage);
+        return pair is null || language is null ? null :
             new(attempt, pair, language, null);
     }
 
@@ -171,6 +172,9 @@ public sealed partial class MainViewModel
 
     private static TranscriptOutputs? FindAnalysisOutputs(SavedRecording recording, Guid attempt, TranscriptionJob? job) =>
         recording.TranscriptOutputs.FirstOrDefault(item => item.JobId == attempt)?.Outputs ?? job?.Outputs;
+
+    private static string? RetainedAttemptLanguage(SavedRecording recording, Guid attempt, TranscriptionJob? job) =>
+        recording.TranscriptOutputs.FirstOrDefault(item => item.JobId == attempt)?.Language ?? job?.Language;
 
     private void ResetTranscriptAnalysis()
     {
