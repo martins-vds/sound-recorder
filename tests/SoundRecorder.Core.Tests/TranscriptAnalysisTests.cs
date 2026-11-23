@@ -9,6 +9,147 @@ namespace SoundRecorder.Core.Tests;
 
 public sealed class TranscriptAnalysisTests
 {
+    [Theory]
+    [InlineData(true, 20)]
+    [InlineData(false, 513)]
+    public async Task AnalyzeAsync_InvalidIdentityOrQuestion_RejectsBeforeCreatingPrivateCopies(bool missingIdentity,
+        int questionLength)
+    {
+        using var context = new DesktopTestContext();
+        var artifacts = Path.Combine(context.Directory, "analysis");
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", artifacts, backend);
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => adapter.AnalyzeAsync(
+            new(missingIdentity ? Guid.Empty : Guid.NewGuid(), new("missing.txt", "missing.srt"),
+                "English", new string('q', questionLength)), new Progress<string>(), default));
+
+        Assert.Contains("successful transcript", error.Message);
+        Assert.Contains("512", error.Message);
+        Assert.False(Directory.Exists(artifacts));
+        Assert.Empty(backend.Prompt);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_MaximumQuestionLength_RetainsTheQuestionAndReportsLimitedCoverage()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var backend = new CandidateBackend();
+        var question = new string('q', 512);
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend,
+            new EmbeddingBackend { TokenCount = 10 });
+
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", question),
+            new Progress<string>(), default);
+
+        Assert.Contains(question, backend.Prompt);
+        Assert.Contains("Retrieval-limited", result.Detail);
+        Assert.Contains("not exhaustive", result.Detail);
+        Assert.Contains("absence of an answer", result.Detail);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_QualifiedUnassignedAction_PreservesVisibleQualificationsAndAbsence()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2),
+                "Review the archived forms. No owner or deadline was stated; the report is unverified.")]), default);
+        var response = """
+            {"claims":[{"kind":"Action","statement":"Review archived forms","owner":{"state":"Absent","value":null},
+            "deadline":{"state":"Absent","value":null},"qualifiers":["unverified report"],"references":[0]}],"limitation":null}
+            """;
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend(response: response));
+
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", null),
+            new Progress<string>(), default);
+
+        var claim = Assert.Single(result.Claims);
+        Assert.Contains("Owner: not stated", claim.Text);
+        Assert.Contains("Deadline: not stated", claim.Text);
+        Assert.Contains("Qualifications: unverified report", claim.Text);
+        Assert.Equal("[00:00:00.000] Review the archived forms. No owner or deadline was stated; the report is unverified.",
+            Assert.Single(claim.Evidence).Text);
+        Assert.DoesNotContain("Retrieval-limited", result.Detail ?? "");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_CancelledBeforeStarting_DoesNotCreatePrivateSourcesOrCallInference()
+    {
+        using var context = new DesktopTestContext();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var artifacts = Path.Combine(context.Directory, "analysis");
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", artifacts, backend);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), new("missing.txt", "missing.srt"), "English", null),
+            new Progress<string>(), cancellation.Token));
+
+        Assert.False(Directory.Exists(artifacts));
+        Assert.Empty(backend.Prompt);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ExistingCacheMissingPhi_ReportsExactMissingModelWithoutDownloading()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Review the draft.")]), default);
+        var models = Path.Combine(context.Directory, "empty-model-cache");
+        Directory.CreateDirectory(models);
+        var adapter = new LocalTranscriptAnalysis(models, Path.Combine(context.Directory, "analysis"));
+
+        var error = await Assert.ThrowsAsync<FileNotFoundException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default));
+
+        Assert.Contains("Phi-4-mini-instruct-Q4_K_M.gguf", error.Message);
+        Assert.Empty(Directory.GetFiles(models));
+        Assert.True(File.Exists(outputs.TextPath));
+        Assert.True(File.Exists(outputs.SubtitlePath));
+    }
+
+    [Theory]
+    [InlineData(200, false)]
+    [InlineData(201, true)]
+    public async Task AnalyzeAsync_DisplayLimit_RetainsAllRecordsAndWarnsOnlyWhenCandidatesAreHidden(
+        int total, bool truncated)
+    {
+        using var context = new DesktopTestContext();
+        var segments = Enumerable.Range(0, 52).Select(index => new TranscriptSegment(
+            TimeSpan.FromMilliseconds(index * 10), TimeSpan.FromMilliseconds(index * 10 + 5),
+            "Synthetic source for candidate presentation.")).ToArray();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            segments), default);
+        var emitted = 0;
+        var backend = new CandidateBackend(generate: _ =>
+        {
+            var count = Math.Min(16, total - emitted);
+            var claims = Enumerable.Range(emitted, count).Select(index => new
+            {
+                kind = "Topic", statement = $"Candidate {index}",
+                owner = new { state = "Absent", value = (string?)null },
+                deadline = new { state = "Absent", value = (string?)null },
+                qualifiers = Array.Empty<string>(), references = new[] { 0 }
+            }).ToArray();
+            emitted += count;
+            return System.Text.Json.JsonSerializer.Serialize(new { claims, limitation = (string?)null });
+        });
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", null),
+            new Progress<string>(), default);
+
+        Assert.Equal(200, result.Claims.Count);
+        Assert.Equal(truncated, result.Detail?.Contains("Display limited to 200") == true);
+        using var ledger = ClaimLedger.Open(result.LedgerPath);
+        Assert.Equal(total, ledger.ReadClaims().Count());
+        Assert.Contains("Candidate 199", result.Claims[^1].Text);
+    }
+
     [Fact]
     public async Task LoadAsync_RegisteredLegacyOutput_DoesNotRewriteHistoryDuringReview()
     {
@@ -535,7 +676,8 @@ public sealed class TranscriptAnalysisTests
         Assert.Equal(attempt.ToString("N"), ledger.ReadRun().Identity.SuccessfulTranscriptionAttemptId);
     }
 
-    private sealed class CandidateBackend(GenerationFinish finish = GenerationFinish.Completed, int reference = 0) : IGenerationBackend
+    private sealed class CandidateBackend(GenerationFinish finish = GenerationFinish.Completed, int reference = 0,
+        string? response = null, Func<string, string>? generate = null) : IGenerationBackend
     {
         public string Prompt { get; private set; } = "";
         public string RenderPrompt(string instruction, string input) => input;
@@ -543,7 +685,7 @@ public sealed class TranscriptAnalysisTests
         public Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
         {
             Prompt = prompt;
-            return Task.FromResult(new GenerationResult("""
+            return Task.FromResult(new GenerationResult(generate?.Invoke(prompt) ?? response ?? """
                 {"claims":[{"kind":"Action","statement":"Ana will send the draft","owner":{"state":"Stated","value":"Ana"},"deadline":{"state":"Stated","value":"Friday"},"qualifiers":[],"references":[0]}],"limitation":null}
                 """.Replace("\"references\":[0]", $"\"references\":[{reference}]"), finish, 60));
         }
@@ -595,7 +737,9 @@ public sealed class TranscriptAnalysisTests
     private sealed class EmbeddingBackend : IEmbeddingBackend
     {
         public List<string> Inputs { get; } = [];
-        public int CountTokens(string input) => new System.Text.UTF8Encoding(false, true).GetByteCount(input) * 2;
+        public int? TokenCount { get; init; }
+        public int CountTokens(string input) => TokenCount ??
+            new System.Text.UTF8Encoding(false, true).GetByteCount(input) * 2;
         public Task<float[]> EmbedAsync(string input, CancellationToken cancellationToken)
         {
             Inputs.Add(input);

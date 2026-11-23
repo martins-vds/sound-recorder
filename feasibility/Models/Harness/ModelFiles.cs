@@ -44,7 +44,8 @@ public static class ModelFiles
             var path = Path.Combine(directory, file.Name);
             if (!File.Exists(path))
             {
-                throw new FileNotFoundException("The explicitly approved local model file is not installed.", file.Name);
+                throw new FileNotFoundException(
+                    $"The explicitly approved local model file is not installed: {file.Name}.", file.Name);
             }
             await using var stream = File.OpenRead(path);
             if (stream.Length != file.Bytes)
