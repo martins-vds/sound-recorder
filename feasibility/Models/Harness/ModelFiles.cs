@@ -16,6 +16,10 @@ public static class ModelFiles
     public static PinnedModelFile[] CandidateFiles()
         => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.candidate-profile.json"));
 
+    /// <summary>Reads only the separately approved issue #9 generation file; embedding remains unchanged.</summary>
+    public static PinnedModelFile[] Qwen3Files()
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.qwen3-candidate-profile.json"));
+
     /// <summary>Reads profile data through a replaceable local resource transport.</summary>
     public static PinnedModelFile[] CandidateFiles(Func<Stream?> openProfile)
     {

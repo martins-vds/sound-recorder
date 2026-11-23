@@ -10,6 +10,31 @@ namespace Models.Harness.Tests;
 
 public sealed class NativePolicyTests
 {
+    [Fact]
+    public async Task GenerateAsync_ExplicitQwen3Profile_UsesNonThinkingTemplateAndSampling()
+    {
+        var native = new NativeDouble { Architecture = "qwen3" };
+        string[]? verified = null;
+        Task VerifyQwen3(string _, IReadOnlyList<PinnedModelFile> files, CancellationToken __)
+        {
+            verified = files.Select(file => file.Name).ToArray();
+            return Task.CompletedTask;
+        }
+        using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, VerifyQwen3, qwen3: true);
+        var prompt = generation.RenderPrompt("Use evidence.", "ação");
+        Assert.Equal("<|im_start|>system\nUse evidence. /no_think<|im_end|>\n<|im_start|>user\nação<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", prompt);
+        Assert.Equal("firstsecond", await generation.GenerateAsync(prompt, 8, CancellationToken.None));
+        Assert.NotNull(verified);
+        Assert.Equal(["Qwen3-8B-Q4_K_M.gguf"], verified);
+        Assert.Equal(prompt, native.Prompt);
+        Assert.Equal(0.7f, native.Inference!.Temperature);
+        Assert.Equal(0.8f, native.Inference.TopP);
+        Assert.Equal(20, native.Inference.TopK);
+        Assert.Equal(0f, native.Inference.MinP);
+        Assert.Equal(1.5f, native.Inference.PresencePenalty);
+        Assert.Equal(4096u, native.Parameters!.ContextSize);
+    }
+
     [Theory]
     [InlineData("generation")]
     [InlineData("embedding")]
@@ -31,14 +56,16 @@ public sealed class NativePolicyTests
     }
 
     [Theory]
-    [InlineData("generation", "bert", 768)]
-    [InlineData("embedding", "qwen2", 768)]
-    [InlineData("embedding", "nomic-bert-moe", 384)]
-    public async Task LoadAsync_IncompatibleNativeModel_DisposesWithoutInference(string role, string architecture, int dimensions)
+    [InlineData("generation", "bert", 768, false)]
+    [InlineData("generation", "qwen3", 768, false)]
+    [InlineData("generation", "qwen2", 768, true)]
+    [InlineData("embedding", "qwen2", 768, false)]
+    [InlineData("embedding", "nomic-bert-moe", 384, false)]
+    public async Task LoadAsync_IncompatibleNativeModel_DisposesWithoutInference(string role, string architecture, int dimensions, bool qwen3)
     {
         var native = new NativeDouble { Architecture = architecture, EmbeddingSize = dimensions };
         var error = role == "generation"
-            ? await Assert.ThrowsAsync<InvalidDataException>(() => LlamaGeneration.LoadAsync("cache", native.Load, Verify(role)))
+            ? await Assert.ThrowsAsync<InvalidDataException>(() => LlamaGeneration.LoadAsync("cache", native.Load, Verify(role), qwen3: qwen3))
             : await Assert.ThrowsAsync<InvalidDataException>(() => LlamaEmbedding.LoadAsync("cache", native.Load, Verify(role)));
         Assert.False(string.IsNullOrWhiteSpace(error.Message));
         Assert.True(native.Disposed);

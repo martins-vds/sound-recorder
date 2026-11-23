@@ -1,0 +1,45 @@
+{
+  "profileId": "sr-model-qwen3-nonthinking-v1",
+  "status": "Issue #9 exact alternate approved for one bounded comparison; not final selection",
+  "generationRepository": "Qwen/Qwen3-8B-GGUF",
+  "generationRevision": "7c41481f57cb95916b40956ab2f0b139b296d974",
+  "license": "Apache-2.0",
+  "downloadBytes": 5027783488,
+  "embeddingProfile": "candidate-profile.json; unchanged approved Nomic v2-MoE Q8_0",
+  "runtimeProfile": {
+    "library": "LLamaSharp 0.30.0 / LLamaSharp.Backend.Cpu 0.30.0",
+    "llamaCppRevision": "815a2a5915f22ce6a760c676389c5dfe8535c08f",
+    "architecture": "qwen3",
+    "threads": 4,
+    "gpuLayers": 0,
+    "generationContextTokens": 4096,
+    "generationBatchAndUBatch": 128,
+    "outputTokens": 768,
+    "historyTokens": 0,
+    "template": "ChatML; /no_think in system; assistant prefix <think> LF LF </think> LF LF from official enable_thinking=false template",
+    "samplingSeed": 42,
+    "temperature": 0.7,
+    "topP": 0.8,
+    "topK": 20,
+    "minP": 0,
+    "presencePenalty": 1.5,
+    "penaltyCount": 64,
+    "repeatPenalty": 1,
+    "frequencyPenalty": 0,
+    "typicalP": 1,
+    "minKeep": 1,
+    "grammarOptimization": "Extended, LLamaSharp default",
+    "samplingDifference": "Qwen2.5 baseline temperature 0 greedy; alternate uses official quantized non-thinking settings",
+    "generationGrammar": "unchanged candidate-json-gbnf-v1; no semantic-support guarantee",
+    "officialCard": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/7c41481f57cb95916b40956ab2f0b139b296d974/README.md"
+  },
+  "files": [
+    {
+      "role": "generation",
+      "name": "Qwen3-8B-Q4_K_M.gguf",
+      "bytes": 5027783488,
+      "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+      "url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf"
+    }
+  ]
+}
