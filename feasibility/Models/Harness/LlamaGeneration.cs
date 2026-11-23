@@ -8,6 +8,13 @@ namespace Models.Harness;
 /// <summary>Generation-only LLamaSharp CPU adapter; files must already be approved and installed locally.</summary>
 public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 {
+    private const string CandidateGrammar = """
+        root ::= "{" ws "\"claims\"" ws ":" ws "[" ws (claim (ws "," ws claim)*)? ws "]" ws "," ws "\"limitation\"" ws ":" ws (string | "null") ws "}" ws
+        claim ::= "{" ws "\"text\"" ws ":" ws string ws "," ws "\"evidenceIds\"" ws ":" ws "[" ws id (ws "," ws id)* ws "]" ws "}"
+        id ::= "\"s" [0-9] [0-9] [0-9] [0-9] [0-9] [0-9] "\""
+        string ::= "\"" ([^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""
+        ws ::= [ \t\n\r]*
+        """;
     private readonly LLamaWeights weights;
     private readonly ModelParams parameters;
 
@@ -66,7 +73,10 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
             throw new InvalidDataException("Native generation context budget exceeded; no truncation.");
         }
         var executor = new StatelessExecutor(weights, parameters) { ApplyTemplate = false };
-        using var sampling = new DefaultSamplingPipeline { Seed = 42, Temperature = 0 };
+        using var sampling = new DefaultSamplingPipeline
+        {
+            Seed = 42, Temperature = 0, Grammar = new Grammar(CandidateGrammar, "root")
+        };
         var inference = new InferenceParams
         {
             MaxTokens = outputTokens, SamplingPipeline = sampling,

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "isRoot": false,
+  "tools": {
+    "microsoft.crap4csharp": {
+      "version": "1.1.0",
+      "commands": ["crap4csharp"],
+      "rollForward": true
+    }
+  }
+}

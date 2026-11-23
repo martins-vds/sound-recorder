@@ -1,5 +1,9 @@
 # Issue #4 model-free baseline evidence
 
+This is the historical model-free handoff at `a94cd88`, before the user's exact
+file/size approval. The authorized follow-up supersedes its download/tooling
+status; no earlier unexecuted result is retroactively treated as a pass.
+
 **Issue #4 remains incomplete.** This handoff enables a same-ticket follow-up
 after exact model download/import approval. It is not model selection, bilingual
 grounding evidence, production implementation or release acceptance.

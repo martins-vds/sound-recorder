@@ -50,4 +50,13 @@ public sealed class ModelFilesTests
         await ModelFiles.VerifyAsync(directory, [new("fixture", "pt-BR.seed.json", length,
             "26914d9e2017f2cdf92ab9fea50b747752c8d941b1a7e031ac2fec0236e7edd2", "unused")]);
     }
+
+    [Fact]
+    public async Task VerifyAsync_AlreadyCancelled_DoesNotStartFileInspection()
+    {
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ModelFiles.VerifyAsync(AppContext.BaseDirectory,
+            [new("generation", "not-downloaded.gguf", 100, new string('a', 64), "unused")], cancelled.Token));
+    }
 }

@@ -1,13 +1,13 @@
 # Issue #4: bilingual in-process model feasibility
 
-**Status: model-free baseline delivered; issue #4 is NOT complete.**
-No generation/embedding weights have been downloaded or run. The proposed
-profile is not an approved library/model choice or supported resource profile.
+**Status: exact files approved for local evaluation; issue #4 is NOT complete.**
+The user approved the three pinned files on 2026-11-22. This approval does not
+select a production library/model or establish a supported resource profile.
 All work is isolated here; no application, solution or product feature changes.
 
-## Exact download approval request
+## Approved exact model inventory
 
-Approve **only the three files** in [candidate-profile.json](candidate-profile.json),
+Approval covers **only the three files** in [candidate-profile.json](candidate-profile.json),
 with its exact revision-qualified URLs, byte counts and SHA-256 values:
 
 | Role | Publisher / revision | File | Bytes |
@@ -17,10 +17,14 @@ with its exact revision-qualified URLs, byte counts and SHA-256 values:
 | Embedding, Q8_0 | Nomic / `ffbcf4c99e5d617dda10ec8c0e9f75754b0cbb80` | `nomic-embed-text-v2-moe.Q8_0.gguf` | 512,225,120 |
 
 **Total download/installed file bytes: 5,195,298,752.**
-Proposed local location:
-`C:\Repos\sound-recorder-feasibility-4\feasibility\Models\weights`.
+Set `SR_APPROVED_MODEL_DIRECTORY` to the approved shared cache outside the
+worktree. The environment variable is a local run instruction; no per-machine
+cache path is committed in the model profile.
 Staging, caches and results need additional disk; file bytes are not a RAM budget.
-No downloader, automatic startup fetch, model update or telemetry is implemented.
+The explicit operational `DownloadApprovedModels.ps1 -Cache <approved-cache>`
+command verifies size/SHA-256 and resumes only those files, with an owned lock
+at the absolute cache path. No automatic startup fetch, model update or telemetry
+is implemented.
 Do not interpret a test command, profile JSON or upstream quickstart as download
 authorization. Approval or an explicitly approved exact local import is required
 before model runs.
@@ -61,9 +65,11 @@ The restored CPU package contains PE `AA64` DLLs. A real model-free native probe
 loaded `llama.dll`, `ggml.dll`, `ggml-base.dll`, and `ggml-cpu.dll` from the test
 output's `runtimes\win-arm64\native` directory in an **ARM64 process on ARM64
 Windows**, with `llama_supports_gpu_offload() == false`.
-This establishes the in-process ARM64 loader/API boundary. It does **not**
-establish that the proposed models load, compute correct vectors, fit RAM, or
-meet offline/capture/latency requirements. x64 execution is unmeasured.
+This establishes the in-process ARM64 loader/API boundary. By itself it does **not**
+establish that models load, compute correct vectors, fit RAM, or
+meet offline/capture/latency requirements. The subsequent approved ARM64
+model run is documented in `real-model-validation.md`; x64 real-model execution
+remains unmeasured.
 
 `NativeCpu` configures CUDA/Vulkan off and automatic backend fallback off before
 calling any LLamaSharp native API. Model parameters also set zero GPU layers,
@@ -80,7 +86,7 @@ loading still requires the approved run.
 | Concern | Initial experimental setting / constraint |
 |---|---|
 | Generation context | 4,096 tokens; no YaRN/extrapolation or context shifting |
-| Generation output | At most 512 non-EOG sampled tokens per call; truncated/malformed JSON fails explicitly |
+| Generation output | Baseline 512; authorized diagnostic runner uses at most 768 non-EOG sampled tokens per call; truncated/malformed JSON fails explicitly |
 | Prompt budget | Count the **actual final ChatML prompt**; prompt + output must be strictly below 4,096, leaving at least one spare token |
 | Discussion history | Zero in this harness. A future experimental history cap of 512 would come out of the prompt budget, not extend context; Q16/history poisoning is unmeasured |
 | Source/citation budget | Whatever remains after measured instructions, serialized identity, question, separators, special tokens and output reserve; no characters-to-tokens estimates |
@@ -127,8 +133,9 @@ dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-
 # Only the actual native model-free loader boundary.
 dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-restore --filter "type=NativeProbe"
 
-# Only AFTER exact file/size approval, download/import, and local integrity checks:
-$env:SR_APPROVED_MODEL_DIRECTORY = "C:\Repos\sound-recorder-feasibility-4\feasibility\Models\weights"
+# Configure SR_APPROVED_MODEL_DIRECTORY to the user-approved external cache first.
+# Only AFTER exact file/size approval; never run this at application startup:
+.\feasibility\Models\DownloadApprovedModels.ps1 -Cache $env:SR_APPROVED_MODEL_DIRECTORY
 dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-restore --filter "type=IntegrationTests"
 ```
 
@@ -144,8 +151,12 @@ as a way to implement the feature.
   generator without editing them. It reconstructs only each 20-excerpt minute
   case in memory and verifies its frozen original transcript SHA-256.
   Source text, accents, timestamps and exact successful-attempt identity remain
-  unchanged. Default JSON escaping protects prompt delimiters without rewriting
+  unchanged. Unicode-preserving, HTML-safe JSON escaping protects prompt delimiters without rewriting
   source identity; tokenizer-internal processing is a separately pinned concern.
+- The native sampler constrains candidate JSON and short `sNNNNNN` citation
+  syntax with GBNF. Semantic support and source-ID existence still require
+  validation; generation cap exhaustion remains an explicit malformed-output
+  failure, never a repaired partial success.
 - Pairwise recursive synthesis retains original source references and supplies
   original excerpts alongside candidate text. Coverage tracks traversal, not
   proof that decisions survived or that a cited statement entails a claim.
@@ -172,7 +183,9 @@ counts, coverage trees, UTC/monotonic events and process-counter snapshots under
 ignored `runs\<run-id>`. These are private local traces, not issue attachments.
 Process working/private/lifetime peaks include native allocations but do not
 attribute them. Snapshots are not the #3 100 ms observer, ETW native attribution,
-phase-isolated peaks or first-usable-answer latency. The runner deliberately leaves
+phase-isolated peaks or first-usable-answer latency. The runner now also records
+nominal 100 ms **in-process** diagnostic samples and their actual timing gaps,
+not an independent observer. The runner deliberately leaves
 semantic scores null; a test pass only means structural execution, not rubric
 acceptance. Each language test reloads model weights in the same test process:
 neither a fresh application process nor OS-cache-cold is claimed.
@@ -196,4 +209,8 @@ All accessed on 2026-11-22; only public metadata/source text was fetched.
 - [Pinned native MoE implementation](https://github.com/ggml-org/llama.cpp/blob/815a2a5915f22ce6a760c676389c5dfe8535c08f/src/models/nomic-bert-moe.cpp),
   [split loader](https://github.com/ggml-org/llama.cpp/blob/815a2a5915f22ce6a760c676389c5dfe8535c08f/src/llama-model-loader.cpp).
 
-See [validation.md](validation.md) for actual results and remaining gates.
+See [validation.md](validation.md) for historical model-free results and
+[real-model-validation.md](real-model-validation.md) for observed native
+resources, bilingual successes/failures, tokenizer fingerprints and full criterion
+gaps. CRAP max 7 passes; mutation 42.931937172774866% fails. Raw traces stay local
+under ignored `runs`; #4 is not complete.
