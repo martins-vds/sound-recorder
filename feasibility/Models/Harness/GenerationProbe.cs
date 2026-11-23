@@ -39,9 +39,11 @@ public sealed class GenerationProbe(IGenerationBackend backend, int contextToken
         string question, string language, CancellationToken cancellationToken = default) =>
         ExecuteAsync(identity, JsonSerializer.Serialize(new { identity, question, excerpts }, PromptJsonOptions),
             excerpts.Select(e => e.Id).ToArray(),
-            $"Answer the question in {language} using only fresh supplied original excerpts. " +
-            "If evidence is insufficient, say so. Preserve disagreements, uncertainty and unstated owners/deadlines. " +
-            "A subset is not exhaustive whole-transcript coverage.", [], cancellationToken);
+            $"Answer the question in {language} using only fresh original excerpts. " +
+            "For an exhaustive question, include EVERY supported requested fact, not just the most salient facts. " +
+            "Keep decisions distinct from actions and discussion. Preserve every stated owner/deadline or explicit absence, " +
+            "both opposing reports/dates and their unresolved/unverified qualifier, and every numbered batch decision. " +
+            "If evidence or coverage is insufficient, say so. A subset is not exhaustive whole-transcript coverage.", [], cancellationToken);
 
     /// <summary>Traverses every supplied portion and reduces pairwise to one candidate root.</summary>
     public async Task<GenerationNode> MapReduceAsync(TranscriptIdentity identity,
@@ -75,13 +77,16 @@ public sealed class GenerationProbe(IGenerationBackend backend, int contextToken
                     excerpts = ids.Select(id => source[id])
                 }, PromptJsonOptions);
                 next.Add(await ExecuteAsync(identity, input, ids,
-                    $"Reduce candidate claims in {language}. Preserve explicit decisions, conflicts, action items, " +
-                    "and exact original evidence IDs. Deduplicate repetition without inventing owners/deadlines. " +
-                    "Original excerpts are evidence; candidate text is not authoritative.", pair, cancellationToken));
+                    $"Reduce candidate claims in {language} without losing ANY supported input fact or qualifier. " +
+                    "Keep every action with its owner/deadline or explicit unassigned/unstated fields. " +
+                    "Keep both sides of each disagreement and its unresolved/unverified status. A batch retention decision is a decision, not an action. " +
+                    "Deduplicate only equivalent repeated claims; union ALL their original evidence IDs. " +
+                    "Do not trade coverage for a short overview. Original excerpts are evidence; generated text is not authoritative. " +
+                    "If complete preservation cannot fit, explicitly report incomplete output.", pair, cancellationToken));
             }
             level = next;
         }
-        return level.Single();
+        return level[0];
     }
 
     /// <summary>Extracts candidate claims from one bounded portion.</summary>
@@ -94,8 +99,10 @@ public sealed class GenerationProbe(IGenerationBackend backend, int contextToken
         }
         var input = JsonSerializer.Serialize(new { identity, excerpts }, PromptJsonOptions);
         return await ExecuteAsync(identity, input, excerpts.Select(e => e.Id).ToArray(),
-            $"Extract overview, topics, explicit decisions and action items in {language}. " +
-            "Preserve disagreements and uncertainty. Never infer owners/deadlines.", [], cancellationToken);
+            $"Extract all overview topics, explicit decisions, actions and reported statements in {language}. " +
+            "Use concise claims prefixed Topic:, Decision:, Action:, or Report: to preserve their kind. " +
+            "Preserve each stated owner/deadline or explicit absence; never infer one. Keep each numbered batch's retention as a Decision:. " +
+            "Keep both conflicting dates/counts and explicit unresolved/unverified qualifiers. Do not omit details for a shorter summary.", [], cancellationToken);
     }
 
     private async Task<GenerationNode> ExecuteAsync(TranscriptIdentity identity, string input, string[] ids,
@@ -118,6 +125,12 @@ public sealed class GenerationProbe(IGenerationBackend backend, int contextToken
         var output = JsonSerializer.Deserialize<CandidateOutput>(text, JsonOptions)
             ?? throw new InvalidDataException("The model returned no candidate output.");
         ValidateOutput(output, ids.ToHashSet(StringComparer.Ordinal));
+        var missingReferences = children.SelectMany(child => child.Output.Claims).SelectMany(claim => claim.EvidenceIds)
+            .Distinct(StringComparer.Ordinal).Except(output.Claims.SelectMany(claim => claim.EvidenceIds), StringComparer.Ordinal).ToArray();
+        if (missingReferences.Length != 0)
+        {
+            throw new InvalidDataException($"Reduction omitted input evidence references: {string.Join(", ", missingReferences)}.");
+        }
         return new GenerationNode(identity, output, ids, count, outputTokens, children);
     }
 
