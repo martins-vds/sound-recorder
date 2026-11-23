@@ -24,26 +24,31 @@ public sealed class RealModelTests
         }
         var fixture = EvaluationFixture.Minute(language);
         var qwen3 = Environment.GetEnvironmentVariable("SR_EVAL_PROFILE") == "qwen3";
-        using var boundedRun = new CancellationTokenSource(qwen3 ? TimeSpan.FromMinutes(20) : Timeout.InfiniteTimeSpan);
+        var phiMini = Environment.GetEnvironmentVariable("SR_EVAL_PROFILE") == "phi-mini";
+        using var boundedRun = new CancellationTokenSource(qwen3 || phiMini ? TimeSpan.FromMinutes(20) : Timeout.InfiniteTimeSpan);
         using var log = new RunLog(language);
+        using var deadline = boundedRun.Token.Register(() => log.Write("diagnostic-cancel-request", new { limitMinutes = 20 }));
         log.Write("start", new
         {
-            fixture.Identity, language, profile = qwen3 ? "sr-model-qwen3-nonthinking-v1" : "sr-model-candidate-v1", historyTokens = 0,
+            fixture.Identity, language, profile = phiMini ? "sr-model-phi4-mini-v1" : qwen3 ? "sr-model-qwen3-nonthinking-v1" : "sr-model-candidate-v1", historyTokens = 0,
             diagnosticPhase = Environment.GetEnvironmentVariable("SR_EVAL_PHASE") ?? "baseline",
             contextTokens = 4096, outputTokens = 768,
             processArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
             osArchitecture = RuntimeInformation.OSArchitecture.ToString(),
             framework = RuntimeInformation.FrameworkDescription,
             harnessAssemblySha256 = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(typeof(GenerationProbe).Assembly.Location))),
-            candidateFiles = qwen3 ? ModelFiles.Qwen3Files().Concat(ModelFiles.CandidateFiles().Where(f => f.Role == "embedding")) : ModelFiles.CandidateFiles(),
-            diagnosticLimitMinutes = qwen3 ? 20 : (int?)null,
+            candidateFiles = phiMini ? ModelFiles.PhiMiniFiles().Concat(ModelFiles.CandidateFiles().Where(f => f.Role == "embedding")) :
+                qwen3 ? ModelFiles.Qwen3Files().Concat(ModelFiles.CandidateFiles().Where(f => f.Role == "embedding")) : ModelFiles.CandidateFiles(),
+            diagnosticLimitMinutes = qwen3 || phiMini ? 20 : (int?)null,
             cancellationBoundary = "safe native boundary, not immediate abort"
         });
         try
         {
             using var embedding = await LlamaEmbedding.LoadAsync(directory, boundedRun.Token);
             log.Write("embedding-loaded", new { embedding.NativeModelBytes, embedding.Metadata });
-            using var generation = qwen3
+            using var generation = phiMini
+                ? await LlamaGeneration.LoadPhiMiniAsync(directory, boundedRun.Token)
+                : qwen3
                 ? await LlamaGeneration.LoadQwen3Async(directory, boundedRun.Token)
                 : await LlamaGeneration.LoadAsync(directory, boundedRun.Token);
             log.Write("generation-loaded", new { generation.NativeModelBytes, generation.Metadata });
@@ -131,9 +136,17 @@ public sealed class RealModelTests
         public async Task<string> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
         {
             log.Write("generation-call-start", new { prompt, promptTokens = CountTokens(prompt), outputTokens });
-            var text = await backend.GenerateAsync(prompt, outputTokens, cancellationToken);
-            log.Write("generation-call-end", new { text, backend.LastGeneratedTokens });
-            return text;
+            try
+            {
+                var text = await backend.GenerateAsync(prompt, outputTokens, cancellationToken);
+                log.Write("generation-call-end", new { text, backend.LastGeneratedTokens });
+                return text;
+            }
+            catch (Exception error)
+            {
+                log.Write("generation-call-failure", new { type = error.GetType().Name, error.Message, backend.LastGeneratedTokens });
+                throw;
+            }
         }
     }
 

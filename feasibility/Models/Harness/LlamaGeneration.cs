@@ -16,6 +16,7 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
     private readonly INativeModel weights;
     private readonly NativeContextOptions parameters;
     private readonly bool qwen3;
+    private readonly bool phiMini;
 
     /// <summary>Non-EOG sampled tokens yielded by the most recent call, including partial output on failure.</summary>
     public int LastGeneratedTokens { get; private set; }
@@ -24,11 +25,12 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
     /// <summary>Loaded GGUF metadata for freezing the actual tokenizer/configuration identity.</summary>
     public IReadOnlyDictionary<string, string> Metadata => weights.Metadata;
 
-    private LlamaGeneration(INativeModel weights, NativeContextOptions parameters, bool qwen3)
+    private LlamaGeneration(INativeModel weights, NativeContextOptions parameters, bool qwen3, bool phiMini)
     {
         this.weights = weights;
         this.parameters = parameters;
         this.qwen3 = qwen3;
+        this.phiMini = phiMini;
     }
 
     /// <summary>Checks every generation shard before loading the first shard.</summary>
@@ -39,6 +41,10 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
     public static Task<LlamaGeneration> LoadQwen3Async(string directory, CancellationToken cancellationToken = default)
         => LoadAsync(directory, LlamaNativeModel.LoadAsync, ModelFiles.VerifyAsync, cancellationToken, qwen3: true);
 
+    /// <summary>Explicitly loads the approved Phi-4-mini conversion, never another Phi model or a fallback.</summary>
+    public static Task<LlamaGeneration> LoadPhiMiniAsync(string directory, CancellationToken cancellationToken = default)
+        => LoadAsync(directory, LlamaNativeModel.LoadAsync, ModelFiles.VerifyAsync, cancellationToken, phiMini: true);
+
     /// <summary>Uses a replaceable native loader after the same pinned local-file verification.</summary>
     public static async Task<LlamaGeneration> LoadAsync(string directory, NativeModelLoader loader,
         CancellationToken cancellationToken = default)
@@ -46,9 +52,16 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 
     /// <summary>Tests native policy deterministically without replacing or downloading the approved model files.</summary>
     public static async Task<LlamaGeneration> LoadAsync(string directory, NativeModelLoader loader,
-        ModelFileVerifier verifier, CancellationToken cancellationToken = default, bool qwen3 = false)
+        ModelFileVerifier verifier, CancellationToken cancellationToken = default, bool qwen3 = false, bool phiMini = false)
     {
-        var files = (qwen3 ? ModelFiles.Qwen3Files() : ModelFiles.CandidateFiles()).Where(f => f.Role == "generation").ToArray();
+        var (profileFiles, architecture) = (qwen3, phiMini) switch
+        {
+            (false, false) => (ModelFiles.CandidateFiles(), "qwen2"),
+            (true, false) => (ModelFiles.Qwen3Files(), "qwen3"),
+            (false, true) => (ModelFiles.PhiMiniFiles(), "phi3"),
+            _ => throw new ArgumentException("Select one explicit generation profile, not both alternates.")
+        };
+        var files = profileFiles.Where(f => f.Role == "generation").ToArray();
         await verifier(directory, files, cancellationToken);
         var parameters = new NativeContextOptions(Path.Combine(directory, files[0].Name))
         {
@@ -58,12 +71,11 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
         var weights = await loader(parameters, cancellationToken);
         try
         {
-            var architecture = qwen3 ? "qwen3" : "qwen2";
             if (weights.Metadata["general.architecture"] != architecture)
             {
                 throw new InvalidDataException($"The pinned generation model is not {architecture}.");
             }
-            return new(weights, parameters, qwen3);
+            return new(weights, parameters, qwen3, phiMini);
         }
         catch
         {
@@ -74,6 +86,7 @@ public sealed class LlamaGeneration : IGenerationBackend, IDisposable
 
     /// <inheritdoc />
     public string RenderPrompt(string instruction, string input) =>
+        phiMini ? $"<|system|>{instruction}<|end|><|user|>{input}<|end|><|assistant|>" :
         $"<|im_start|>system\n{instruction}{(qwen3 ? " /no_think" : "")}<|im_end|>\n<|im_start|>user\n{input}<|im_end|>\n<|im_start|>assistant\n" +
         (qwen3 ? "<think>\n\n</think>\n\n" : "");
     /// <inheritdoc />

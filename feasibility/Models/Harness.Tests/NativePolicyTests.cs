@@ -11,6 +11,45 @@ namespace Models.Harness.Tests;
 public sealed class NativePolicyTests
 {
     [Fact]
+    public async Task LoadAsync_ConflictingAlternateProfiles_FailsBeforeVerificationOrLoad()
+    {
+        var native = new NativeDouble { Architecture = "phi3" };
+        var verified = false;
+        Task VerifyNeither(string _, IReadOnlyList<PinnedModelFile> __, CancellationToken ___)
+        {
+            verified = true;
+            return Task.CompletedTask;
+        }
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            LlamaGeneration.LoadAsync("cache", native.Load, VerifyNeither, qwen3: true, phiMini: true));
+        Assert.False(verified);
+        Assert.Null(native.Parameters);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_ExplicitPhiMiniProfile_UsesItsOwnTemplateAndGreedySampling()
+    {
+        var native = new NativeDouble { Architecture = "phi3" };
+        string[]? verified = null;
+        Task VerifyPhiMini(string _, IReadOnlyList<PinnedModelFile> files, CancellationToken __)
+        {
+            verified = files.Select(file => file.Name).ToArray();
+            return Task.CompletedTask;
+        }
+        using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, VerifyPhiMini, phiMini: true);
+        var prompt = generation.RenderPrompt("Use evidence.", "ação");
+        Assert.Equal("firstsecond", await generation.GenerateAsync(prompt, 8, CancellationToken.None));
+        Assert.Equal("<|system|>Use evidence.<|end|><|user|>ação<|end|><|assistant|>", native.Prompt);
+        Assert.NotNull(verified);
+        Assert.Equal(["Phi-4-mini-instruct-Q4_K_M.gguf"], verified);
+        Assert.Equal(0f, native.Inference!.Temperature);
+        Assert.Equal(0f, native.Inference.PresencePenalty);
+        Assert.Equal(ContextOverflowStrategy.ThrowException, native.Inference.OverflowStrategy);
+        Assert.Equal(4096u, native.Parameters!.ContextSize);
+        Assert.True(native.AddSpecial && native.ParseSpecial);
+    }
+
+    [Fact]
     public async Task GenerateAsync_ExplicitQwen3Profile_UsesNonThinkingTemplateAndSampling()
     {
         var native = new NativeDouble { Architecture = "qwen3" };
@@ -56,16 +95,18 @@ public sealed class NativePolicyTests
     }
 
     [Theory]
-    [InlineData("generation", "bert", 768, false)]
-    [InlineData("generation", "qwen3", 768, false)]
-    [InlineData("generation", "qwen2", 768, true)]
-    [InlineData("embedding", "qwen2", 768, false)]
-    [InlineData("embedding", "nomic-bert-moe", 384, false)]
-    public async Task LoadAsync_IncompatibleNativeModel_DisposesWithoutInference(string role, string architecture, int dimensions, bool qwen3)
+    [InlineData("generation", "bert", 768, false, false)]
+    [InlineData("generation", "qwen3", 768, false, false)]
+    [InlineData("generation", "qwen2", 768, true, false)]
+    [InlineData("generation", "qwen2", 768, false, true)]
+    [InlineData("generation", "phi4", 768, false, true)]
+    [InlineData("embedding", "qwen2", 768, false, false)]
+    [InlineData("embedding", "nomic-bert-moe", 384, false, false)]
+    public async Task LoadAsync_IncompatibleNativeModel_DisposesWithoutInference(string role, string architecture, int dimensions, bool qwen3, bool phiMini)
     {
         var native = new NativeDouble { Architecture = architecture, EmbeddingSize = dimensions };
         var error = role == "generation"
-            ? await Assert.ThrowsAsync<InvalidDataException>(() => LlamaGeneration.LoadAsync("cache", native.Load, Verify(role), qwen3: qwen3))
+            ? await Assert.ThrowsAsync<InvalidDataException>(() => LlamaGeneration.LoadAsync("cache", native.Load, Verify(role), qwen3: qwen3, phiMini: phiMini))
             : await Assert.ThrowsAsync<InvalidDataException>(() => LlamaEmbedding.LoadAsync("cache", native.Load, Verify(role)));
         Assert.False(string.IsNullOrWhiteSpace(error.Message));
         Assert.True(native.Disposed);
