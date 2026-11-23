@@ -150,6 +150,179 @@ public sealed class TranscriptAnalysisTests
         Assert.Contains("Candidate 199", result.Claims[^1].Text);
     }
 
+    [Theory]
+    [InlineData("empty", "empty or disagrees")]
+    [InlineData("extra text", "disagrees")]
+    [InlineData("missing timing", "timing is missing")]
+    [InlineData("invalid timing", "timing is invalid")]
+    [InlineData("invalid timestamp", "timestamp is invalid")]
+    [InlineData("empty cue", "contains no text")]
+    [InlineData("overlap", "overlap or are out of order")]
+    [InlineData("multiline mismatch", "line boundaries disagree")]
+    public async Task AnalyzeAsync_MalformedSavedSources_ReportsTheSpecificCauseBeforeInference(string corruption,
+        string reason)
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "First line.\nSecond line."),
+             new(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(4), "Next cue.")]), default);
+        var text = await File.ReadAllTextAsync(outputs.TextPath);
+        var subtitles = await File.ReadAllTextAsync(outputs.SubtitlePath);
+        switch (corruption)
+        {
+            case "empty": text = ""; subtitles = ""; break;
+            case "extra text": text += "Unattributed text."; break;
+            case "missing timing": subtitles = "1\n"; break;
+            case "invalid timing": subtitles = "1\ninvalid\nText\n\n"; break;
+            case "invalid timestamp":
+                subtitles = subtitles.Replace("00:00:02,000", "00:99:02,000");
+                break;
+            case "empty cue": subtitles = "1\n00:00:00,000 --> 00:00:02,000\n\n"; break;
+            case "overlap": subtitles = subtitles.Replace("00:00:03,000", "00:00:01,000"); break;
+            case "multiline mismatch": text = text.Replace("First line.\nSecond", "First line.Second"); break;
+        }
+        await File.WriteAllTextAsync(outputs.TextPath, text);
+        await File.WriteAllTextAsync(outputs.SubtitlePath, subtitles);
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default));
+
+        Assert.Contains(reason, error.Message);
+        Assert.Empty(backend.Prompt);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnalyzeAsync_InvalidUtf8_RejectsBytesInsteadOfReplacingSourceText(bool corruptSubtitles)
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Original text.")]), default);
+        await File.WriteAllBytesAsync(corruptSubtitles ? outputs.SubtitlePath : outputs.TextPath, [0xff]);
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+
+        await Assert.ThrowsAsync<System.Text.DecoderFallbackException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default));
+
+        Assert.Empty(backend.Prompt);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_FinalCueWithoutNewlineAndLeadingBlankLines_PreservesItsCompleteText()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Final original cue.")]), default);
+        var subtitles = await File.ReadAllTextAsync(outputs.SubtitlePath);
+        await File.WriteAllTextAsync(outputs.SubtitlePath, "\n\n" + subtitles.TrimEnd('\r', '\n'));
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend());
+
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", null),
+            new Progress<string>(), default);
+
+        Assert.Equal("[00:00:00.000] Final original cue.",
+            Assert.Single(Assert.Single(result.Claims).Evidence).Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnalyzeAsync_Progress_ReportsReadingLoadingGenerationAndEvidenceInOrder(bool question)
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var progress = new AnalysisProgress();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend(),
+            new EmbeddingBackend());
+
+        await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", question ? "Who sends the draft?" : null),
+            progress, default);
+
+        var expected = new List<string>
+        {
+            "Reading the exact saved transcript",
+            "Verifying and loading cached Phi-mini (no downloads)"
+        };
+        if (question)
+        {
+            expected.Add("Retrieving original excerpts with the cached embedding model");
+            expected.Add("Generating an UNVERIFIED answer candidate from retrieved excerpts");
+        }
+        else expected.Add("Generating UNVERIFIED summary candidates from original excerpts");
+        expected.Add("Resolving exact original evidence");
+        Assert.Equal(expected, progress.Phases);
+    }
+
+    [Theory]
+    [InlineData(65534, false)]
+    [InlineData(65535, true)]
+    public async Task AnalyzeAsync_SavedCueCapacity_PreservesItsBoundaryOrReportsAnExplicitLimit(int length,
+        bool exceedsCapacity)
+    {
+        using var context = new DesktopTestContext();
+        var body = new string('x', length);
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), body)]), default);
+        var backend = new CandidateBackend(generate: input =>
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(input);
+            var rangeCount = document.RootElement.GetProperty("excerpts").GetArrayLength();
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                claims = new[]
+                {
+                    new
+                    {
+                        kind = "Topic", statement = "Long original cue",
+                        owner = new { state = "Absent", value = (string?)null },
+                        deadline = new { state = "Absent", value = (string?)null },
+                        qualifiers = Array.Empty<string>(), references = Enumerable.Range(0, rangeCount).ToArray()
+                    }
+                },
+                limitation = (string?)null
+            });
+        });
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+        var request = new TranscriptAnalysisRequest(Guid.NewGuid(), outputs, "English", null);
+        if (exceedsCapacity)
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                adapter.AnalyzeAsync(request, new Progress<string>(), default));
+            Assert.Contains("cue exceeds the bounded reader capacity", error.Message);
+            Assert.Contains("no truncation", error.Message);
+            Assert.Empty(backend.Prompt);
+        }
+        else
+        {
+            var result = await adapter.AnalyzeAsync(request, new Progress<string>(), default);
+            Assert.Equal("Completed", result.Status);
+            Assert.Equal("[00:00:00.000] " + body,
+                string.Concat(Assert.Single(result.Claims).Evidence.Select(evidence => evidence.Text)));
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_MultipleLongLinesInOneCue_ReportsCumulativeCapacityBeforeInference()
+    {
+        using var context = new DesktopTestContext();
+        var body = string.Join("\n", Enumerable.Repeat(new string('x', 30000), 3));
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), body)]), default);
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => adapter.AnalyzeAsync(
+            new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default));
+
+        Assert.Contains("cue exceeds the bounded reader capacity", error.Message);
+        Assert.Empty(backend.Prompt);
+    }
+
     [Fact]
     public async Task LoadAsync_RegisteredLegacyOutput_DoesNotRewriteHistoryDuringReview()
     {
@@ -747,5 +920,11 @@ public sealed class TranscriptAnalysisTests
             vector[0] = 1;
             return Task.FromResult(vector);
         }
+    }
+
+    private sealed class AnalysisProgress : IProgress<string>
+    {
+        public List<string> Phases { get; } = [];
+        public void Report(string value) => Phases.Add(value);
     }
 }
