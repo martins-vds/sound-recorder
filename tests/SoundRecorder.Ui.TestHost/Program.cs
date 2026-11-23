@@ -13,6 +13,7 @@ using SoundRecorder.Infrastructure.Models;
 using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
+using SoundRecorder.Infrastructure.Analysis;
 
 namespace SoundRecorder.Ui.TestHost;
 
@@ -21,6 +22,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        var realAnalysis = args.Length == 2 && args[1] == "analysis real model";
+        if (realAnalysis) args[1] = "saved transcript";
         var searchable = args.Length == 2 && args[1] == "searchable meetings";
         var workspace = args.Length == 2 && args[1] == "meeting workspace";
         var mixedHistory = args.Length == 2 && args[1] == "workspace with mixed job history";
@@ -139,6 +142,12 @@ internal static class Program
                     models.ImportAsync(selectedPackage, CancellationToken.None).GetAwaiter().GetResult();
                 }
                 var document = FixtureTranscriber.Document(recording, playable);
+                if (realAnalysis)
+                {
+                    document = new TranscriptDocument(recording, "English",
+                        [new(TimeSpan.Zero, recording.CapturedDuration,
+                            "Ana will send the draft on Friday. The launch date has not been decided.")]);
+                }
                 if (longTranscript)
                 {
                     document = new TranscriptDocument(recording, recording.Language,
@@ -255,7 +264,10 @@ internal static class Program
             new RecoveryManager(new LocalRecoveryStorage(Path.Combine(root, "capture"))),
             new FixtureDevices(), NullLogger<MainViewModel>.Instance,
             library,
-            playback)
+            playback,
+            realAnalysis ? new LocalTranscriptAnalysis(
+                Environment.GetEnvironmentVariable("SOUNDRECORDER_ANALYSIS_MODELS") ?? "",
+                Path.Combine(root, "experimental-analysis")) : new FixtureTranscriptAnalysis())
         {
             DestinationFolder = root,
         };
@@ -299,6 +311,22 @@ internal static class Program
             JsonSerializer.Serialize(manifest, package);
         }
         return path;
+    }
+}
+
+internal sealed class FixtureTranscriptAnalysis : ILocalTranscriptAnalysis
+{
+    public async Task<TranscriptAnalysisResult> AnalyzeAsync(TranscriptAnalysisRequest request,
+        IProgress<string> progress, CancellationToken token)
+    {
+        progress.Report("Controlled UI fixture analysis — no real inference");
+        if (request.Question == "UI fixture wait") await Task.Delay(Timeout.Infinite, token);
+        if (request.Question == "UI fixture failure") throw new IOException("Controlled unavailable cache fixture.");
+        await Task.Delay(150, token);
+        var original = await File.ReadAllTextAsync(request.Outputs.TextPath, token);
+        return new("Completed", "UI fixture only — not model evidence.", "",
+            [new("UI fixture candidate — no real inference.",
+                [new($"{request.AttemptId:N} · original fixture", 0, original)])]);
     }
 }
 

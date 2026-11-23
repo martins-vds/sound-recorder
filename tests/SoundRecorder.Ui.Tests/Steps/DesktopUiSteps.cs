@@ -32,7 +32,8 @@ public sealed class DesktopUiSteps
     [Given("the isolated recorder UI is open with {string} fixtures")]
     public void OpenRecorder(string fixtures)
     {
-        _directory = Directory.CreateTempSubdirectory("sound-recorder-ui-");
+        _directory = Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory,
+            "artifacts", "ui-fixtures", Guid.NewGuid().ToString("N")));
         var executable = Path.Combine(AppContext.BaseDirectory, "UiHost", "SoundRecorder.Ui.TestHost.exe");
         _process = Process.Start(new ProcessStartInfo(executable)
         {
@@ -55,6 +56,59 @@ public sealed class DesktopUiSteps
     [Then("the recording status reads {string}")]
     public void RecordingStatus(string expected) =>
         WaitUntil(() => Element("StatusText").Name == expected, $"Expected recording status '{expected}'.");
+
+    [When("the user opens experimental local transcript analysis")]
+    public void OpenTranscriptAnalysis()
+    {
+        Element("TranscriptAnalysisExpander").Patterns.ExpandCollapse.Pattern.Expand();
+        CaptureLayout("analysis-open");
+    }
+
+    [When("the user types the analysis question {string}")]
+    public void TypeAnalysisQuestion(string question) => Element("AnalysisQuestionBox").AsTextBox().Text = question;
+
+    [Then("experimental analysis is busy")]
+    public void AnalysisBusy()
+    {
+        ButtonEnabled("Cancel analysis");
+        CaptureLayout("analysis-busy");
+    }
+
+    [Then("experimental analysis has no target")]
+    public void AnalysisNoTarget() => CaptureLayout("analysis-empty");
+
+    [Then("experimental analysis reports {string}")]
+    public void AnalysisReports(string state)
+    {
+        WaitUntil(() => Element("AnalysisStatusText").Name.Contains(state, StringComparison.Ordinal),
+            $"Expected experimental analysis state '{state}'.");
+        Assert.Empty(Element("AnalysisClaimsList").AsListBox().Items);
+        var scroll = Element("TranscriptScroll").Patterns.Scroll.Pattern;
+        if (scroll.VerticallyScrollable.Value) scroll.SetScrollPercent(-1, 60);
+        CaptureLayout("analysis-" + state.Replace(" ", "-", StringComparison.Ordinal));
+    }
+
+    [Then("the experimental analysis presents its exact fixture evidence")]
+    public void AnalysisFixtureEvidence()
+    {
+        WaitUntil(() => Element("AnalysisClaimsList").AsListBox().Items.Length == 1,
+            "An explicit analysis request did not return the controlled candidate.");
+        var evidence = Element("AnalysisEvidenceText").Patterns.Value.Pattern.Value.Value;
+        Assert.Contains("UI fixture transcript.", evidence);
+        Assert.Contains("UNVERIFIED", Element("AnalysisStatusText").Name);
+        var scroll = Element("TranscriptScroll").Patterns.Scroll.Pattern;
+        if (scroll.VerticallyScrollable.Value) scroll.SetScrollPercent(-1, 100);
+        CaptureLayout("analysis-evidence");
+        var previous = SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            var scale = GetDpiForWindow(new IntPtr(_window!.Properties.NativeWindowHandle.Value)) / 96d;
+            var height = Element("TranscriptScroll").BoundingRectangle.Height;
+            Assert.True(height >= 84 * scale,
+                $"Experimental analysis needs a readable reader viewport: height={height}, scale={scale}.");
+        }
+        finally { SetThreadDpiAwarenessContext(previous); }
+    }
 
     [Then("the library is to the left of the transcript reader")]
     public void LibraryBesideReader() =>
@@ -249,6 +303,19 @@ public sealed class DesktopUiSteps
     private static extern uint GetDpiForWindow(IntPtr window);
 
     [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetClientRect(IntPtr window, out ClientRectangle rectangle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ClientRectangle
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll", ExactSpelling = true)]
     private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
     [When("the user scrolls to model setup")]
@@ -295,6 +362,21 @@ public sealed class DesktopUiSteps
             var screenshots = Path.Combine(AppContext.BaseDirectory, "TestResults", "Layout");
             Directory.CreateDirectory(screenshots);
             _window!.CaptureToFile(Path.Combine(screenshots, $"{_size}-{section}.png"));
+            var handle = new IntPtr(_window.Properties.NativeWindowHandle.Value);
+            Assert.True(GetClientRect(handle, out var client));
+            var dpi = GetDpiForWindow(handle);
+            File.WriteAllText(Path.Combine(screenshots, $"{_size}-{section}.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    RequestedWindow = _size ?? "980x720 default",
+                    Dpi = dpi,
+                    WindowBounds = _window.BoundingRectangle.ToString(),
+                    ClientWidth = client.Right - client.Left,
+                    ClientHeight = client.Bottom - client.Top,
+                    LogicalClientWidth = (client.Right - client.Left) * 96d / dpi,
+                    LogicalClientHeight = (client.Bottom - client.Top) * 96d / dpi,
+                    Theme = "Observed native light theme; high contrast not exercised in this capture"
+                }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }
         finally
         {

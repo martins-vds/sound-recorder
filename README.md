@@ -24,6 +24,29 @@ The Core and native UI Gherkin files are executable and discoverable. Completed 
 
 Each new transcription job retains its model and language at enqueue; later selection changes affect only new jobs. During implementation, keep [the scoped visual-reference instructions](.github/instructions/approved-meeting-workspace.instructions.md) active and record repeated comparison evidence as required by the plan.
 
+## Experimental transcript analysis walking skeleton
+
+This is the narrowly authorized **manual-validation slice**, not the complete transcript-analysis product contract or release acceptance. Select a successful saved transcript and expand **Experimental local transcript analysis** below its text. Explicitly choose **Generate summary**, or enter a question and choose **Ask**. Select a candidate to inspect exact original saved text and any original start marker. All candidates remain **semantically UNVERIFIED**, including apparently valid citations. No unsupported statement is automatically repaired.
+
+Reuse an already approved cache containing `Phi-4-mini-instruct-Q4_K_M.gguf` and `nomic-embed-text-v2-moe.Q8_0.gguf`. Configure `SOUNDRECORDER_ANALYSIS_MODELS` before launch, or put the cache directory in `analysis-model-cache.txt` beside the executable. The environment variable takes precedence. The adapter verifies the pinned model hashes and runs locally; it never downloads weights or falls back to a cloud service.
+
+For bounded native ARM64 development validation on a machine with the ARM64 .NET 10 Windows Desktop runtime:
+
+```powershell
+.\scripts\publish-analysis-dev.ps1 -ModelDirectory C:\models\approved-analysis-cache
+& .\artifacts\walking-skeleton\app\SoundRecorder.Desktop.exe
+```
+
+The script also accepts `-RuntimeIdentifier win-x64`. This framework-dependent development launch does **not** change the Windows x64 shipping/installer declaration. Native Whisper loading is probed during real desktop startup without blocking capture prerequisites.
+
+Analysis cannot start during capture, queued/running transcription, or a pending transcription request. Starting capture cancels analysis and waits asynchronously for native release before capture starts; fresh permission requirements remain unchanged. While analysis is active, a new transcription request explains that analysis must first be cancelled and released, then explicitly retried. Cancellation is a safe-boundary request, not instantaneous native interruption. Changing the selected recording or successful attempt cancels old work, discards stale UI output, and never starts analysis on the new selection implicitly.
+
+This slice reuses the feasibility streamed claim ledger and embedding retrieval. Summary output is readable candidate observations, not a second model-written polished narrative. Questions use bounded top-three original-range retrieval, not whole-transcript coverage. Diagnostic generation deadlines are five minutes for summaries and three minutes for answers; these are development bounds, not approved product performance thresholds. The reader shows at most 200 candidates and states when this limit is reached.
+
+The request uses the successful attempt's saved language while its job metadata is available. If that metadata was removed with job history, it asks for the source text's language instead of inventing a historical language choice.
+
+Local run artifacts, including the selected TXT snapshot and diagnostic ledger, remain under `%LOCALAPPDATA%\SoundRecorder\experimental-analysis\<attempt-id>\<run-id>`. They may contain private transcript content. Automatic discussion restoration, analysis deletion integration, persistent retrieval indexes, resumability, long-running stress, and release certification are not implemented. Full-project CRAP/mutation gates and the complete visual/native acceptance matrix remain mandatory and must not be inferred from focused walking-skeleton tests.
+
 ## Build
 
 ```powershell

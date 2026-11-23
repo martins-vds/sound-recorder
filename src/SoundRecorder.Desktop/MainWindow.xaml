@@ -13,6 +13,14 @@
             </ResourceDictionary.MergedDictionaries>
             <BooleanToVisibilityConverter x:Key="VisibleWhen"/>
             <local:RecordingFileNameConverter x:Key="RecordingName"/>
+            <Style x:Key="AnalysisAwareReviewAction" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsTranscriptAnalysisExpanded}" Value="True">
+                        <Setter Property="MinHeight" Value="26"/>
+                        <Setter Property="Padding" Value="8,3"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
         </ResourceDictionary>
     </Window.Resources>
     <Grid>
@@ -80,24 +88,58 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <StackPanel Margin="0,0,0,18">
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Margin" Value="0,0,0,18"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsTranscriptAnalysisExpanded}" Value="True">
+                                            <Setter Property="Margin" Value="0,0,0,6"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
                             <TextBlock Text="{Binding SelectedRecordingTitle}" FontSize="24" FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding SelectedRecordingInformation}" Style="{StaticResource HelperText}" Margin="0,6,0,0"/>
-                            <WrapPanel Margin="0,16,0,0">
-                                <Button Content="Open output folder" Click="OpenOutputFolder_Click"/>
-                                <Button Content="Copy transcript" Click="CopyTranscript_Click" IsEnabled="{Binding CanCopyTranscript}"/>
+                            <WrapPanel>
+                                <WrapPanel.Style>
+                                    <Style TargetType="WrapPanel">
+                                        <Setter Property="Margin" Value="0,16,0,0"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsTranscriptAnalysisExpanded}" Value="True">
+                                                <Setter Property="Margin" Value="0,4,0,0"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </WrapPanel.Style>
+                                <Button Content="Open output folder" Click="OpenOutputFolder_Click" Style="{StaticResource AnalysisAwareReviewAction}"/>
+                                <Button Content="Copy transcript" Click="CopyTranscript_Click" IsEnabled="{Binding CanCopyTranscript}"
+                                        Style="{StaticResource AnalysisAwareReviewAction}"/>
                                 <Button Content="Transcribe again" Command="{Binding RetranscribeSelectedRecordingCommand}"
+                                        Style="{StaticResource AnalysisAwareReviewAction}"
                                         IsEnabled="{Binding CanRetranscribeSelectedRecording}"/>
                                 <Button x:Name="DeleteRecordingButton" Content="Delete recording..." Click="DeleteRecording_Click"
+                                        Style="{StaticResource AnalysisAwareReviewAction}"
                                         IsEnabled="{Binding CanDeleteRecording}"/>
                                 <Button Content="Retry deletion" Command="{Binding RetryRecordingDeletionCommand}"
+                                        Style="{StaticResource AnalysisAwareReviewAction}"
                                         IsEnabled="{Binding CanDeleteRecording}"
                                         Visibility="{Binding HasPendingDeletion, Converter={StaticResource VisibleWhen}}"/>
                             </WrapPanel>
                         </StackPanel>
-                        <Border Grid.Row="1" Padding="0,0,0,16"
+                        <Border Grid.Row="1"
                                 Visibility="{Binding HasPlayableRecording, Converter={StaticResource VisibleWhen}}"
                                 automation:AutomationProperties.Name="Recording playback">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Padding" Value="0,0,0,16"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsTranscriptAnalysisExpanded}" Value="True">
+                                            <Setter Property="Padding" Value="0,0,0,8"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <StackPanel>
                                 <TextBlock Text="Listen while you read" FontWeight="SemiBold" Margin="0,0,0,8"/>
                                 <DockPanel>
@@ -132,6 +174,53 @@
                                          AcceptsReturn="True" Background="Transparent"
                                          FontSize="15" VerticalAlignment="Top"
                                          automation:AutomationProperties.Name="Transcript text"/>
+                                <Expander x:Name="TranscriptAnalysisExpander" Header="Experimental local transcript analysis"
+                                          IsExpanded="{Binding IsTranscriptAnalysisExpanded, Mode=TwoWay}"
+                                          Margin="0,20,0,0"
+                                          automation:AutomationProperties.Name="Experimental local transcript analysis">
+                                    <StackPanel Margin="0,12,0,12">
+                                        <TextBlock Text="{Binding AnalysisWarning}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding AnalysisOwnership}" TextWrapping="Wrap"
+                                                   Style="{StaticResource HelperText}" Margin="0,8,0,12"/>
+                                        <Button Content="Generate summary" Command="{Binding GenerateSummaryCommand}"
+                                                HorizontalAlignment="Left"
+                                                automation:AutomationProperties.Name="Generate experimental summary"/>
+                                        <Label Content="Question about this transcript" Target="{Binding ElementName=AnalysisQuestionBox}"/>
+                                        <TextBox x:Name="AnalysisQuestionBox" MaxLength="512"
+                                                 Text="{Binding AnalysisQuestion, UpdateSourceTrigger=PropertyChanged}"
+                                                 automation:AutomationProperties.Name="Question about this transcript"/>
+                                        <WrapPanel Margin="0,8,0,4">
+                                            <Button Content="Ask" Command="{Binding AskTranscriptCommand}"
+                                                    automation:AutomationProperties.Name="Ask selected transcript"/>
+                                            <Button Content="Cancel analysis" Command="{Binding CancelAnalysisCommand}"
+                                                    IsEnabled="{Binding IsAnalyzing}"/>
+                                        </WrapPanel>
+                                        <ProgressBar Height="5" IsIndeterminate="True" Margin="0,4"
+                                                     Visibility="{Binding IsAnalyzing, Converter={StaticResource VisibleWhen}}"
+                                                     automation:AutomationProperties.Name="Experimental analysis in progress"/>
+                                        <TextBlock x:Name="AnalysisStatusText" Text="{Binding AnalysisStatus}" TextWrapping="Wrap"
+                                                   Margin="0,8" automation:AutomationProperties.LiveSetting="Polite"/>
+                                        <TextBlock Text="UNVERIFIED candidates — select to inspect evidence" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                        <ListBox x:Name="AnalysisClaimsList" ItemsSource="{Binding AnalysisClaims}"
+                                                 SelectedItem="{Binding SelectedAnalysisClaim}"
+                                                 MaxHeight="180" HorizontalContentAlignment="Stretch"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 automation:AutomationProperties.Name="Unverified analysis candidates">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="4,8"/>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <TextBlock Text="Exact original excerpts" FontWeight="SemiBold" Margin="0,16,0,8"/>
+                                        <TextBox x:Name="AnalysisEvidenceText" Text="{Binding AnalysisEvidence, Mode=OneWay}"
+                                                 IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="64"
+                                                 MaxHeight="220" VerticalScrollBarVisibility="Auto"
+                                                 automation:AutomationProperties.Name="Exact original analysis excerpts"/>
+                                        <TextBlock Text="{Binding AnalysisArtifact}" TextWrapping="Wrap"
+                                                   Style="{StaticResource HelperText}" Margin="0,8,0,0"/>
+                                    </StackPanel>
+                                </Expander>
                             </StackPanel>
                         </ScrollViewer>
                     </Grid>
