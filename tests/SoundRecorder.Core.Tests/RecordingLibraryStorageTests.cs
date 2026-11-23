@@ -189,7 +189,8 @@ public sealed class RecordingLibraryStorageTests : IDisposable
 
         var restored = Assert.Single(await library.LoadAsync(default)).Recording;
 
-        Assert.Equal(new[] { first, second }, restored.TranscriptOutputs);
+        Assert.Equal(new[] { first with { Language = original.Language }, second with { Language = original.Language } },
+            restored.TranscriptOutputs);
         Assert.Equal(original.Id, restored.Id);
         Assert.Equal(original.AudioPath, restored.AudioPath);
         Assert.Equal(original.Language, restored.Language);

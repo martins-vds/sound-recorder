@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
+using static Models.Harness.SourceText;
 
 namespace Models.Harness;
 
@@ -194,13 +195,6 @@ public sealed partial class GenerationProbe
         if (offset == 0) throw new InvalidDataException("Every source excerpt must contain text.");
     }
 
-    private static int OverlapLength(string text, int maximum)
-    {
-        var start = Math.Max(0, text.Length - maximum);
-        while (start > 0 && start < text.Length && !char.IsWhiteSpace(text[start - 1])) start++;
-        return text.Length - start;
-    }
-
     private ClaimEvidence FitRange(ExcerptInput source, string text, long offset, TranscriptIdentity identity,
         string language, string? question, int budget)
     {
@@ -212,15 +206,6 @@ public sealed partial class GenerationProbe
                 return piece;
             length = ShorterScalarPrefix(text, length);
         }
-    }
-
-    private static int ShorterScalarPrefix(string text, int length)
-    {
-        var shorter = length / 2;
-        if (shorter > 0 && char.IsHighSurrogate(text[shorter - 1])) shorter--;
-        shorter = Math.Max(shorter, Rune.GetRuneAt(text, 0).Utf16SequenceLength);
-        if (shorter >= length) throw new InvalidDataException("No complete Unicode scalar fits the context budget.");
-        return shorter;
     }
 
     private static void ValidateUnicode(string text)

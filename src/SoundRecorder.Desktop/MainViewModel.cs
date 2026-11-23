@@ -312,6 +312,8 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             var library = _library!;
+            if (scope == RecordingDeletionScope.AllArtifacts)
+                await DeleteOwnedAnalysisAsync(recording);
             var result = await Task.Run(() =>
                 library.DeleteRecordingAsync(recording.Id, scope, CancellationToken.None));
             await RefreshHistoryAsync();
@@ -499,6 +501,7 @@ public sealed partial class MainViewModel : ObservableObject
     public async Task PrepareViewCloseAsync()
     {
         _closingView = true;
+        StartCommand.NotifyCanExecuteChanged();
         await ReleaseAnalysisForCaptureAsync();
         _transcriptReadVersion++;
         _searchCancellation?.Cancel();
@@ -605,10 +608,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     public async Task StartRecordingAsync(bool allowShortRecording)
     {
+        if (_closingView) return;
         IsBusy = true;
         try
         {
             await ReleaseAnalysisForCaptureAsync();
+            if (_closingView) return;
             var privacyWarning = GetSynchronizedFolderWarning();
             var request = BuildRequest() with
             {
@@ -633,7 +638,7 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     private bool CanStart() =>
-        !IsBusy && IsIdle;
+        !_closingView && !IsBusy && IsIdle;
 
     [RelayCommand(CanExecute = nameof(CanPause))]
     private async Task PauseAsync()
@@ -865,6 +870,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RetryRecordingAsync(SavedRecording? recording)
     {
+        if (_closingView) return;
         if (IsAnalyzing)
         {
             Message = "Cancel experimental analysis and wait for native release, then explicitly retry transcription.";
@@ -886,6 +892,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             return;
         }
+        if (_closingView) return;
         if (recording is null)
         {
             Message = "Select a recording or job to transcribe again.";
