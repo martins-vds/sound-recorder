@@ -1,0 +1,38 @@
+{
+  "profileId": "sr-structured-ledger-v2",
+  "status": "INCOMPLETE: Issue #11 strict quality gates fail and cached native Portuguese summary aborted; initial extraction remains semantically UNVERIFIED; no production approval",
+  "generationFiles": "Reuse exact file inventory in phi-mini-candidate-profile.json for the one approved cached validation. Historical model profiles and reports retain their original runtime settings.",
+  "embeddingFiles": "Unchanged candidate-profile.json Nomic inventory; diagnostic local questions only",
+  "runtime": {
+    "contextTokens": 4096,
+    "extractionOutputTokens": 1024,
+    "answerOutputTokens": 512,
+    "spareContextTokensMinimum": 1,
+    "historyTokens": 0,
+    "grammar": "structured-candidate-gbnf-v2; typed kind, explicit owner/deadline states, qualifiers, original range position 0",
+    "finishObservation": "Actual sampled token.IsEndOfGeneration(vocab); otherwise native MaxTokens exhaustion, never text retokenization",
+    "summaryDeadlineMinutes": 20,
+    "questionDeadlineMinutes": 2,
+    "questionSuiteCostGuardMinutes": 20,
+    "boundedValidationQuestion": "local-assigned-action in frozen queries.json, both languages; remaining questions are not repeated"
+  },
+  "streaming": {
+    "sourceReadCharacters": 1024,
+    "surrogateBoundarySpareCharacters": 1,
+    "batchOriginalRanges": 1,
+    "packing": "Count final rendered prompt; shrink oversized ranges on complete Unicode scalar boundaries until prompt plus stage reserve fits. Never skip or retime a source range.",
+    "offsetUnit": "UTF-16 code units in the original excerpt",
+    "metadataLimits": { "attemptId": 128, "excerptId": 128, "question": 1024, "language": 16 },
+    "recordLimits": { "claimsPerBatch": 16, "statement": 512, "fieldValue": 128, "qualifiers": 8, "qualifierValue": 128, "references": 16 }
+  },
+  "ledger": {
+    "provider": "Microsoft.Data.Sqlite 10.0.0 / SQLitePCLRaw.bundle_e_sqlite3 3.0.5, same pinned versions as existing SQLite feasibility module",
+    "writerCacheKiB": 512,
+    "temporaryStorage": "FILE",
+    "merge": "Only exact serialized structured equality, including qualifier order, with disk-indexed keys and evidence union",
+    "commit": "Each validated generation batch atomically commits records, evidence and diagnostics",
+    "readers": "ReadClaims, ReadEvidence, ReadBatches stream independently; ReadRun reports exact ownership and terminal status",
+    "semanticVerification": "UNVERIFIED; generated statements are never authoritative transcript evidence",
+    "proseReduction": "Not implemented or needed for required-record preservation"
+  }
+}

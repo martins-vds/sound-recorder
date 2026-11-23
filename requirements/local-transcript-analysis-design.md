@@ -78,6 +78,13 @@ isolated feasibility harness, not application feature implementation:
 - Run question and summary diagnostics independently, each with its own deadline.
   Question work must not consume a summary request's diagnostic budget.
 
+The feasibility v2 pipeline preserves initial structured records on disk without
+an LLM rewrite. Exact original quotes can be resolved from bounded original
+source ranges; the model need not recopy them. Typed records and valid references
+remain semantically unverified until the frozen claim/evidence rubric is applied.
+Singleton range batches and explicit compact-record limits are feasibility
+settings, not approved product/resource thresholds.
+
 One bounded validation run with the already-downloaded Phi-mini model is approved.
 No new model downloads, automatic tuning, relaxed quality gates, or final
 profile/performance approval are included. Earlier experiment reports retain

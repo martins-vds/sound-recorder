@@ -28,12 +28,9 @@ public sealed class NativeAdapterSmokeTests
             {
                 prompt += " word";
             }
-            await foreach (var token in model.InferAsync(prompt + suffix,
-                context, new(4, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None))
-            {
-                text.Append(token);
-            }
-            Assert.Equal("OK", text.ToString());
+            var result = await model.InferAsync(prompt + suffix,
+                context, new(4, """root ::= "OK" """, 42, 0, ContextOverflowStrategy.ThrowException), CancellationToken.None);
+            Assert.Equal("OK", result.Text);
         }
         finally
         {

@@ -13,8 +13,9 @@ public interface INativeModel : IDisposable
     IReadOnlyDictionary<string, string> Metadata { get; }
     ulong SizeInBytes { get; }
     int EmbeddingSize { get; }
+    int LastGeneratedTokens { get; }
     int CountTokens(string text, bool addSpecial, bool parseSpecial, Encoding encoding);
-    IAsyncEnumerable<string> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions inference, CancellationToken cancellationToken);
+    Task<GenerationResult> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions inference, CancellationToken cancellationToken);
     void InitializeEmbedding(NativeContextOptions context);
     Task<IReadOnlyList<float[]>> EmbedAsync(string input, CancellationToken cancellationToken);
 }
@@ -62,6 +63,8 @@ public sealed class LlamaNativeModel : INativeModel
     public IReadOnlyDictionary<string, string> Metadata => weights.Metadata;
     public ulong SizeInBytes => weights.SizeInBytes;
     public int EmbeddingSize => weights.EmbeddingSize;
+    /// <summary>Non-EOG native samples from the most recent call, including failed/cancelled calls.</summary>
+    public int LastGeneratedTokens { get; private set; }
 
     public static async Task<INativeModel> LoadAsync(NativeContextOptions options, CancellationToken cancellationToken)
     {
@@ -79,10 +82,10 @@ public sealed class LlamaNativeModel : INativeModel
     public int CountTokens(string text, bool addSpecial, bool parseSpecial, Encoding encoding) =>
         weights.Tokenize(text, addSpecial, parseSpecial, encoding).Length;
 
-    public async IAsyncEnumerable<string> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions settings,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    public async Task<GenerationResult> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions settings,
+        CancellationToken cancellationToken)
     {
-        using var sampling = new DefaultSamplingPipeline
+        using var sampling = new ObservedSamplingPipeline
         {
             Seed = settings.Seed, Temperature = settings.Temperature, Grammar = new Grammar(settings.Grammar, "root"),
             TopK = settings.TopK, TopP = settings.TopP, MinP = settings.MinP, PresencePenalty = settings.PresencePenalty
@@ -92,9 +95,20 @@ public sealed class LlamaNativeModel : INativeModel
             MaxTokens = settings.MaxTokens, SamplingPipeline = sampling, OverflowStrategy = settings.OverflowStrategy
         };
         var executor = new StatelessExecutor(weights, parameters) { ApplyTemplate = false };
-        await foreach (var piece in executor.InferAsync(prompt, inference, cancellationToken))
+        var text = new StringBuilder();
+        LastGeneratedTokens = 0;
+        try
         {
-            yield return piece;
+            await foreach (var piece in executor.InferAsync(prompt, inference, cancellationToken))
+            {
+                text.Append(piece);
+            }
+            return new(text.ToString(), sampling.EndOfGeneration ? GenerationFinish.Completed : GenerationFinish.TokenLimit,
+                sampling.GeneratedTokens);
+        }
+        finally
+        {
+            LastGeneratedTokens = sampling.GeneratedTokens;
         }
     }
 
@@ -107,5 +121,22 @@ public sealed class LlamaNativeModel : INativeModel
     {
         embedder?.Dispose();
         weights.Dispose();
+    }
+
+    private sealed class ObservedSamplingPipeline : DefaultSamplingPipeline
+    {
+        public int GeneratedTokens { get; private set; }
+        public bool EndOfGeneration { get; private set; }
+
+        public override LLamaToken Sample(SafeLLamaContextHandle context, int index)
+        {
+            var token = base.Sample(context, index);
+            EndOfGeneration = token.IsEndOfGeneration(context.ModelHandle.Vocab);
+            if (!EndOfGeneration)
+            {
+                GeneratedTokens++;
+            }
+            return token;
+        }
     }
 }

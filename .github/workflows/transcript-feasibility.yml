@@ -88,6 +88,19 @@ jobs:
         if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
         run: .\feasibility\Evaluation\Generate.ps1
 
+      - name: Locked restore structured model harness without weights
+        id: restore-model-harness
+        if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
+        run: |
+          dotnet restore .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Structured model harness locked restore failed.' }
+
+      - name: Run deterministic structured ledger and native CPU boundary
+        if: ${{ !cancelled() && steps.restore-model-harness.outcome == 'success' }}
+        run: |
+          dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-restore -c Release --filter "type!=IntegrationTests" --logger "trx;LogFileName=models-ledger.trx" --results-directory .\artifacts\transcript-feasibility --logger "console;verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { throw 'Structured ledger/model-free native boundary tests failed.' }
+
       - name: Validate Evaluation corpus and generator
         if: ${{ !cancelled() && steps.corpus.outcome == 'success' }}
         run: |
@@ -112,7 +125,8 @@ jobs:
           foreach ($suite in @(
             @{ File = 'evaluation.trx'; Count = 14 },
             @{ File = 'sqlite-portable.trx'; Count = 15 },
-            @{ File = 'sqlite-native.trx'; Count = 1 }
+            @{ File = 'sqlite-native.trx'; Count = 1 },
+            @{ File = 'models-ledger.trx'; Count = 99 }
           )) {
             $path = Join-Path .\artifacts\transcript-feasibility $suite.File
             if (-not (Test-Path $path)) { throw "Missing required test evidence: $($suite.File)" }

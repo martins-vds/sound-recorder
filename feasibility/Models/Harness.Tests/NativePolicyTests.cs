@@ -38,7 +38,7 @@ public sealed class NativePolicyTests
         }
         using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, VerifyPhiMini, phiMini: true);
         var prompt = generation.RenderPrompt("Use evidence.", "ação");
-        Assert.Equal("firstsecond", await generation.GenerateAsync(prompt, 8, CancellationToken.None));
+        Assert.Equal("firstsecond", (await generation.GenerateAsync(prompt, 8, CancellationToken.None)).Text);
         Assert.Equal("<|system|>Use evidence.<|end|><|user|>ação<|end|><|assistant|>", native.Prompt);
         Assert.NotNull(verified);
         Assert.Equal(["Phi-4-mini-instruct-Q4_K_M.gguf"], verified);
@@ -62,7 +62,7 @@ public sealed class NativePolicyTests
         using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, VerifyQwen3, qwen3: true);
         var prompt = generation.RenderPrompt("Use evidence.", "ação");
         Assert.Equal("<|im_start|>system\nUse evidence. /no_think<|im_end|>\n<|im_start|>user\nação<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", prompt);
-        Assert.Equal("firstsecond", await generation.GenerateAsync(prompt, 8, CancellationToken.None));
+        Assert.Equal("firstsecond", (await generation.GenerateAsync(prompt, 8, CancellationToken.None)).Text);
         Assert.NotNull(verified);
         Assert.Equal(["Qwen3-8B-Q4_K_M.gguf"], verified);
         Assert.Equal(prompt, native.Prompt);
@@ -118,7 +118,7 @@ public sealed class NativePolicyTests
     {
         var native = new NativeDouble();
         using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, Verify("generation"));
-        Assert.Equal("firstsecond", await generation.GenerateAsync("prompt", 8, CancellationToken.None));
+        Assert.Equal("firstsecond", (await generation.GenerateAsync("prompt", 8, CancellationToken.None)).Text);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => generation.GenerateAsync("prompt", 8, cancellation.Token));
@@ -132,7 +132,7 @@ public sealed class NativePolicyTests
         var native = new NativeDouble();
         using var generation = await LlamaGeneration.LoadAsync("cache", native.Load, Verify("generation"));
         var rendered = generation.RenderPrompt("instruction", "original evidence");
-        Assert.Equal("firstsecond", await generation.GenerateAsync(rendered, 8, CancellationToken.None));
+        Assert.Equal("firstsecond", (await generation.GenerateAsync(rendered, 8, CancellationToken.None)).Text);
         Assert.Equal(rendered, native.Prompt);
         Assert.Equal(2, generation.LastGeneratedTokens);
         Assert.Equal(0, native.Parameters!.GpuLayerCount);
@@ -257,6 +257,7 @@ internal sealed class NativeDouble : INativeModel
     public IReadOnlyDictionary<string, string> Metadata => new Dictionary<string, string> { ["general.architecture"] = Architecture };
     public ulong SizeInBytes => 100;
     public int EmbeddingSize { get; init; } = 768;
+    public int LastGeneratedTokens => 2;
     public int TokenCount { get; init; } = 3;
     public bool Disposed { get; private set; }
     public int Inferences { get; private set; }
@@ -271,6 +272,7 @@ internal sealed class NativeDouble : INativeModel
     public Action? OnGenerated { get; init; }
     public Action? OnEmbed { get; init; }
     public int Embeddings { get; private set; }
+    public GenerationFinish Finish { get; init; } = GenerationFinish.Completed;
     private bool embeddingInitialized;
     public Task<INativeModel> Load(NativeContextOptions parameters, CancellationToken cancellationToken)
     {
@@ -284,17 +286,16 @@ internal sealed class NativeDouble : INativeModel
         Encoding = encoding;
         return TokenCount;
     }
-    public async IAsyncEnumerable<string> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions inference,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+    public async Task<GenerationResult> InferAsync(string prompt, NativeContextOptions context, NativeGenerationOptions inference,
+        CancellationToken cancellationToken)
     {
         Prompt = prompt;
         Parameters = context;
         Inference = inference;
         Inferences++;
-        yield return "first";
         await Task.Yield();
-        yield return "second";
         OnGenerated?.Invoke();
+        return new("firstsecond", Finish, 2);
     }
     public void InitializeEmbedding(NativeContextOptions context)
     {

@@ -1,5 +1,71 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Issue #11: streamed structured ledger (v2)
+
+The current harness replaces the v1 in-memory source/tree reduction with
+`GenerationProbe.ExtractAsync` / `SummarizeAsync` and independently timed
+`AnswerAsync`. All consume `IAsyncEnumerable<ExcerptInput>` with a disposable
+`TextReader` body and an explicit new ledger path. They return `AnalysisResult`,
+not an accumulated claim array or tree. `ClaimLedger.Open` exposes streamed
+`ReadClaims`, `ReadEvidence`, `ReadBatches` and exact-ownership `ReadRun`.
+The feasibility-only API break is deliberate; callers/tests have moved together.
+
+[pipeline-profile.json](pipeline-profile.json) freezes v2 settings separately
+from every historical model profile. Final model prompts are counted with the
+native tokenizer. A singleton original-range batch bounds both input and record
+shape; oversized excerpts are read in 1,024-character blocks plus one surrogate
+spare, then packed/split on complete Unicode scalars without dropping text.
+Offsets remain original UTF-16 positions, and original saved-audio timestamps
+are never interpolated. Metadata and candidate fields have explicit limits;
+invalid/excessive records fail instead of truncating or repairing JSON.
+
+SQLite persists original ranges and structured candidate claims: kind,
+statement, explicit `Stated`/`Absent` owner and deadline values, and qualifiers.
+Only exact structured equality deduplicates; evidence unions and keys stay
+disk-backed. Conflicts/non-equal records remain separate, including different
+qualifier order. Quotes come from resolved original references, not model
+recopying. **Initial extraction is semantically UNVERIFIED.** Valid references
+or a completed traversal do not establish entailment or recall. Optional prose
+does not rewrite or replace the preserved records; no prose reducer is needed.
+
+`IGenerationBackend.GenerateAsync` and the native adapter return
+`GenerationResult(Text, Finish, GeneratedTokens)`. The sampling override
+observes actual native EOG, including the case where identical valid text ends
+at a length cap without EOG. Failed/cancelled calls retain sampled-token counts
+but cannot become successful analyses. Stage reserves are 1,024 extraction and
+512 answer tokens in a 4,096 context. `Partial`, `TokenLimited`, `Cancelled` and
+`Failed` are honest artifact states, not complete summaries.
+
+Question and summary native diagnostics are separate test cases and requests.
+Each summary owns 20 minutes; each question owns 2 minutes (including retrieval),
+with a separate 20-minute question-suite cost guard. Question time is not
+standalone summary latency. The one authorized cached Phi validation selects
+the frozen local-assigned-action question and both original minute summaries;
+it does not repeat all previous profile experiments.
+
+```powershell
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "type!=IntegrationTests"
+# Only within the explicitly approved one cached validation:
+$env:SR_EVAL_PROFILE = "phi-mini"
+$env:SR_EVAL_PHASE = "issue-11-ledger-v2"
+$env:SR_EVAL_QUERY_ID = "local-assigned-action"
+$env:SR_EVAL_RUN_DIRECTORY = "<private-local-report-root>"
+dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "FullyQualifiedName~RealModelTests|purpose=PhiMiniNative"
+```
+
+Raw source/prompt/ledger/coverage traces remain local; do not upload them.
+The x64 workflow runs deterministic v2 tests and real native SQLite persistence
+without weights, retaining its existing native-extension checks. Native x64
+model inference, capture/offline/release evidence and human profile approval
+remain separate gates. See [pipeline-validation.md](pipeline-validation.md) for
+the exact current outcome and strict quality evidence.
+
+## Historical v1 profile records
+
+The following sections retain the original measured settings, commands and
+rejections at their recorded commits. They are not the v2 runtime instructions;
+do not reinterpret their budgets/results as measurements of the new pipeline.
+
 ## Issue #10: separately approved Phi-4-mini comparison
 
 [phi-mini-candidate-profile.json](phi-mini-candidate-profile.json) pins only the
