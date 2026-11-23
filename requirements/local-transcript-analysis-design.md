@@ -125,6 +125,59 @@ the current model and working manual-validation artifact. The 12-hour test,
 new model downloads and automatic tuning remain excluded. Final model quality,
 distribution and release claims still require their separate evidence.
 
+## Formal implementation baseline - 2026-11-23
+
+After validating the walking skeleton, the user explicitly approved formal
+implementation using LLamaSharp, the cached Phi-4-mini/Nomic profile, and local
+SQLite as the initial stack. This supersedes earlier documentation-only and
+walking-skeleton-only implementation restrictions for the production feature.
+It does not retroactively turn model experiments into passing semantic evidence.
+
+Keep the accepted decisions Q1-Q23 as the behavioral baseline, with these
+implementation and validation clarifications:
+
+- Production application code must not depend on projects under `feasibility`.
+  Move reusable engine behavior into production-owned modules and preserve
+  existing behavior through the same confirmed public interfaces.
+- Core owns transcript/attempt identity and application state independently of
+  WPF, SQLite, JSON, LLamaSharp and native APIs. Infrastructure supplies local
+  storage, model and inference adapters; Desktop coordinates user actions.
+- Implement persistent per-transcript analysis jobs and completed results,
+  compatible resumable indexes/checkpoints, explicit cancellation/retry,
+  safe owned-data deletion and recording-priority scheduling.
+- Support local lookup and whole-transcript coverage separately; top-k retrieval
+  cannot establish exhaustive answers. Keep original source citations and
+  explicit uncertainty visible, including after restarting the app.
+- Keep English/Brazilian Portuguese and native Windows ARM64/x64 scope. Use
+  explicit model setup/import/download with integrity verification; no automatic
+  download, cloud fallback, new model trial or GPU requirement is authorized.
+- Preserve the incumbent desktop work areas and improve the existing controls
+  incrementally. Use a dependency-ordered ticket graph and strict TDD at agreed
+  interfaces; confirm new public interfaces before adding their tests.
+- The 12-hour stress test remains deferred. Full-project quality gates and
+  directly relevant functional validation remain required. Supported numerical
+  performance/resource limits and release acceptance are not inferred from
+  acceptable manual latency.
+
+### Production implementation graph
+
+1. Establish production ownership and analysis contracts, preserving the working
+   desktop slice and removing its dependency on feasibility projects.
+2. Provide explicit verified model-profile setup and resource preflight.
+3. Persist exact-source results, indexes, checkpoints and owned deletion.
+4. Coordinate durable jobs, restart/retry/cancellation and recording priority.
+5. Implement source-grounded summary/discussion with complete global coverage and
+   bounded conversation context over the persistent source/index.
+6. Integrate production lifecycle, setup, evidence navigation and result/history
+   restoration into the existing desktop.
+7. Validate native distribution and complete the affected quality gates before
+   converging implementation branches into main and cleaning task-owned worktrees.
+
+Steps 2 and 3 can proceed independently after step 1. Scheduling requires step 3;
+grounded processing requires steps 2 and 3. Desktop integration joins scheduling
+and processing. Final validation requires the integrated desktop. Ticket blocking
+relationships, rather than list order, determine the implementation frontier.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
