@@ -19,6 +19,9 @@ public sealed record ClaimEvidence(string SourceId, long Offset, int Length, lon
 /// <summary>Persisted per-stage native finish and budget evidence, separate from semantic verification.</summary>
 public sealed record BatchDiagnostic(int PromptTokens, int OutputBudget, GenerationFinish Finish, int GeneratedTokens, string? Limitation);
 
+/// <summary>Unique original UTF-16 length of a completely traversed source, excluding repeated overlap.</summary>
+public sealed record SourceCoverage(string SourceId,long Characters);
+
 /// <summary>Disk-backed exact equality and evidence union; no vector index or in-memory key inventory.</summary>
 public sealed class ClaimLedger : IDisposable
 {
@@ -71,6 +74,17 @@ public sealed class ClaimLedger : IDisposable
         {
             yield return new(reader.GetInt64(0), JsonSerializer.Deserialize<StructuredClaim>(reader.GetString(1))!);
         }
+
+    }
+
+    /// <summary>Streams completed original-source lengths without summing overlapping evidence windows.</summary>
+    public IEnumerable<SourceCoverage> ReadCoverage()
+    {
+        using var command=connection.CreateCommand();
+        command.CommandText="SELECT id,length FROM source_length ORDER BY id";
+        using var reader=command.ExecuteReader();
+        while(reader.Read())
+            yield return new(reader.GetString(0),reader.GetInt64(1));
     }
 
     /// <summary>Streams resolved original quotes, never generated statements.</summary>
@@ -107,21 +121,20 @@ public sealed class ClaimLedger : IDisposable
 
     internal void AddSource(ClaimEvidence source)
     {
-        AddAndValidateSource("source", source, " AND length=$length");
+        Execute("INSERT OR IGNORE INTO source VALUES($id,$offset,$length,$start,$end,$text)",
+            ("$id",source.SourceId),("$offset",source.Offset),("$length",source.Length),
+            ("$start",source.StartMs),("$end",source.EndMs),("$text",source.Quote));
     }
 
-    internal void AddOriginal(ClaimEvidence source) => AddAndValidateSource("original", source, "");
-
-    private void AddAndValidateSource(string table, ClaimEvidence source, string lengthPredicate)
+    internal void AddOriginal(ClaimEvidence source)
     {
-        Execute($"INSERT OR IGNORE INTO {table} VALUES($id,$offset,$length,$start,$end,$text)",
+        Execute("INSERT OR IGNORE INTO original VALUES($id,$offset,$length,$start,$end,$text)",
             ("$id", source.SourceId), ("$offset", source.Offset), ("$length", source.Length),
             ("$start", source.StartMs), ("$end", source.EndMs), ("$text", source.Quote));
         using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT length,start,end,text FROM {table} WHERE id=$id AND offset=$offset{lengthPredicate}";
+        command.CommandText = "SELECT length,start,end,text FROM original WHERE id=$id AND offset=$offset";
         command.Parameters.AddWithValue("$id", source.SourceId);
         command.Parameters.AddWithValue("$offset", source.Offset);
-        command.Parameters.AddWithValue("$length", source.Length);
         using var reader = command.ExecuteReader();
         reader.Read();
         if (reader.GetInt32(0) != source.Length || !Equals(reader.GetValue(1), (object?)source.StartMs ?? DBNull.Value) ||

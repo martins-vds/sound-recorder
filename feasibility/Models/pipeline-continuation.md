@@ -1,5 +1,9 @@
 # Issue #11 continuation: context grouping and diagnostic closure
 
+This is the historical v3 checkpoint. Its failures and diagnostic uncertainty
+are retained below; [the final follow-up](pipeline-quality-followup.md) records
+the later passing quality gates and separately approved Portuguese diagnostic.
+
 This continues commit `6522abaed6343fd0d013f3e220dab1ef4458a8bd` in the same
 ticket worktree/branch. The earlier v2 report and private raw results remain
 unchanged. No application/prototype feature, new weights, push, issue closure

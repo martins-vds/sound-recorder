@@ -115,6 +115,7 @@ public sealed class PipelineTests
             var result = await new GenerationProbe(backend, outputTokens: 384).ExtractAsync(
                 new("attempt", new string('a', 64)), Sources(), Path.Combine(directory, "claims.sqlite"), "en", TimeSpan.FromSeconds(5));
             Assert.Equal(AnalysisStatus.Partial, result.Status);
+            Assert.Contains("limitations",result.Detail!);
             using var ledger = ClaimLedger.Open(result.LedgerPath);
             Assert.Empty(ledger.ReadClaims());
             Assert.Equal("Partial", ledger.ReadRun().Status);
@@ -338,6 +339,8 @@ public sealed class PipelineTests
 
             Assert.Equal(AnalysisStatus.Completed, result.Status);
             Assert.InRange(result.MaximumLiveSourceCharacters, 6658, 16384);
+            Assert.True(result.MaximumLiveSourceCharacters>=backend.Prompts.Max(p=>p.Length)+1025,
+                "The reported live bound must include at least the largest final prompt and the still-owned read buffer.");
             Assert.All(backend.Prompts, prompt => Assert.True(backend.CountTokens(prompt) + 256 < 1400));
             Assert.All(backend.Prompts, prompt => Assert.DoesNotContain("<|end|>", prompt));
             Assert.True(guarded.SpareReads > 0);
@@ -361,6 +364,7 @@ public sealed class PipelineTests
             }
             Assert.Equal(original, reconstructed.ToString());
             Assert.Equal(original.Length, offset);
+            Assert.Equal(original.Length,Assert.Single(ledger.ReadCoverage(),c=>c.SourceId=="long").Characters);
             Assert.Equal(200 + pieces.Length, ledger.ReadEvidence(claim.Id).Count());
 
             async IAsyncEnumerable<ExcerptInput> Sources()
@@ -460,7 +464,7 @@ internal sealed class PackingBackend(string response) : IGenerationBackend
     public Func<string, int, CancellationToken, Task>? OnGenerate { get; set; }
     public Func<string, int>? TokenCounter { get; init; }
     public string RenderPrompt(string instruction, string input) => instruction + "\n" + input;
-    public int CountTokens(string prompt) => TokenCounter?.Invoke(prompt) ?? prompt.Length;
+    public int CountTokens(string prompt) => TokenCounter?.Invoke(prompt) ?? (prompt.Length + 3) / 4;
     public async Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
     {
         Prompts.Add(prompt);

@@ -6,21 +6,24 @@ namespace Models.Harness.Tests;
 
 public sealed class PipelineClosureTests
 {
-    [Fact]
-    public async Task AnswerAsync_FiveFreshSources_PacksToTokenBudgetAndResolvesLocalIndices()
+    [Theory]
+    [InlineData(420)]
+    [InlineData(432)]
+    public async Task AnswerAsync_FiveFreshSources_PacksToTokenBudgetAndResolvesLocalIndices(int context)
     {
         var directory = Path.Combine(Directory.GetCurrentDirectory(), "pipeline-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
             var backend = new IndexedBackend();
-            var result = await new GenerationProbe(backend, 420, 64, 32).AnswerAsync(
+            var result = await new GenerationProbe(backend, context, 64, 32).AnswerAsync(
                 new("attempt", new string('a',64)), Sources(), Path.Combine(directory,"claims.sqlite"),
                 "What was reported?", "en", TimeSpan.FromSeconds(5));
             Assert.Equal(AnalysisStatus.Completed,result.Status);
             Assert.Equal(2,result.Calls);
             Assert.Equal(300,result.MaximumPromptTokens);
             Assert.Equal([3,2],backend.BatchSizes);
+            Assert.Equal(["source 1","source 2","source 3","source 4","source 5"],backend.SourceOrder);
             using var ledger=ClaimLedger.Open(result.LedgerPath);
             var claims=ledger.ReadClaims().ToArray();
             Assert.Equal(5,claims.Length);
@@ -30,7 +33,7 @@ public sealed class PipelineClosureTests
                 Assert.Equal(claim.Record.Statement,evidence.Quote);
                 Assert.Equal(0,evidence.Offset);
             }
-            Assert.All(ledger.ReadBatches(),batch=>Assert.True(batch.PromptTokens+batch.OutputBudget<420));
+            Assert.All(ledger.ReadBatches(),batch=>Assert.True(batch.PromptTokens+batch.OutputBudget<context));
             static async IAsyncEnumerable<ExcerptInput> Sources()
             {
                 for(var index=1;index<=5;index++)
@@ -46,6 +49,7 @@ public sealed class PipelineClosureTests
     private sealed class IndexedBackend : IGenerationBackend
     {
         public List<int> BatchSizes {get;}=[];
+        public List<string> SourceOrder {get;}=[];
         public string RenderPrompt(string instruction,string input)=>input;
         public int CountTokens(string prompt)
         {
@@ -57,6 +61,7 @@ public sealed class PipelineClosureTests
             using var input=JsonDocument.Parse(prompt);
             var excerpts=input.RootElement.GetProperty("excerpts").EnumerateArray().ToArray();
             BatchSizes.Add(excerpts.Length);
+            SourceOrder.AddRange(excerpts.Select(e=>e.GetProperty("Quote").GetString()!));
             var text=JsonSerializer.Serialize(new
             {
                 claims=excerpts.Select((source,index)=>new

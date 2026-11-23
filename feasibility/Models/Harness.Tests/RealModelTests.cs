@@ -95,10 +95,11 @@ public sealed class RealModelTests
 
     private static void WriteIdentity(RunLog log, EvaluationFixture fixture) => log.Write("start", new
     {
-        diagnosticSchema = "sr-structured-ledger-v2", fixture.Identity, fixture.Language,
+        diagnosticSchema = "sr-structured-ledger-v4", fixture.Identity, fixture.Language,
         profile = Environment.GetEnvironmentVariable("SR_EVAL_PROFILE") ?? "qwen2",
         contextTokens = 4096, extractionOutputTokens = 1024, answerOutputTokens = 512,
-        sourceBufferCharacters = 1025, extractionBatchRanges = 1, historyTokens = 0,
+        sourceBufferCharacters = 1025, extractionBatchRanges = 4, sourceOverlapCharacters = 256,
+        extractionBatchCharacters = 4096, historyTokens = 0,
         processArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
         osArchitecture = RuntimeInformation.OSArchitecture.ToString(),
         framework = RuntimeInformation.FrameworkDescription,

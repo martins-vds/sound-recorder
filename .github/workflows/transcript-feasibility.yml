@@ -126,7 +126,7 @@ jobs:
             @{ File = 'evaluation.trx'; Count = 14 },
             @{ File = 'sqlite-portable.trx'; Count = 15 },
             @{ File = 'sqlite-native.trx'; Count = 1 },
-            @{ File = 'models-ledger.trx'; Count = 131 }
+            @{ File = 'models-ledger.trx'; Count = 175 }
           )) {
             $path = Join-Path .\artifacts\transcript-feasibility $suite.File
             if (-not (Test-Path $path)) { throw "Missing required test evidence: $($suite.File)" }

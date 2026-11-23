@@ -1,6 +1,6 @@
 {
-  "profileId": "sr-structured-ledger-v3",
-  "status": "INCOMPLETE: context grouping and fault surfacing corrected; full-owner CRAP 7 passes, mutation 425/518 fails >98, original native crash not reproduced by bounded exact replays; initial extraction remains semantically UNVERIFIED",
+  "profileId": "sr-structured-ledger-v4",
+  "status": "Issue #11 focused quality follow-up; final strict gate results belong to pipeline-quality-followup.md; initial extraction remains semantically UNVERIFIED",
   "generationFiles": "Reuse exact approved cached file inventory. Historical v2 profile/report are preserved at commit 6522aba and in private issue-11 evidence; frozen crash replays use the captured v2 native configuration, not these changed context-grouping settings.",
   "embeddingFiles": "Unchanged candidate-profile.json Nomic inventory; diagnostic local questions only",
   "runtime": {
@@ -27,13 +27,20 @@
     "metadataLimits": { "attemptId": 128, "excerptId": 128, "question": 1024, "language": 16 },
     "recordLimits": { "claimsPerBatch": 16, "statement": 512, "fieldValue": 128, "qualifiers": 8, "qualifierValue": 128, "references": 16 }
   },
+  "requestProtocol": {
+    "task": "extract or answer, explicit JSON field",
+    "language": "explicit selected language JSON field",
+    "schema": "JSON Schema in outputSchema; required typed fields, zero-based bounded references, compact record limits",
+    "untrustedData": "original excerpts remain data; one semantic instruction describes grounding/uncertainty without duplicating enforced schema/bounds",
+    "nativeEvidenceBoundary": "The one approved fresh Portuguese summary ran pre-v4 v3 prompt bytes; no v4 model-semantic experiment is claimed."
+  },
   "ledger": {
     "provider": "Microsoft.Data.Sqlite 10.0.0 / SQLitePCLRaw.bundle_e_sqlite3 3.0.5, same pinned versions as existing SQLite feasibility module",
     "writerCacheKiB": 512,
     "temporaryStorage": "FILE",
     "merge": "Only exact serialized structured equality, including qualifier order, with disk-indexed keys and evidence union",
     "commit": "Each validated generation batch atomically commits records, evidence and diagnostics",
-    "readers": "ReadClaims, ReadEvidence, ReadBatches stream independently; ReadRun reports ownership and last persisted status. ReadEvidence retains compatibility with archived v2 ledgers.",
+    "readers": "ReadClaims, ReadEvidence, ReadBatches, ReadCoverage stream independently; ReadRun reports ownership and last persisted status. ReadEvidence retains compatibility with archived v2 ledgers.",
     "sourceConsistency": "Validate stable original read blocks independently of overlapping prompt windows; resolve each reference by source ID, original offset and length",
     "faults": "Expected I/O/data/JSON/SQLite failures produce Failed results; unexpected faults persist Failed and rethrow the same cause",
     "semanticVerification": "UNVERIFIED; generated statements are never authoritative transcript evidence",

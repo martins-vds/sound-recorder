@@ -94,7 +94,7 @@ public sealed class LlamaNativeModel : INativeModel
         {
             MaxTokens = settings.MaxTokens, SamplingPipeline = sampling, OverflowStrategy = settings.OverflowStrategy
         };
-        var executor = new StatelessExecutor(weights, parameters) { ApplyTemplate = false };
+        var executor = new StatelessExecutor(weights, parameters);
         var text = new StringBuilder();
         LastGeneratedTokens = 0;
         try

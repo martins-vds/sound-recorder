@@ -26,6 +26,11 @@ public sealed class PipelineBoundaryTests
     [InlineData("references-too-many")]
     [InlineData("limitation-empty")]
     [InlineData("unknown-field")]
+    [InlineData("kind-unknown")]
+    [InlineData("claims-null")]
+    [InlineData("claim-null")]
+    [InlineData("empty-without-limitation")]
+    [InlineData("deadline-absent-value")]
     public async Task ExtractAsync_InvalidRequiredRecordField_FailsAtomicallyWithExplicitDataError(string invalid)
     {
         using var area = new Area();
@@ -47,11 +52,17 @@ public sealed class PipelineBoundaryTests
             case "references-too-many": claim["references"] = new JsonArray(Enumerable.Range(0, 17).Select(_ => (JsonNode?)JsonValue.Create(0)).ToArray()); break;
             case "limitation-empty": output["limitation"] = " "; break;
             case "unknown-field": claim["quote"] = "invented"; break;
+            case "kind-unknown": claim["kind"] = "Fact"; break;
+            case "claims-null": output["claims"] = null; break;
+            case "claim-null": output["claims"] = new JsonArray((JsonNode?)null); break;
+            case "empty-without-limitation": output["claims"] = new JsonArray(); break;
+            case "deadline-absent-value": claim["deadline"]!["value"] = "Friday"; break;
         }
         var result = await new GenerationProbe(new GenerationDouble(output.ToJsonString())).ExtractAsync(
             new("attempt", new string('a', 64)), Source(), area.Path, "en", TimeSpan.FromSeconds(5));
         Assert.Equal(AnalysisStatus.Failed, result.Status);
         Assert.Contains(invalid == "unknown-field" ? "JsonException" : "InvalidDataException", result.Detail);
+        Assert.Matches(@"^[A-Za-z]+Exception: \S", result.Detail!);
         using var ledger = ClaimLedger.Open(area.Path);
         Assert.Empty(ledger.ReadClaims());
         Assert.Empty(ledger.ReadBatches());
@@ -70,12 +81,16 @@ public sealed class PipelineBoundaryTests
     {
         using var area = new Area();
         var backend = new GenerationDouble(Valid);
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => new GenerationProbe(backend).AnswerAsync(
+        var error = await Assert.ThrowsAnyAsync<ArgumentException>(() => new GenerationProbe(backend).AnswerAsync(
             new(invalid == "attempt-empty" ? "" : invalid == "attempt-long" ? new string('a', 129) : "attempt",
                 invalid == "hash-nonhex" ? new string('g', 64) : new string('a', 64)),
             Source(), area.Path, invalid == "question-empty" ? " " : "What was discussed?",
             invalid == "language-empty" ? "" : invalid == "language-long" ? new string('a', 17) : "en",
             invalid == "zero-deadline" ? TimeSpan.Zero : TimeSpan.FromSeconds(5)));
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        Assert.Contains(invalid == "zero-deadline" ? "deadline" : invalid == "hash-nonhex" ? "SHA-256" : "metadata",
+            error.Message,StringComparison.OrdinalIgnoreCase);
+        if(invalid=="zero-deadline")Assert.Contains("positive finite",error.Message);
         Assert.False(File.Exists(area.Path));
         Assert.Equal(0, backend.Calls);
     }
@@ -93,6 +108,7 @@ public sealed class PipelineBoundaryTests
             Source(start, end), area.Path, "en", TimeSpan.FromSeconds(5));
         Assert.Equal(AnalysisStatus.Failed, result.Status);
         Assert.Contains("timestamps", result.Detail);
+        Assert.Matches(@"^InvalidDataException: \S", result.Detail!);
         Assert.Equal(0, backend.Calls);
     }
 
@@ -112,7 +128,8 @@ public sealed class PipelineBoundaryTests
     public void Open_MissingArtifact_DoesNotCreateEmptyDatabase()
     {
         using var area = new Area();
-        Assert.Throws<FileNotFoundException>(() => ClaimLedger.Open(area.Path));
+        var error=Assert.Throws<FileNotFoundException>(() => ClaimLedger.Open(area.Path));
+        Assert.Contains("ledger",error.Message,StringComparison.OrdinalIgnoreCase);
         Assert.False(File.Exists(area.Path));
     }
 

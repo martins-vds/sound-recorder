@@ -1,5 +1,45 @@
 # Issue #4: bilingual in-process model feasibility
 
+## Focused #11 quality follow-up (v4)
+
+All four pipeline corrections and their context/overlap/fault regressions are
+implemented. Final full-owner validation passed: **175 deterministic/model-free
+plus five tiny native tests**, CRAP maximum **7**, and mutation
+**99.0079365079365%** (499/504, including five detected timeouts; configured
+99 threshold exited zero). All ten handwritten owner sources match the report.
+See [the final verification](pipeline-quality-followup.md#final-verification-after-resuming)
+for exact scope, commands, limitations and persistent private evidence.
+Earlier v2/v3 gate failures below are historical snapshots, not current results.
+Model selection remains incomplete; the v4 request contract has no claimed
+real-model semantic pass.
+
+The current request transports `task`, selected `language`, question, source
+ranges and a bounded JSON `outputSchema`. The semantic instruction still treats
+source text as untrusted and requires grounding/qualifications; duplicated
+schema/limit prose has been removed. Managed validation and native grammar
+remain enforced independently, with no silent repair or relaxed limits.
+`ReadCoverage` streams unique completed source lengths so callers can observe
+coverage without counting repeated overlap. Canonical original read blocks own
+source consistency; derived evidence-window insertion does not duplicate that
+validation.
+
+Focused public-seam checks cover actionable error reasons, exact field/reference/
+metadata/timeline limits, original-order token packing, word/surrogate overlap,
+archived-v2/current evidence-reader joins, explicit model-family file selection,
+Qwen/Phi wire protocol, and actual native context/disposal boundaries.
+No private database queries are used as assertions; golden SQLite input setup
+is followed only by public artifact readers.
+
+The separately approved fresh Portuguese summary executed **exactly one** test
+with normal model/ledger/collector/observer context, 20-minute request limit,
+local minidump/hang collection: **passed**, 142.5991994 s test / 137.3030807 s
+request, five bounded calls. No dump was produced. It used the frozen pre-v4
+v3 request bytes and does **not** establish a cause/fix for the original abort
+or semantic acceptance. No further full comparison was run.
+
+Exact final strict gate results and persistent raw evidence:
+[pipeline-quality-followup.md](pipeline-quality-followup.md).
+
 ## Issue #11 continuation: context grouping and explicit faults (v3)
 
 The current pipeline groups up to four fresh original ranges / 4,096 original

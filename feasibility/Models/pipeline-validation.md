@@ -1,5 +1,9 @@
 # Issue #11: structured streaming pipeline v2
 
+This is the historical first implementation snapshot. Its failures are retained
+unchanged below. The subsequent context/fault fixes and final passing quality
+results are recorded in [the final follow-up](pipeline-quality-followup.md).
+
 **INCOMPLETE: both mandatory quality gates fail and the cached native run aborted.**
 The four pipeline corrections are implemented and exercised at the approved public
 seams, but this is not ticket completion, model approval, or production authorization.

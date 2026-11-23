@@ -31,6 +31,30 @@ public sealed record Excerpt(string Id, long? StartMs, long? EndMs, string Text)
 public sealed partial class GenerationProbe(IGenerationBackend backend, int contextTokens = 4096,
     int outputTokens = 1024, int answerTokens = 512)
 {
+    private static readonly JsonElement OutputSchema = JsonSerializer.Deserialize<JsonElement>("""
+        {
+          "type":"object","required":["claims","limitation"],"additionalProperties":false,
+          "$defs":{"presence":{"oneOf":[
+            {"type":"object","required":["state","value"],"additionalProperties":false,
+             "properties":{"state":{"const":"Absent"},"value":{"type":"null"}}},
+            {"type":"object","required":["state","value"],"additionalProperties":false,
+             "properties":{"state":{"const":"Stated"},"value":{"type":"string","minLength":1,"maxLength":128}}}
+          ]}},
+          "properties":{
+            "claims":{"type":"array","maxItems":16,"items":{
+              "type":"object","required":["kind","statement","owner","deadline","qualifiers","references"],"additionalProperties":false,
+              "properties":{
+                "kind":{"enum":["Topic","Decision","Action","Report"]},
+                "statement":{"type":"string","minLength":1,"maxLength":512},
+                "owner":{"$ref":"#/$defs/presence"},"deadline":{"$ref":"#/$defs/presence"},
+                "qualifiers":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":128}},
+                "references":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":3}}
+              }
+            }},
+            "limitation":{"type":["string","null"],"minLength":1,"maxLength":512}
+          }
+        }
+        """);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,

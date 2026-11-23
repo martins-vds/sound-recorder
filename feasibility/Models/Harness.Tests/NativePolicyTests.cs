@@ -20,8 +20,9 @@ public sealed class NativePolicyTests
             verified = true;
             return Task.CompletedTask;
         }
-        await Assert.ThrowsAsync<ArgumentException>(() =>
+        var error=await Assert.ThrowsAsync<ArgumentException>(() =>
             LlamaGeneration.LoadAsync("cache", native.Load, VerifyNeither, qwen3: true, phiMini: true));
+        Assert.Contains("one explicit generation profile",error.Message);
         Assert.False(verified);
         Assert.Null(native.Parameters);
     }
