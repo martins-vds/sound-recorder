@@ -11,6 +11,7 @@ using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
 using SoundRecorder.Infrastructure.Privacy;
+using SoundRecorder.Infrastructure.Analysis;
 
 namespace SoundRecorder.Desktop;
 
@@ -47,7 +48,8 @@ public sealed partial class MainViewModel : ObservableObject
         WindowsAudioDeviceCatalog devices,
         ILogger<MainViewModel> logger,
         IRecordingLibrary? library = null,
-        IRecordingPlayback? playback = null)
+        IRecordingPlayback? playback = null,
+        ILocalTranscriptAnalysis? analysis = null)
         : this(
             recorder,
             (IRecordingMonitor)recordingEngine,
@@ -58,7 +60,8 @@ public sealed partial class MainViewModel : ObservableObject
             devices,
             logger,
             library,
-            playback)
+            playback,
+            analysis)
     {
     }
 
@@ -73,7 +76,8 @@ public sealed partial class MainViewModel : ObservableObject
         IAudioDeviceCatalog devices,
         ILogger<MainViewModel> logger,
         IRecordingLibrary? library = null,
-        IRecordingPlayback? playback = null)
+        IRecordingPlayback? playback = null,
+        ILocalTranscriptAnalysis? analysis = null)
     {
         _recorder = recorder;
         _recordingEngine = recordingEngine;
@@ -85,6 +89,7 @@ public sealed partial class MainViewModel : ObservableObject
         _logger = logger;
         _library = library;
         _playback = playback;
+        _analysis = analysis;
         destinationFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
             "Sound Recorder");
@@ -489,11 +494,12 @@ public sealed partial class MainViewModel : ObservableObject
         _playback?.Dispose();
     }
 
-    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel;
+    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel || IsAnalyzing;
 
     public async Task PrepareViewCloseAsync()
     {
         _closingView = true;
+        await ReleaseAnalysisForCaptureAsync();
         _transcriptReadVersion++;
         _searchCancellation?.Cancel();
         _modelDownloadCancellation?.Cancel();
@@ -602,6 +608,7 @@ public sealed partial class MainViewModel : ObservableObject
         IsBusy = true;
         try
         {
+            await ReleaseAnalysisForCaptureAsync();
             var privacyWarning = GetSynchronizedFolderWarning();
             var request = BuildRequest() with
             {
@@ -858,6 +865,23 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RetryRecordingAsync(SavedRecording? recording)
     {
+        if (IsAnalyzing)
+        {
+            Message = "Cancel experimental analysis and wait for native release, then explicitly retry transcription.";
+            return;
+        }
+        _pendingTranscriptionRequests++;
+        NotifyAnalysisAvailability();
+        try { await RetryRecordingCoreAsync(recording); }
+        finally
+        {
+            _pendingTranscriptionRequests--;
+            NotifyAnalysisAvailability();
+        }
+    }
+
+    private async Task RetryRecordingCoreAsync(SavedRecording? recording)
+    {
         if (!await WaitForPendingModelSelectionAsync())
         {
             return;
@@ -886,6 +910,18 @@ public sealed partial class MainViewModel : ObservableObject
         _modelSelection is not { IsCompleted: false } selection || await selection;
 
     private async Task EnqueueAfterSelectionAsync(SavedRecording recording, Task<bool> selection)
+    {
+        _pendingTranscriptionRequests++;
+        NotifyAnalysisAvailability();
+        try { await EnqueueAfterSelectionCoreAsync(recording, selection); }
+        finally
+        {
+            _pendingTranscriptionRequests--;
+            NotifyAnalysisAvailability();
+        }
+    }
+
+    private async Task EnqueueAfterSelectionCoreAsync(SavedRecording recording, Task<bool> selection)
     {
         if (!await selection)
         {
@@ -1167,6 +1203,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void RefreshJobs()
     {
+        NotifyAnalysisAvailability();
         var selectedJobId = SelectedJob?.Id;
         var current = _queue.Jobs;
         if (!Jobs.SequenceEqual(current))
@@ -1372,6 +1409,7 @@ public sealed partial class MainViewModel : ObservableObject
     private void RefreshState()
     {
         Status = _recorder.VisibleStatus;
+        NotifyAnalysisAvailability();
         OnPropertyChanged(nameof(IsIdle));
         OnPropertyChanged(nameof(IsRecording));
         OnPropertyChanged(nameof(IsPaused));
@@ -1417,6 +1455,7 @@ public sealed partial class MainViewModel : ObservableObject
     partial void OnSelectedRecordingChanged(SavedRecording? value)
     {
         if (_closingView) return;
+        ResetTranscriptAnalysis();
         _transcriptReadVersion++;
         Transcript = null;
         CanCopyTranscript = false;

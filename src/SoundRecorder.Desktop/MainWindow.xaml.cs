@@ -12,6 +12,7 @@ using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Privacy;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
+using SoundRecorder.Infrastructure.Analysis;
 
 namespace SoundRecorder.Desktop;
 
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _limitWarningShown;
     private string? _previousStatus;
+    private Task<string?>? _nativeRuntimeProbe;
 
     public MainWindow()
         : this(
@@ -73,6 +75,7 @@ public partial class MainWindow : Window
             InitializeServices(stateDirectory, loggerFactory, dialogs, environment, lifecycleEvents,
                 devices ?? new WindowsAudioDeviceCatalog(), transcriber ?? CreateTranscriber,
                 playback ?? new WindowsRecordingPlayback());
+            _nativeRuntimeProbe = Task.Run(Whisper.net.WhisperFactory.GetRuntimeInfo);
         }
 
         catch (Exception exception)
@@ -178,7 +181,10 @@ public partial class MainWindow : Window
             devices,
             loggerFactory.CreateLogger<MainViewModel>(),
             library,
-            playback);
+            playback,
+            new LocalTranscriptAnalysis(
+                Environment.GetEnvironmentVariable("SOUNDRECORDER_ANALYSIS_MODELS") ?? "",
+                Path.Combine(root, "experimental-analysis")));
         _dialogs = dialogs();
         _environment = environment();
         _lifecycleEvents = lifecycleEvents(recordingEngine);
@@ -221,6 +227,19 @@ public partial class MainWindow : Window
         try
         {
             await _viewModel.InitializeCommand.ExecuteAsync(null);
+            if (_nativeRuntimeProbe is { } probe)
+            {
+                try
+                {
+                    var runtime = await probe ?? throw new InvalidOperationException("Whisper returned no native runtime information.");
+                    DesktopLog.NativeTranscriptionRuntimeReady(_logger, runtime);
+                }
+                catch (Exception exception)
+                {
+                    DesktopLog.NativeTranscriptionRuntimeFailed(_logger, exception.GetType().Name);
+                    _viewModel.Message = "The native transcription runtime could not load. Recording remains available; check the local diagnostics before requesting transcription.";
+                }
+            }
             await OfferRecoveryAsync();
             _timer.Start();
             DesktopLog.MainWindowReady(_logger);
