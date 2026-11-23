@@ -90,6 +90,26 @@ No new model downloads, automatic tuning, relaxed quality gates, or final
 profile/performance approval are included. Earlier experiment reports retain
 their original results and configuration identities.
 
+## Manual-validation walking skeleton authorization - 2026-11-23
+
+The user subsequently requested a working walking skeleton in the existing
+desktop application and explicitly excluded the 12-hour test. This authorizes
+a narrow experimental integration, superseding the earlier feature-code
+restriction only for this manual-validation slice.
+
+Select one successful saved transcript, explicitly generate a local summary
+or ask a question using the already-downloaded Phi-mini model, and inspect
+the supporting original excerpts. Preserve the incumbent desktop layout and
+recording workflow. Expose progress, cancellation, actionable errors, model
+configuration requirements, and an unverified-output warning. No automatic
+downloads, cloud fallback, new model trials, or final release claims are included.
+
+Confirmed test interfaces are desktop commands/view-model behavior, the local
+analysis adapter, and the existing native UI test host. Selection ownership and
+stale results, recording/transcription exclusion, evidence inspection, cancellation
+and errors are in scope. One short cached-model smoke test is authorized;
+the 12-hour stress test and full release-acceptance campaign are not.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved
