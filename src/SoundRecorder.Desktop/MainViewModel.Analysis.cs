@@ -33,7 +33,7 @@ public sealed partial class MainViewModel
     private TranscriptAnalysisClaim? selectedAnalysisClaim;
 
     public ObservableCollection<TranscriptAnalysisClaim> AnalysisClaims { get; } = [];
-    public string AnalysisWarning => "EXPERIMENTAL · UNVERIFIED model output. Phi-mini may invent or misinterpret facts, owners and deadlines even with valid citations. Inspect every original excerpt. Not release-approved. Private diagnostic snapshots are retained separately from recording deletion.";
+    public string AnalysisWarning => "EXPERIMENTAL · UNVERIFIED model output. Phi-mini may invent or misinterpret facts, owners and deadlines even with valid citations. Inspect every original excerpt. Not release-approved. Full recording deletion also removes its owned private analysis diagnostics.";
     public string AnalysisOwnership => CompletedTranscriptJobId is { } id
         ? $"Selected successful transcript attempt: {id:N}" : "No successful transcript selected.";
     public string AnalysisEvidence => SelectedAnalysisClaim is null ? "Select a candidate to inspect exact original excerpts." :
@@ -43,7 +43,7 @@ public sealed partial class MainViewModel
             "\n" + evidence.Text));
     public bool CanAnalyzeTranscript => IsAnalysisAvailable && CanCopyTranscript && AnalysisTarget() is not null &&
         !IsCaptureStartingOrActive && !HasPendingTranscription;
-    private bool IsAnalysisAvailable => _analysis is not null && !IsAnalyzing && !_closingView;
+    private bool IsAnalysisAvailable => _analysis is not null && !IsAnalyzing && !_closingView && !IsDeletingRecording;
     private bool IsCaptureStartingOrActive => IsBusy || !IsIdle;
     private bool HasPendingTranscription => IsSelectingModel || _pendingTranscriptionRequests != 0 ||
         _queue.Jobs.Any(IsBlockingJob);
@@ -142,13 +142,27 @@ public sealed partial class MainViewModel
         if (_analysisTask is { } running) await running;
     }
 
+    private async Task DeleteOwnedAnalysisAsync(SavedRecording recording)
+    {
+        await ReleaseAnalysisForCaptureAsync();
+        if (_analysis is not ILocalAnalysisDiagnostics diagnostics) return;
+        var saved = await Task.Run(() => _history.LoadAsync(CancellationToken.None));
+        var owned = saved.FirstOrDefault(item => item.Id == recording.Id) ?? recording;
+        var attempts = owned.TranscriptOutputs.Select(item => item.JobId)
+            .Concat(_queue.Jobs.Where(job => job.Recording.Id == recording.Id).Select(job => job.Id))
+            .Distinct().ToArray();
+        await diagnostics.DeleteDiagnosticsAsync(attempts, CancellationToken.None);
+    }
+
     private TranscriptAnalysisRequest? AnalysisTarget()
     {
         if (SelectedRecording is not { PendingDeletion: null } recording || CompletedTranscriptJobId is not { } attempt)
             return null;
         var job = FindAnalysisJob(recording.Id, attempt);
         var pair = FindAnalysisOutputs(recording, attempt, job);
-        return pair is null ? null : new(attempt, pair, job?.Recording.Language ?? "source language", null);
+        var language = recording.TranscriptOutputs.FirstOrDefault(item => item.JobId == attempt)?.Language ?? job?.Language;
+        return pair is null || language is not ("English" or "Brazilian Portuguese") ? null :
+            new(attempt, pair, language, null);
     }
 
     private TranscriptionJob? FindAnalysisJob(Guid recordingId, Guid attempt) =>
@@ -168,6 +182,8 @@ public sealed partial class MainViewModel
         AnalysisQuestion = "";
         AnalysisStatus = IsAnalyzing ? "Selection changed. Discarding old output; waiting for native safe release." :
             "Select a successful transcript, then explicitly generate a summary or ask a question.";
+        if (CompletedTranscriptJobId is not null && AnalysisTarget() is null)
+            AnalysisStatus = "The selected transcript's exact attempt language is unavailable. Select an attempt with retained language metadata or explicitly transcribe again. No language was guessed.";
         OnPropertyChanged(nameof(AnalysisOwnership));
         NotifyAnalysisAvailability();
     }
@@ -183,4 +199,5 @@ public sealed partial class MainViewModel
     partial void OnAnalysisQuestionChanged(string value) => AskTranscriptCommand.NotifyCanExecuteChanged();
     partial void OnSelectedAnalysisClaimChanged(TranscriptAnalysisClaim? value) => OnPropertyChanged(nameof(AnalysisEvidence));
     partial void OnIsBusyChanged(bool value) => NotifyAnalysisAvailability();
+    partial void OnIsDeletingRecordingChanged(bool value) => NotifyAnalysisAvailability();
 }

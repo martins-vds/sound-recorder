@@ -108,7 +108,13 @@ public sealed class JsonRecordingHistory : IRecordingHistory
         if (existing is not null)
         {
             EnsureSameOutputPair(existing, outputs);
-            return false;
+            if (existing.Language is not null || outputs.Language is null) return false;
+            history[index] = recording with
+            {
+                TranscriptOutputs = recording.TranscriptOutputs.Select(item => item.JobId == outputs.JobId
+                    ? item with { Language = outputs.Language } : item).ToArray()
+            };
+            return true;
         }
 
         EnsurePublicationAvailable(recording);
@@ -121,7 +127,8 @@ public sealed class JsonRecordingHistory : IRecordingHistory
 
     private static void EnsureSameOutputPair(OwnedTranscriptOutputs existing, OwnedTranscriptOutputs outputs)
     {
-        if (existing != outputs)
+        if (existing.Outputs != outputs.Outputs ||
+            existing.Language is not null && outputs.Language is not null && existing.Language != outputs.Language)
             throw new InvalidDataException("The job already owns a different transcript output pair.");
     }
 

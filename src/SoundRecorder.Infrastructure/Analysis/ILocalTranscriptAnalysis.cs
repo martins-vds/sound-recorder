@@ -21,3 +21,9 @@ public interface ILocalTranscriptAnalysis
     Task<TranscriptAnalysisResult> AnalyzeAsync(TranscriptAnalysisRequest request,
         IProgress<string> progress, CancellationToken cancellationToken);
 }
+
+/// <summary>Removes private diagnostics only for explicitly owned successful attempts.</summary>
+public interface ILocalAnalysisDiagnostics
+{
+    Task DeleteDiagnosticsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken);
+}

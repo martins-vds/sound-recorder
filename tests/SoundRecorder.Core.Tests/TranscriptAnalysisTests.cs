@@ -2,11 +2,296 @@ using Models.Harness;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Analysis;
 using SoundRecorder.Desktop;
+using SoundRecorder.Infrastructure.Transcription;
+using SoundRecorder.Infrastructure.Persistence;
 
 namespace SoundRecorder.Core.Tests;
 
 public sealed class TranscriptAnalysisTests
 {
+    [Fact]
+    public async Task LoadAsync_RegisteredLegacyOutput_DoesNotRewriteHistoryDuringReview()
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.NewGuid());
+        await File.WriteAllBytesAsync(recording.AudioPath, [1]);
+        var path = Path.Combine(context.Directory, "legacy-language.json");
+        var history = new JsonRecordingHistory(path);
+        await history.AddAsync(recording, default);
+        context.Transcriber.Segments = [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Revisão em português.")];
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(),
+            context.Repository, history: history);
+        var job = await queue.RetryAsync(recording with { Language = "Brazilian Portuguese" }, default);
+        await queue.WaitForIdleAsync(default);
+        Assert.Equal(TranscriptionJobStatus.Succeeded, job.Status);
+        Assert.Equal("Brazilian Portuguese", job.Language);
+        context.Repository.Items.Add(job);
+        await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            recording with { TranscriptOutputs = [new(job.Id, job.Outputs!)] }
+        }));
+        var before = await File.ReadAllBytesAsync(path);
+
+        var entries = await new RecordingLibrary(new JsonRecordingHistory(path), context.Repository).LoadAsync(default);
+
+        var owned = Assert.Single(Assert.Single(entries).Recording.TranscriptOutputs);
+        Assert.Equal(job.Id, owned.JobId);
+        Assert.Null(owned.Language);
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+    }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("time")]
+    [InlineData("number")]
+    [InlineData("line ending")]
+    public async Task AnalyzeAsync_InvalidSavedPair_DoesNotInferAndReleasesResourcesForExplicitRetry(string corruption)
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var original = await File.ReadAllTextAsync(outputs.SubtitlePath);
+        var corrupt = corruption switch
+        {
+            "text" => original.Replace("Ana", "Bruno"),
+            "time" => original.Replace("00:00:02,000", "00:00:00,000"),
+            "number" => original.Replace("1" + Environment.NewLine, "2" + Environment.NewLine),
+            _ => original.Replace("\r\n", "\r")
+        };
+        await File.WriteAllTextAsync(outputs.SubtitlePath, corrupt);
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+        var attempt = Guid.NewGuid();
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            adapter.AnalyzeAsync(new(attempt, outputs, "English", null), new Progress<string>(), default));
+        Assert.Empty(backend.Prompt);
+        await File.WriteAllTextAsync(outputs.SubtitlePath, original);
+        var result = await adapter.AnalyzeAsync(new(attempt, outputs, "English", null), new Progress<string>(), default)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("Completed", result.Status);
+        await adapter.DeleteDiagnosticsAsync([attempt], default);
+        Assert.False(Directory.Exists(Path.Combine(context.Directory, attempt.ToString("N"))));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_UnicodeQuestionRanges_PreserveCompleteScalarsInNativeTokenPacking()
+    {
+        using var context = new DesktopTestContext();
+        var original = "a" + string.Concat(Enumerable.Repeat("😀", 800)) + " qualification remains.";
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), original)]), default);
+        var embeddings = new EmbeddingBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend(), embeddings);
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", "What was reported?"),
+            new Progress<string>(), default);
+        Assert.NotEmpty(result.Claims);
+        Assert.All(embeddings.Inputs, input => Assert.True(embeddings.CountTokens(input) <= 512));
+        Assert.All(result.Claims.SelectMany(claim => claim.Evidence), evidence =>
+            Assert.Contains(evidence.Text, "[00:00:00.000] " + original));
+    }
+
+    [Theory]
+    [InlineData("First line.\nSecond line.")]
+    [InlineData("First line.\r\nSecond line.")]
+    public async Task AnalyzeAsync_MultilineSavedCue_PreservesOriginalTextWithoutNormalizingIt(string original)
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(4), original)]), default);
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend());
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default);
+        Assert.Equal("[00:00:00.000] " + original, Assert.Single(Assert.Single(result.Claims).Evidence).Text);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_UnknownAttemptLanguage_RequiresMetadataInsteadOfGuessing()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var backend = new CandidateBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend);
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "source language", null), new Progress<string>(), default));
+        Assert.Empty(backend.Prompt);
+    }
+
+    [Fact]
+    public async Task StartRecordingAsync_CloseWhileWaitingForAnalysisRelease_DoesNotStartCaptureAfterCloseIntent()
+    {
+        using var context = new DesktopTestContext();
+        var adapter = new HeldAnalysis();
+        var vm = await ReviewedAsync(context, adapter);
+        vm.PermissionConfirmed = true;
+        vm.SelectedMicrophoneId = "microphone";
+        vm.DestinationFolder = context.Directory;
+        var analysis = vm.GenerateSummaryCommand.ExecuteAsync(null);
+        await adapter.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var capture = vm.StartRecordingAsync(false);
+        var close = vm.PrepareViewCloseAsync();
+        adapter.Release.SetResult();
+        await Task.WhenAll(analysis, capture, close);
+        Assert.Null(context.Engine.Request);
+        Assert.False(vm.StartCommand.CanExecute(null));
+        await vm.RetranscribeSelectedRecordingCommand.ExecuteAsync(null);
+        Assert.Empty(context.Queue.Jobs);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteRecordingAsync_FullDeletion_RemovesPrivateAnalysisAndSavedArtifactsTogether(bool lockedDiagnostic)
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.NewGuid());
+        await File.WriteAllBytesAsync(recording.AudioPath, [1]);
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var attempt = Guid.NewGuid();
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "history.json"));
+        await history.AddAsync(recording with
+        {
+            TranscriptOutputs = [new(attempt, outputs) { Language = "English" }]
+        }, default);
+        var adapter = new LocalTranscriptAnalysis("unused", Path.Combine(context.Directory, "analysis"), new CandidateBackend());
+        var vm = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models, history,
+            new RecoveryManager(context.Recovery), context, context.Logger,
+            library: new RecordingLibrary(history, context.Repository, cancelRecordingAsync: context.Queue.CancelRecordingAsync,
+                deleteJobAsync: context.Queue.DeleteJobAsync,
+                releasePlaybackAsync: (_, _) => Task.CompletedTask), analysis: adapter);
+        var reviewed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(vm.CompletedTranscriptJobId) && vm.CompletedTranscriptJobId == attempt)
+                reviewed.TrySetResult();
+        };
+        var retained = Assert.Single(await history.LoadAsync(default));
+        vm.Recordings.Add(retained);
+        vm.SelectedRecording = retained;
+        await reviewed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+        Assert.True(File.Exists(vm.AnalysisArtifact));
+        if (lockedDiagnostic)
+        {
+            using (File.Open(vm.AnalysisArtifact, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                await vm.DeleteRecordingAsync(true);
+                Assert.Contains("Deletion could not finish", vm.Message);
+                Assert.True(File.Exists(recording.AudioPath));
+                Assert.True(File.Exists(outputs.TextPath));
+                Assert.True(File.Exists(outputs.SubtitlePath));
+            }
+        }
+        await vm.DeleteRecordingAsync(true);
+        Assert.False(Directory.Exists(Path.Combine(context.Directory, "analysis", attempt.ToString("N"))));
+        Assert.False(File.Exists(outputs.TextPath));
+        Assert.False(File.Exists(outputs.SubtitlePath));
+        Assert.False(File.Exists(recording.AudioPath));
+    }
+
+    [Fact]
+    public async Task DeleteDiagnosticsAsync_ExplicitOwnedAttempt_RemovesItsPrivateSourcesButKeepsOtherAttempts()
+    {
+        using var context = new DesktopTestContext();
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(context.Recording(Guid.NewGuid()), "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft.")]), default);
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend());
+        var owned = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var first = await adapter.AnalyzeAsync(new(owned, outputs, "English", null), new Progress<string>(), default);
+        var second = await adapter.AnalyzeAsync(new(other, outputs, "English", null), new Progress<string>(), default);
+        await adapter.DeleteDiagnosticsAsync([owned], default);
+        Assert.False(Directory.Exists(Path.Combine(context.Directory, owned.ToString("N"))));
+        Assert.True(File.Exists(second.LedgerPath));
+        Assert.True(File.Exists(outputs.TextPath));
+        Assert.True(File.Exists(outputs.SubtitlePath));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GenerateSummaryCommand_JobHistoryDeleted_RetainsExactAttemptLanguageAcrossReload(bool legacyMetadata)
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.NewGuid());
+        await File.WriteAllBytesAsync(recording.AudioPath, [1]);
+        var history = new JsonRecordingHistory(Path.Combine(context.Directory, "history.json"));
+        await history.AddAsync(recording, default);
+        context.Transcriber.Segments = [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Revisão em português.")];
+        var queue = new TranscriptionQueue(context.Transcriber, new AtomicTranscriptWriter(),
+            context.Repository, history: history);
+        var job = await queue.RetryAsync(recording with { Language = "Brazilian Portuguese" }, default);
+        await queue.WaitForIdleAsync(default);
+        if (legacyMetadata)
+        {
+            var legacy = recording with { TranscriptOutputs = [new(job.Id, job.Outputs!)] };
+            await File.WriteAllTextAsync(Path.Combine(context.Directory, "history.json"),
+                System.Text.Json.JsonSerializer.Serialize(new[] { legacy }));
+        }
+        await queue.DeleteJobAsync(job.Id, default);
+        var reloaded = new JsonRecordingHistory(Path.Combine(context.Directory, "history.json"));
+        var retained = Assert.Single(await reloaded.LoadAsync(default));
+        var analysis = new HeldAnalysis();
+        var vm = new MainViewModel(context.Recorder, context.Engine, queue, context.Models, reloaded,
+            new RecoveryManager(context.Recovery), context, context.Logger,
+            library: new RecordingLibrary(reloaded), analysis: analysis);
+        var reviewed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(vm.CompletedTranscriptJobId) && vm.CompletedTranscriptJobId == job.Id)
+                reviewed.TrySetResult();
+        };
+        vm.Recordings.Add(retained);
+        vm.SelectedRecording = retained;
+        await reviewed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var work = vm.GenerateSummaryCommand.ExecuteAsync(null);
+        try
+        {
+            await analysis.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("Brazilian Portuguese", analysis.Request!.Language);
+            Assert.Equal(job.Id, analysis.Request.AttemptId);
+        }
+        finally { analysis.Release.TrySetResult(); await work; }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_LongQuestionSources_EmbedsTheQuestionOnceAndHonorsNativeDocumentTokenLimits()
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.NewGuid());
+        var sentence = string.Join(" ", Enumerable.Repeat("Qualificação importante sobre a ação proposta.", 30));
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, "Brazilian Portuguese",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), sentence),
+             new(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(4), "O prazo ainda não foi aprovado.")]), default);
+        var embeddings = new EmbeddingBackend();
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend(), embeddings);
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "Brazilian Portuguese", "Quais são todas as ações?"),
+            new Progress<string>(), default);
+        Assert.Equal(1, embeddings.Inputs.Count(input => input.StartsWith("search_query: ", StringComparison.Ordinal)));
+        Assert.All(embeddings.Inputs, input => Assert.True(embeddings.CountTokens(input) <= 512));
+        Assert.True(embeddings.Inputs.Count(input => input.StartsWith("search_document: ", StringComparison.Ordinal)) > 2);
+        Assert.Contains("not exhaustive", result.Detail);
+        Assert.All(result.Claims.SelectMany(claim => claim.Evidence), evidence =>
+            Assert.Contains(evidence.Text, $"[00:00:00.000] {sentence}\r\n[00:00:03.000] O prazo ainda não foi aprovado."));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_SavedCues_PreservesTheSelectedOriginalCueAndBothTimestamps()
+    {
+        using var context = new DesktopTestContext();
+        var recording = context.Recording(Guid.NewGuid());
+        var outputs = await new AtomicTranscriptWriter().WriteAsync(new(recording, "English",
+            [new(TimeSpan.Zero, TimeSpan.FromSeconds(2), "Ana sends the draft."),
+             new(TimeSpan.FromMilliseconds(3200), TimeSpan.FromMilliseconds(4900), "Bruno will review it tomorrow.")]), default);
+        var adapter = new LocalTranscriptAnalysis("unused", context.Directory, new CandidateBackend(reference: 1));
+        var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), outputs, "English", null), new Progress<string>(), default);
+        Assert.Equal("Completed", result.Status);
+        var evidence = Assert.Single(Assert.Single(result.Claims).Evidence);
+        Assert.Equal("[00:00:03.200] Bruno will review it tomorrow.", evidence.Text);
+        Assert.Equal(3200, evidence.StartMs);
+        Assert.Contains("00:00:04,900", evidence.Reference);
+    }
+
     [Fact]
     public async Task GenerateSummaryCommand_TranscriptionRunning_DoesNotStartCompetingInference()
     {
@@ -65,8 +350,8 @@ public sealed class TranscriptAnalysisTests
     {
         using var context = new DesktopTestContext();
         var path = Path.Combine(context.Directory, "configuration.txt");
-        await File.WriteAllTextAsync(path, "Ana will send the draft.");
-        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "saved subtitle fixture");
+        await File.WriteAllTextAsync(path, "[00:00:01.000] Ana will send the draft.");
+        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "1\n00:00:01,000 --> 00:00:02,000\nAna will send the draft.\n");
         var adapter = new LocalTranscriptAnalysis("", context.Directory, new CandidateBackend());
         var error = await Assert.ThrowsAsync<DirectoryNotFoundException>(() =>
             adapter.AnalyzeAsync(new(Guid.NewGuid(), new(path, Path.ChangeExtension(path, ".srt")),
@@ -82,7 +367,7 @@ public sealed class TranscriptAnalysisTests
         var path = Path.Combine(context.Directory, "question.txt");
         const string original = "[00:00:01.000] Ana will send the draft on Friday.";
         await File.WriteAllTextAsync(path, original);
-        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "saved subtitle fixture");
+        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "1\n00:00:01,000 --> 00:00:02,000\nAna will send the draft on Friday.\n");
         var backend = new CandidateBackend();
         var adapter = new LocalTranscriptAnalysis("unused", context.Directory, backend, new EmbeddingBackend());
         var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), new(path, Path.ChangeExtension(path, ".srt")),
@@ -98,8 +383,8 @@ public sealed class TranscriptAnalysisTests
     {
         using var context = new DesktopTestContext();
         var path = Path.Combine(context.Directory, "limited.txt");
-        await File.WriteAllTextAsync(path, "Ana will send the draft.");
-        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "saved subtitle fixture");
+        await File.WriteAllTextAsync(path, "[00:00:01.000] Ana will send the draft.");
+        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".srt"), "1\n00:00:01,000 --> 00:00:02,000\nAna will send the draft.\n");
         var adapter = new LocalTranscriptAnalysis("unused", context.Directory,
             new CandidateBackend(GenerationFinish.TokenLimit));
         var result = await adapter.AnalyzeAsync(new(Guid.NewGuid(), new(path, Path.ChangeExtension(path, ".srt")),
@@ -250,7 +535,7 @@ public sealed class TranscriptAnalysisTests
         Assert.Equal(attempt.ToString("N"), ledger.ReadRun().Identity.SuccessfulTranscriptionAttemptId);
     }
 
-    private sealed class CandidateBackend(GenerationFinish finish = GenerationFinish.Completed) : IGenerationBackend
+    private sealed class CandidateBackend(GenerationFinish finish = GenerationFinish.Completed, int reference = 0) : IGenerationBackend
     {
         public string Prompt { get; private set; } = "";
         public string RenderPrompt(string instruction, string input) => input;
@@ -260,7 +545,7 @@ public sealed class TranscriptAnalysisTests
             Prompt = prompt;
             return Task.FromResult(new GenerationResult("""
                 {"claims":[{"kind":"Action","statement":"Ana will send the draft","owner":{"state":"Stated","value":"Ana"},"deadline":{"state":"Stated","value":"Friday"},"qualifiers":[],"references":[0]}],"limitation":null}
-                """, finish, 60));
+                """.Replace("\"references\":[0]", $"\"references\":[{reference}]"), finish, 60));
         }
     }
 
@@ -309,9 +594,11 @@ public sealed class TranscriptAnalysisTests
 
     private sealed class EmbeddingBackend : IEmbeddingBackend
     {
-        public int CountTokens(string input) => input.Length / 4;
+        public List<string> Inputs { get; } = [];
+        public int CountTokens(string input) => new System.Text.UTF8Encoding(false, true).GetByteCount(input) * 2;
         public Task<float[]> EmbedAsync(string input, CancellationToken cancellationToken)
         {
+            Inputs.Add(input);
             var vector = new float[768];
             vector[0] = 1;
             return Task.FromResult(vector);

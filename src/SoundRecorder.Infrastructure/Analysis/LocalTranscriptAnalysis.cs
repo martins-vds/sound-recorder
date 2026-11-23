@@ -2,14 +2,31 @@ using Models.Harness;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace SoundRecorder.Infrastructure.Analysis;
 
 /// <summary>Narrow experimental adapter over the approved feasibility pipeline, without downloads.</summary>
 public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifactDirectory,
-    IGenerationBackend? generation = null, IEmbeddingBackend? embedding = null) : ILocalTranscriptAnalysis
+    IGenerationBackend? generation = null, IEmbeddingBackend? embedding = null) : ILocalTranscriptAnalysis, ILocalAnalysisDiagnostics
 {
     private static readonly SemaphoreSlim InferenceGate = new(1, 1);
+
+    public Task DeleteDiagnosticsAsync(IReadOnlyCollection<Guid> attemptIds, CancellationToken cancellationToken) =>
+        Task.Run(async () =>
+        {
+            await InferenceGate.WaitAsync(cancellationToken);
+            try
+            {
+                foreach (var attempt in attemptIds.Distinct())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var directory = Path.Combine(artifactDirectory, attempt.ToString("N"));
+                    if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+                }
+            }
+            finally { InferenceGate.Release(); }
+        });
 
     public Task<TranscriptAnalysisResult> AnalyzeAsync(TranscriptAnalysisRequest request,
         IProgress<string> progress, CancellationToken cancellationToken) =>
@@ -20,6 +37,7 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
     {
         if (request.AttemptId == Guid.Empty || request.Question is { Length: > 512 })
             throw new ArgumentException("Select a successful transcript and keep questions within 512 characters.");
+        var language = AnalysisLanguage(request.Language);
         await InferenceGate.WaitAsync(token);
         try
         {
@@ -27,12 +45,17 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
             var run = Path.Combine(artifactDirectory, request.AttemptId.ToString("N"), Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(run);
             var snapshot = Path.Combine(run, "source.txt");
-            using (var subtitles = File.Open(request.Outputs.SubtitlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            var subtitleSnapshot = Path.ChangeExtension(snapshot, ".srt");
+            await using (var subtitles = File.Open(request.Outputs.SubtitlePath, FileMode.Open, FileAccess.Read, FileShare.Read))
             await using (var source = File.Open(request.Outputs.TextPath, FileMode.Open, FileAccess.Read, FileShare.Read))
             await using (var destination = File.Create(snapshot))
+            {
                 await source.CopyToAsync(destination, token);
-            await using var saved = File.OpenRead(snapshot);
-            var hash = Convert.ToHexString(await SHA256.HashDataAsync(saved, token));
+                await using var subtitleDestination = File.Create(subtitleSnapshot);
+                await subtitles.CopyToAsync(subtitleDestination, token);
+            }
+            foreach (var _ in SavedTranscriptSources.Read(snapshot, subtitleSnapshot, token)) { }
+            var hash = await PairHashAsync(snapshot, subtitleSnapshot, token);
             var identity = new TranscriptIdentity(request.AttemptId.ToString("N"), hash);
             progress.Report("Verifying and loading cached Phi-mini (no downloads)");
             if (generation is null) NativeCpu.Probe();
@@ -40,7 +63,6 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
                 ? await LlamaGeneration.LoadPhiMiniAsync(RequireModelDirectory(), token) : null;
             var backend = generation ?? nativeGeneration!;
             var probe = new GenerationProbe(backend);
-            var language = AnalysisLanguage(request.Language);
             var ledgerPath = Path.Combine(run, "claims.sqlite");
             AnalysisResult outcome;
             if (request.Question is { } question)
@@ -59,24 +81,31 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
             }
             token.ThrowIfCancellationRequested();
             progress.Report("Resolving exact original evidence");
-            return Present(outcome);
+            var result = Present(outcome);
+            return request.Question is null ? result : result with
+            {
+                Detail = "Retrieval-limited: at most three highest-ranked original ranges were supplied. This is not exhaustive and cannot establish every item or the absence of an answer. " + result.Detail
+            };
         }
+
         finally { InferenceGate.Release(); }
+    }
+
+    private static async Task<string> PairHashAsync(string text, string subtitles, CancellationToken token)
+    {
+        await using var textFile = File.OpenRead(text);
+        await using var subtitleFile = File.OpenRead(subtitles);
+        var textHash = Convert.ToHexString(await SHA256.HashDataAsync(textFile, token));
+        var subtitleHash = Convert.ToHexString(await SHA256.HashDataAsync(subtitleFile, token));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(textHash + ":" + subtitleHash)));
     }
 
     private async Task<Excerpt[]> RetrieveAsync(string question, string snapshot, CancellationToken token)
     {
         using var nativeEmbedding = embedding is null
             ? await LlamaEmbedding.LoadAsync(RequireModelDirectory(), token) : null;
-        var matches = new List<RetrievalMatch>();
-        await foreach (var excerpt in ReadExcerptsAsync(snapshot, token))
-        {
-            var retrieved = await new EmbeddingProbe(embedding ?? nativeEmbedding!)
-                .RetrieveAsync(question, [excerpt], 1, token);
-            matches.AddRange(retrieved);
-            matches = matches.OrderByDescending(match => match.Similarity)
-                .ThenBy(match => match.Excerpt.Id, StringComparer.Ordinal).Take(3).ToList();
-        }
+        var matches = await new EmbeddingProbe(embedding ?? nativeEmbedding!)
+            .RetrieveAsync(question, ReadExcerptsAsync(snapshot, token), 3, token);
         return matches.Select(match => match.Excerpt).ToArray();
     }
 
@@ -117,37 +146,16 @@ public sealed class LocalTranscriptAnalysis(string modelDirectory, string artifa
     {
         "Brazilian Portuguese" => "pt-BR",
         "English" => "en",
-        _ => "source language"
+        _ => throw new ArgumentException("The exact successful attempt language must be English or Brazilian Portuguese; no language is guessed.")
     };
 
     private static async IAsyncEnumerable<Excerpt> ReadExcerptsAsync(string path,
         [EnumeratorCancellation] CancellationToken token)
     {
-        using var reader = File.OpenText(path);
-        var buffer = new char[513];
-        long offset = 0;
-        int count;
-        while ((count = await reader.ReadBlockAsync(buffer.AsMemory(0, 512), token)) != 0)
-        {
-            if (char.IsHighSurrogate(buffer[count - 1]))
-            {
-                var next = await reader.ReadAsync(buffer.AsMemory(count, 1), token);
-                if (next == 0 || !char.IsLowSurrogate(buffer[count]))
-                    throw new InvalidDataException("Transcript contains invalid Unicode.");
-                count++;
-            }
-            var text = new string(buffer, 0, count);
-            var timestamp = StartMarker(text);
-            // A TXT start marker is a point reference, never an inferred end time.
-            yield return new($"txt-{offset}", timestamp, timestamp, text);
-            offset += count;
-        }
+        foreach (var excerpt in SavedTranscriptSources.Read(path, Path.ChangeExtension(path, ".srt"), token))
+            yield return excerpt;
+        await Task.CompletedTask;
     }
-
-    private static long? StartMarker(string text) =>
-        text.StartsWith('[') && text.IndexOf(']') is var end && end > 0 &&
-        TimeSpan.TryParseExact(text[1..end], @"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture, out var time)
-            ? (long)time.TotalMilliseconds : null;
 
     private static async IAsyncEnumerable<ExcerptInput> Inputs(string path,
         [EnumeratorCancellation] CancellationToken token)

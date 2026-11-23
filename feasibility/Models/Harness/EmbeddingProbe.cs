@@ -16,30 +16,62 @@ public sealed record RetrievalMatch(Excerpt Excerpt, double Similarity);
 public sealed class EmbeddingProbe(IEmbeddingBackend backend, int dimensions = 768, int contextTokens = 512)
 {
     /// <summary>Embeds a question and all supplied excerpts using distinct task prefixes.</summary>
-    public async Task<RetrievalMatch[]> RetrieveAsync(string question, IReadOnlyList<Excerpt> excerpts, int topK = 3,
+    public Task<RetrievalMatch[]> RetrieveAsync(string question, IReadOnlyList<Excerpt> excerpts, int topK = 3,
+        CancellationToken cancellationToken = default) =>
+        RetrieveAsync(question, AsAsync(excerpts), topK, cancellationToken);
+
+    /// <summary>Streams token-fitted overlapping original ranges, embedding one query per request.</summary>
+    public async Task<RetrievalMatch[]> RetrieveAsync(string question, IAsyncEnumerable<Excerpt> excerpts, int topK = 3,
         CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topK);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(dimensions);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(contextTokens);
-        if (excerpts.Count == 0)
+        await using var sources = excerpts.GetAsyncEnumerator(cancellationToken);
+        if (!await sources.MoveNextAsync())
         {
             throw new InvalidDataException("No source excerpts supplied for retrieval.");
         }
         var query = await VectorAsync("search_query: " + question, cancellationToken);
         var matches = new List<RetrievalMatch>();
-        foreach (var excerpt in excerpts)
+        do
         {
-            var document = await VectorAsync("search_document: " + excerpt.Text, cancellationToken);
-            double dot = 0;
-            for (var i = 0; i < dimensions; i++)
+            foreach (var excerpt in Ranges(sources.Current))
             {
-                dot += query[i] * document[i];
+                var document = await VectorAsync("search_document: " + excerpt.Text, cancellationToken);
+                double dot = 0;
+                for (var i = 0; i < dimensions; i++)
+                    dot += query[i] * document[i];
+                matches.Add(new(excerpt, dot));
+                matches = matches.OrderByDescending(m => m.Similarity).ThenBy(m => m.Excerpt.Id, StringComparer.Ordinal)
+                    .Take(topK).ToList();
             }
-            matches.Add(new(excerpt, dot));
+        } while (await sources.MoveNextAsync());
+        return matches.ToArray();
+    }
+
+    private IEnumerable<Excerpt> Ranges(Excerpt source)
+    {
+        if (string.IsNullOrWhiteSpace(source.Text)) throw new InvalidDataException("A source excerpt contains no text.");
+        var offset = 0;
+        while (offset < source.Text.Length)
+        {
+            var remaining = source.Text[offset..];
+            var length = SourceText.Boundary(remaining, Math.Min(1024, remaining.Length));
+            while (backend.CountTokens("search_document: " + remaining[..length]) > contextTokens)
+                length = SourceText.Boundary(remaining, SourceText.ShorterScalarPrefix(remaining, length));
+            var text = remaining[..length];
+            var id = offset == 0 && length == source.Text.Length ? source.Id : $"{source.Id}@{offset}";
+            yield return source with { Id = id, Text = text };
+            var overlap = length < remaining.Length ? SourceText.OverlapLength(text, Math.Min(256, length / 2)) : 0;
+            offset += length - overlap;
         }
-        return matches.OrderByDescending(m => m.Similarity).ThenBy(m => m.Excerpt.Id, StringComparer.Ordinal)
-            .Take(topK).ToArray();
+    }
+
+    private static async IAsyncEnumerable<Excerpt> AsAsync(IEnumerable<Excerpt> excerpts)
+    {
+        foreach (var excerpt in excerpts) yield return excerpt;
+        await Task.CompletedTask;
     }
 
     private async Task<double[]> VectorAsync(string input, CancellationToken cancellationToken)
