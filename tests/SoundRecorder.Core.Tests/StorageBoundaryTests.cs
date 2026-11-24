@@ -148,6 +148,49 @@ public sealed class StorageBoundaryTests : IDisposable
     }
 
     [Fact]
+    public async Task Jobs_LoadMissingParentDirectory_ReturnsEmptyWithoutCreatingStorage()
+    {
+        var path = _directory.PathFor("not-created", "jobs.json");
+
+        var jobs = await new JsonTranscriptionJobRepository(path).LoadAsync(default);
+
+        Assert.Empty(jobs);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Jobs_SaveFailsAfterStaging_PreservesSnapshotCleansOwnedStagingAndReleasesGate(bool cancel)
+    {
+        var path = _directory.PathFor("jobs.json");
+        var repository = new JsonTranscriptionJobRepository(path);
+        var original = new TranscriptionJob(Guid.NewGuid(), Recording("original.wav"));
+        await repository.SaveAsync([original], default);
+        var before = await File.ReadAllBytesAsync(path);
+        using var cancellation = new CancellationTokenSource();
+        var replacement = new TranscriptionJob(Guid.NewGuid(), Recording("replacement.wav"));
+        var failing = new ObservedJobs(replacement, () =>
+        {
+            Assert.Single(Directory.GetFiles(_directory.Root, "*.tmp"));
+            if (cancel) cancellation.Cancel();
+            else throw new IOException("fixture cannot read replacement snapshot");
+        });
+
+        if (cancel)
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => repository.SaveAsync(failing, cancellation.Token));
+        else
+            await Assert.ThrowsAsync<IOException>(() => repository.SaveAsync(failing, default));
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        Assert.Empty(Directory.GetFiles(_directory.Root, "*.tmp"));
+        Assert.Equal(original.Id, Assert.Single(await repository.LoadAsync(default)).Id);
+        await repository.SaveAsync([replacement], default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(replacement.Id, Assert.Single(await new JsonTranscriptionJobRepository(path).LoadAsync(default)).Id);
+        Assert.Empty(Directory.GetFiles(_directory.Root, "*.tmp"));
+    }
+
+    [Fact]
     public async Task Persistence_PreCanceledSave_DoesNotReplaceExistingData()
     {
         var path = _directory.PathFor("data.json");

@@ -11,6 +11,238 @@ namespace SoundRecorder.Core.Tests;
 public sealed class DesktopViewModelTests
 {
     [Fact]
+    public Task PlayRecordingCommand_MissingSavedAudio_ReportsFailureWithoutOpeningADeviceOrStartingTranscription() =>
+        MainWindowTests.OnStaAsync(async () =>
+        {
+            using var context = new DesktopTestContext();
+            using var playback = new WindowsRecordingPlayback(() =>
+                throw new InvalidOperationException("A missing file must not open an audio device."));
+            var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+                context.History, new RecoveryManager(context.Recovery), context, context.Logger, playback: playback);
+            viewModel.SelectedRecording = context.Engine.Result;
+
+            viewModel.PlayRecordingCommand.Execute(null);
+
+            Assert.False(viewModel.IsPlaying);
+            Assert.Null(viewModel.PlaybackSourcePath);
+            Assert.False(File.Exists(context.Engine.Result.AudioPath));
+            Assert.Contains("could not be played", viewModel.Message);
+            Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Error &&
+                entry.Message.Contains(nameof(FileNotFoundException), StringComparison.Ordinal));
+            Assert.DoesNotContain(context.Logger.Entries, entry =>
+                entry.Message.Contains(context.Engine.Result.AudioPath, StringComparison.Ordinal));
+            Assert.Empty(context.Queue.Jobs);
+            await viewModel.PrepareViewCloseAsync();
+        });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public Task SelectedModel_ExplicitVerification_NotifiesBusyStateAndCommitsOrRestoresSelection(
+        bool fails, bool englishOnly) =>
+        MainWindowTests.OnStaAsync(async () =>
+        {
+            using var context = new DesktopTestContext();
+            var previous = await context.Models.RegisterAsync("existing.zip", default);
+            context.Models.CurrentPackage = context.Models.Package;
+            var alternative = await context.Models.DownloadAsync(TranscriptionModelCatalog.Entries.First(entry =>
+                entry.Languages.Contains("Brazilian Portuguese") != englishOnly),
+                new Progress<ModelDownloadProgress>(), default);
+            context.ViewModel.Language = "Brazilian Portuguese";
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            context.Models.Selecting = async token =>
+            {
+                entered.SetResult();
+                await release.Task.WaitAsync(token);
+                if (fails) throw new ArgumentException("fixture integrity unavailable");
+            };
+            var changes = new List<string?>();
+            context.ViewModel.PropertyChanged += (_, args) =>
+            {
+                changes.Add(args.PropertyName);
+                if (args.PropertyName == nameof(MainViewModel.IsSelectingModel) && !context.ViewModel.IsSelectingModel)
+                    finished.TrySetResult();
+            };
+            context.ViewModel.SelectedModel = alternative;
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.True(context.ViewModel.IsSelectingModel);
+                Assert.True(context.ViewModel.HasPendingViewWork);
+                Assert.Equal("Selecting " + alternative.DisplayName, context.ViewModel.ModelHeader);
+                Assert.Equal(previous.Id, context.Models.SelectedModelId);
+            }
+            finally { release.TrySetResult(); }
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var expected = fails ? previous : alternative;
+            Assert.False(context.ViewModel.HasPendingViewWork);
+            Assert.Equal(expected.Id, context.Models.SelectedModelId);
+            Assert.Equal(expected.Id, context.ViewModel.SelectedModel!.Id);
+            Assert.Equal(expected.DisplayName, context.ViewModel.ModelHeader);
+            Assert.Equal(2, context.ViewModel.DownloadedModels.Count);
+            Assert.Equal(2, changes.Count(name => name == nameof(MainViewModel.IsSelectingModel)));
+            if (fails)
+            {
+                Assert.Contains("fixture integrity unavailable", context.ViewModel.Message);
+                Assert.Contains(context.Logger.Entries, item => item.Level == LogLevel.Error &&
+                    item.Message.Contains(nameof(ArgumentException), StringComparison.Ordinal));
+            }
+            else
+            {
+                Assert.Contains(englishOnly ? "compatible multilingual downloaded model" :
+                    "selected for new transcription jobs", context.ViewModel.Message);
+                Assert.Empty(context.Logger.Errors);
+            }
+            await context.ViewModel.PrepareViewCloseAsync();
+        });
+
+    [Fact]
+    public Task DownloadCatalogModelCommand_AlreadyTransferring_DoesNotStartAnotherTransferOrAcceptLateProgress() =>
+        MainWindowTests.OnStaAsync(async () =>
+        {
+            using var context = new DesktopTestContext();
+            await context.Models.RegisterAsync("existing.zip", default);
+            context.Models.CurrentPackage = context.Models.Package;
+            context.Models.CatalogGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            context.ViewModel.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(MainViewModel.ModelDownloadPercent) &&
+                    context.ViewModel.ModelDownloadPercent == 25) started.TrySetResult();
+            };
+            var first = TranscriptionModelCatalog.Entries[0];
+            var other = TranscriptionModelCatalog.Entries[1];
+            var work = context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(first);
+            try
+            {
+                Assert.True(context.ViewModel.IsModelDownloadIndeterminate);
+                Assert.False(string.IsNullOrWhiteSpace(context.ViewModel.ModelDownloadStatus));
+                await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var progress = context.Models.CatalogProgress;
+
+                await context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(other);
+
+                Assert.Same(progress, context.Models.CatalogProgress);
+                Assert.True(context.ViewModel.IsDownloadingModel);
+                Assert.False(work.IsCompleted);
+                Assert.Contains("finish the current download", context.ViewModel.Message);
+                Assert.Single(context.Models.DownloadedModels);
+                Assert.Contains(context.Logger.Entries, item => item.Level == LogLevel.Warning &&
+                    item.Message.Contains("catalog selection", StringComparison.Ordinal));
+                context.Models.CatalogGate.SetResult();
+                await work;
+                var header = context.ViewModel.ModelHeader;
+                var status = context.ViewModel.ModelDownloadStatus;
+                var percent = context.ViewModel.ModelDownloadPercent;
+                var indeterminate = context.ViewModel.IsModelDownloadIndeterminate;
+                progress!.Report(new(ModelDownloadPhase.Downloading, 4095, 4096));
+                await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+                Assert.False(context.ViewModel.IsDownloadingModel);
+                Assert.Equal(header, context.ViewModel.ModelHeader);
+                Assert.Equal(status, context.ViewModel.ModelDownloadStatus);
+                Assert.Equal(percent, context.ViewModel.ModelDownloadPercent);
+                Assert.Equal(indeterminate, context.ViewModel.IsModelDownloadIndeterminate);
+                Assert.Contains(context.Models.DownloadedModels, model => model.Id == first.Key);
+                Assert.DoesNotContain(context.Models.DownloadedModels, model => model.Id == other.Key);
+                Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            }
+            finally
+            {
+                context.Models.CatalogGate.TrySetResult();
+                await work;
+                await context.ViewModel.PrepareViewCloseAsync();
+            }
+        });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InitializeCommand_NoUsableSelectedArtifact_ExplainsSelectionWithoutChoosingAnother(bool missing)
+    {
+        using var context = new DesktopTestContext();
+        context.Models.Bundled = missing ? context.Models.Package : null;
+
+        await context.ViewModel.InitializeCommand.ExecuteAsync(null);
+
+        Assert.Null(context.ViewModel.SelectedModel);
+        Assert.Equal(missing ? "Selected model unavailable" : "Choose a local model", context.ViewModel.ModelHeader);
+        Assert.Equal(missing ? context.Models.Package.Id : null, context.Models.SelectedModelId);
+        Assert.Empty(context.ViewModel.DownloadedModels);
+        Assert.Empty(context.Models.Downloads);
+        Assert.Null(context.Engine.Request);
+        Assert.True(context.ViewModel.StartCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task DownloadCatalogModelCommand_NoSelection_LeavesInventoryAndCaptureUnchanged()
+    {
+        using var context = new DesktopTestContext();
+        await context.Models.RegisterAsync("existing.zip", default);
+        context.Models.CurrentPackage = context.Models.Package;
+
+        await context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(null);
+
+        Assert.False(context.ViewModel.IsDownloadingModel);
+        Assert.False(context.ViewModel.HasPendingViewWork);
+        Assert.Null(context.Models.CatalogProgress);
+        Assert.Equal(context.Models.Package.Id, Assert.Single(context.Models.DownloadedModels).Id);
+        Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+        Assert.Contains("Select a catalog model", context.ViewModel.Message);
+        Assert.Contains(context.Logger.Entries, entry => entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("catalog selection", StringComparison.Ordinal));
+        Assert.Null(context.Engine.Request);
+    }
+
+    [Theory]
+    [InlineData("io")]
+    [InlineData("access")]
+    [InlineData("http")]
+    [InlineData("invalid")]
+    [InlineData("argument")]
+    public Task DownloadCatalogModelCommand_TransferFails_RetainsSelectionAndAllowsExplicitRetry(string failure) =>
+        MainWindowTests.OnStaAsync(async () =>
+        {
+            using var context = new DesktopTestContext();
+            await context.Models.RegisterAsync("existing.zip", default);
+            context.Models.CurrentPackage = context.Models.Package;
+            context.Models.Error = failure switch
+            {
+                "io" => new IOException("fixture transfer failure"),
+                "access" => new UnauthorizedAccessException("fixture transfer failure"),
+                "http" => new HttpRequestException("fixture transfer failure"),
+                "invalid" => new InvalidOperationException("fixture transfer failure"),
+                _ => new ArgumentException("fixture transfer failure"),
+            };
+            var entry = TranscriptionModelCatalog.Entries.First();
+
+            await context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(entry);
+
+            Assert.False(context.ViewModel.IsDownloadingModel);
+            Assert.False(context.ViewModel.HasPendingViewWork);
+            Assert.Contains("Retry", context.ViewModel.ModelDownloadStatus);
+            Assert.Contains("fixture transfer failure", context.ViewModel.Message);
+            Assert.Equal(context.Models.Package.Id, context.ViewModel.SelectedModel!.Id);
+            Assert.Equal(context.Models.Package.Id, context.ViewModel.ModelHeader);
+            Assert.Equal(context.Models.Package.Id, Assert.Single(context.Models.DownloadedModels).Id);
+            Assert.Contains(context.Logger.Entries, item => item.Level == LogLevel.Error &&
+                item.Message.Contains(context.Models.Error.GetType().Name, StringComparison.Ordinal));
+            context.Models.Error = null;
+
+            await context.ViewModel.DownloadCatalogModelCommand.ExecuteAsync(entry);
+
+            Assert.Equal(2, context.ViewModel.DownloadedModels.Count);
+            Assert.Contains(context.ViewModel.DownloadedModels, model => model.Id == entry.Key);
+            Assert.Equal(context.Models.Package.Id, context.Models.SelectedModelId);
+            Assert.Contains("Verified download complete", context.ViewModel.ModelDownloadStatus);
+            Assert.Null(context.Engine.Request);
+        });
+
+    [Fact]
     public void NewRecording_InitialChoices_RequireFreshPermissionWithoutStartingCapture()
     {
         using var context = new DesktopTestContext();
