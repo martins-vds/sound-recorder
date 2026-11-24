@@ -311,6 +311,9 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             var library = _library!;
+            _transcriptReadVersion++;
+            _searchCancellation?.Cancel();
+            await Task.WhenAll(_viewReads.ToArray());
             if (scope == RecordingDeletionScope.AllArtifacts)
                 await DeleteOwnedAnalysisAsync(recording);
             var result = await Task.Run(() =>
@@ -495,13 +498,16 @@ public sealed partial class MainViewModel : ObservableObject
         _playback?.Dispose();
     }
 
-    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel || IsAnalyzing;
+    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel || IsAnalyzing || IsSettingUpAnalysis;
 
     public async Task PrepareViewCloseAsync()
     {
         _closingView = true;
         StartCommand.NotifyCanExecuteChanged();
+        NotifyAnalysisAvailability();
+        _analysisSetupCancellation?.Cancel();
         await ReleaseAnalysisForCaptureAsync();
+        if (_analysisSetupTask is { } setup) await setup;
         _transcriptReadVersion++;
         _searchCancellation?.Cancel();
         _modelDownloadCancellation?.Cancel();
@@ -576,6 +582,7 @@ public sealed partial class MainViewModel : ObservableObject
             await Task.Run(() => _queue.RestoreAsync(CancellationToken.None));
             RefreshJobs();
             await Task.Run(() => _modelManager.RefreshInventoryAsync(CancellationToken.None));
+            await InitializeAnalysisAsync();
             SelectedRecording = Recordings.FirstOrDefault();
             RefreshModelStatus();
             RefreshState();
@@ -1060,6 +1067,7 @@ public sealed partial class MainViewModel : ObservableObject
         SystemAudioLevel = _recordingEngine.SystemAudioLevel;
         RefreshState();
         RefreshJobs();
+        RefreshCurrentAnalysisJobs();
     }
 
     public bool HasActiveWork() =>

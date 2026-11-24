@@ -28,6 +28,8 @@ public sealed class DesktopUiSteps
     private double _playbackBeforeProgress;
     private int _libraryCountBeforeFilter;
     private Dictionary<string, string>? _captureSettings;
+    private string? _analysisEvidenceBeforeRestart;
+    private string? _analysisCallsBeforeRestart;
 
     [Given("the isolated recorder UI is open with {string} fixtures")]
     public void OpenRecorder(string fixtures)
@@ -67,10 +69,79 @@ public sealed class DesktopUiSteps
     [When("the user types the analysis question {string}")]
     public void TypeAnalysisQuestion(string question) => Element("AnalysisQuestionBox").AsTextBox().Text = question;
 
+    [When("the user selects local lookup coverage")]
+    public void SelectLocalAnalysisCoverage() => Element("AnalysisLocalLookupCheck").AsCheckBox().IsChecked = true;
+
+    [When("the user opens analysis model setup")]
+    public void OpenAnalysisSetup()
+    {
+        Element("AnalysisModelSetupExpander").Patterns.ExpandCollapse.Pattern.Expand();
+        CaptureLayout("analysis-setup");
+    }
+
+    [Then("the analysis profile shows both roles, licenses, bytes, and local storage")]
+    public void AnalysisSetupProfile()
+    {
+        var text = Element("AnalysisSetupDetailsText").Name;
+        Assert.Contains("generation:", text);
+        Assert.Contains("embedding:", text);
+        Assert.Contains("MIT", text);
+        Assert.Contains("Apache-2.0", text);
+        Assert.Contains("32 bytes", text);
+        Assert.Contains("Install location:", text);
+        Assert.Contains("Ready", Element("AnalysisReadinessText").Name);
+    }
+
+    [When("the user restarts the isolated recorder with its existing state")]
+    public void RestartAnalysisRecorder()
+    {
+        _analysisEvidenceBeforeRestart = Element("AnalysisEvidenceText").Patterns.Value.Pattern.Value.Value;
+        _analysisCallsBeforeRestart = File.ReadAllText(Path.Combine(_directory!.FullName, "fixture-analysis-calls.txt"));
+        _window!.Close();
+        Assert.True(_process!.WaitForExit(10_000), "Analysis close did not drain native work.");
+        _application!.Dispose();
+        _process.Dispose();
+        var executable = Path.Combine(AppContext.BaseDirectory, "UiHost", "SoundRecorder.Ui.TestHost.exe");
+        _process = Process.Start(new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            ArgumentList = { _directory!.FullName, "restored transcript" },
+        }) ?? throw new InvalidOperationException("The restored UI host did not start.");
+        _hostErrors = _process.StandardError.ReadToEndAsync();
+        _application = Application.Attach(_process.Id);
+        WaitUntil(() =>
+        {
+            _window = _application.GetMainWindow(_automation!, TimeSpan.FromMilliseconds(100));
+            return _window?.FindFirstDescendant(cf => cf.ByAutomationId("StartButton"))?.IsEnabled == true;
+        }, "The restored host did not load.");
+        if (_size is { } size)
+        {
+            var dimensions = size.Split('x');
+            ResizeRecorder(int.Parse(dimensions[0]), int.Parse(dimensions[1]));
+        }
+    }
+
+    [Then("the saved discussion identifies {string} with local coverage")]
+    public void AnalysisDiscussionRestored(string question)
+    {
+        Element("AnalysisHistoryExpander").Patterns.ExpandCollapse.Pattern.Expand();
+        WaitUntil(() => Element("AnalysisHistoryText").Patterns.Value.Pattern.Value.Value.Contains(question, StringComparison.Ordinal),
+            "The exact transcript's discussion was not restored.");
+        Assert.Contains("LocalQuestion", Element("AnalysisHistoryText").Patterns.Value.Pattern.Value.Value);
+        Assert.Equal(_analysisEvidenceBeforeRestart, Element("AnalysisEvidenceText").Patterns.Value.Pattern.Value.Value);
+        Assert.Single(Element("AnalysisJobsList").AsListBox().Items);
+        Assert.Equal(_analysisCallsBeforeRestart, File.ReadAllText(Path.Combine(_directory!.FullName, "fixture-analysis-calls.txt")));
+        CaptureLayout("analysis-restored");
+    }
+
     [Then("experimental analysis is busy")]
     public void AnalysisBusy()
     {
         ButtonEnabled("Cancel analysis");
+        WaitUntil(() => Element("AnalysisJobsList").AsListBox().Items.Any(item =>
+            item.FindAllDescendants(cf => cf.ByControlType(ControlType.Text)).Any(text => text.Name == "Running")),
+            "The durable running analysis job was not visible while its request was active.");
         CaptureLayout("analysis-busy");
     }
 
@@ -96,8 +167,8 @@ public sealed class DesktopUiSteps
         var evidence = Element("AnalysisEvidenceText").Patterns.Value.Pattern.Value.Value;
         Assert.Contains("UI fixture transcript.", evidence);
         Assert.Contains("UNVERIFIED", Element("AnalysisStatusText").Name);
-        var scroll = Element("TranscriptScroll").Patterns.Scroll.Pattern;
-        if (scroll.VerticallyScrollable.Value) scroll.SetScrollPercent(-1, 100);
+        Element("AnalysisEvidenceText").Focus();
+        Thread.Sleep(100);
         CaptureLayout("analysis-evidence");
         var previous = SetThreadDpiAwarenessContext(new IntPtr(-4));
         try
