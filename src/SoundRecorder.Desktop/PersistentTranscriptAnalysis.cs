@@ -136,9 +136,12 @@ public sealed class PersistentTranscriptAnalysis : ILocalTranscriptAnalysis, ILo
     {
         var idle = coordinator.WaitForIdleAsync();
         var cancelled = Task.Delay(Timeout.Infinite, token);
-        if (await Task.WhenAny(idle, cancelled) == cancelled)
-            await coordinator.CancelAsync(jobId);
-        await idle;
+        try
+        {
+            if (await Task.WhenAny(idle, cancelled) == cancelled)
+                await coordinator.CancelAsync(jobId);
+        }
+        finally { await idle; }
         var job = Jobs.Single(job => job.Id == jobId);
         if (job.Status == AnalysisJobStatus.Cancelled) throw new OperationCanceledException(token);
         if (job.Status != AnalysisJobStatus.Complete)

@@ -9,6 +9,52 @@ namespace SoundRecorder.Core.Tests;
 [Collection("Desktop environment")]
 public sealed class DesktopAnalysisLifecycleTests
 {
+    [Fact]
+    public async Task GenerateSummaryCommand_CancellationJournalFails_RemainsBusyUntilHeldNativeCallReleases()
+    {
+        using var files = new DesktopTestContext();
+        var request = await AnalysisSourceAsync(files);
+        var store = SqliteTranscriptAnalysisStore.Create(Path.Combine(files.Directory, "analysis.sqlite"));
+        var journal = Path.Combine(files.Directory, "journal.sqlite");
+        var repository = AnalysisQueueRepository.Create(journal);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var adapter = new PersistentTranscriptAnalysis(store, repository, new ReadySetup(), execution => new Worker(async token =>
+        {
+            using var registration = token.Register(() => cancelled.TrySetResult());
+            using var lease = await execution.EnterInferenceAsync(token);
+            entered.SetResult();
+            await release.Task;
+            token.ThrowIfCancellationRequested();
+            return new("Completed", null, "", []);
+        }));
+        var vm = Reviewed(files, files.Job(files.Recording(Guid.NewGuid()), request.Outputs), adapter);
+        await vm.InitializeAnalysisAsync();
+        await vm.ViewTranscriptCommand.ExecuteAsync(null);
+        var work = vm.GenerateSummaryCommand.ExecuteAsync(null);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        File.Delete(journal);
+        vm.CancelAnalysisCommand.Execute(null);
+        try
+        {
+            await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsAsync<TimeoutException>(() => work.WaitAsync(TimeSpan.FromMilliseconds(250)));
+            Assert.True(vm.IsAnalyzing);
+            Assert.False(vm.CanSetupAnalysis);
+            Assert.False(vm.CanAnalyzeTranscript);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await work.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.False(vm.IsAnalyzing);
+        Assert.Empty(vm.AnalysisClaims);
+        Assert.Null((await store.LoadAsync(adapter.Jobs[0].Request.Identity, default)).Completed);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
