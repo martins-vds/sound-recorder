@@ -57,6 +57,22 @@ Do not publish over an existing validation app in use. Publishing `win-x64` also
 
 ## Build
 
+### Local ARM64 publish
+
+Keep validation builds inside this repository's ignored `publish` folder:
+
+```powershell
+dotnet publish .\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj -c Release -r win-arm64 --self-contained true -p:RuntimeIdentifiers=win-arm64 -p:PlatformTarget=ARM64 -o .\publish
+```
+
+Analysis models are separate from Whisper transcription models. Downloading or
+copying the Phi-mini/Nomic files does not select the profile. In **Analysis model
+setup**, enter their stable local directory and choose **Verify and select
+directory**, then **Check readiness**. Selection is retained under
+`%LOCALAPPDATA%\SoundRecorder\analysis-models`; models need not live beside the
+executable. Insufficient free RAM is a separate readiness error: free resources
+and retry rather than downloading the files again.
+
 ```powershell
 dotnet build SoundRecorder.slnx
 ```
