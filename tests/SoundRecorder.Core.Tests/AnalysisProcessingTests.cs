@@ -11,6 +11,28 @@ namespace SoundRecorder.Core.Tests;
 public sealed class AnalysisProcessingTests
 {
     [Fact]
+    public async Task AnalyzeAsync_NewPrivateArtifactDirectory_CreatesReadableOwnedLedgerAndCommitsOriginalEvidence()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("Ana sends the draft.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(files.Identity(request), default);
+        var artifacts = Path.Combine(files.Directory, "new-private-analysis", "owned-attempt");
+        Assert.False(Directory.Exists(artifacts));
+
+        var result = await new AnalysisProcessingService(store, revision, artifacts, new CandidateGeneration(),
+            new Vectors(), AnalysisProcessingMode.Summary).AnalyzeAsync(request, new Progress<string>(), default);
+
+        Assert.Equal("Completed", result.Status);
+        Assert.Equal(artifacts, Path.GetDirectoryName(result.LedgerPath));
+        using var ledger = ClaimLedger.Open(result.LedgerPath);
+        Assert.Equal(request.AttemptId.ToString("N"), ledger.ReadRun().Identity.SuccessfulTranscriptionAttemptId);
+        Assert.Contains("Ana sends the draft.", Assert.Single(Assert.Single(result.Claims).Evidence).Text);
+        Assert.Equal(revision, (await SqliteTranscriptAnalysisStore.Open(files.Database)
+            .LoadAsync(revision.Identity, default)).Completed);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_GlobalQuestion_PersistsLastDecisionAndConflictingReportsWithExactEvidence()
     {
         using var files = new ProcessingFiles();
@@ -714,6 +736,10 @@ public sealed class AnalysisProcessingTests
         var expected = File.ReadAllText(request.Outputs.TextPath).Split(Environment.NewLine);
         Assert.Equal(expected[0], string.Concat(chunks.Where(chunk => chunk.SourceId.StartsWith("cue-1")).Select(chunk => chunk.Text)));
         Assert.Equal(expected[1], string.Concat(chunks.Where(chunk => chunk.SourceId.StartsWith("cue-2")).Select(chunk => chunk.Text)));
+        var strictUtf8 = new UTF8Encoding(false, true);
+        Assert.All(vectors.CountedInputs, input => Assert.True(strictUtf8.GetByteCount(input) > 0));
+        Assert.All(vectors.Inputs, input => Assert.True(strictUtf8.GetByteCount(input) > 0));
+        Assert.All(chunks, chunk => Assert.True(strictUtf8.GetByteCount(chunk.Text) > 0));
         using var prompt = JsonDocument.Parse(generation.Prompts[0]);
         var question = prompt.RootElement.GetProperty("question").GetString()!;
         Assert.DoesNotContain("POISON", question);
@@ -1336,12 +1362,17 @@ public sealed class AnalysisProcessingTests
     {
         public Action? OnCall { get; init; }
         public List<string> Inputs { get; } = [];
+        public List<string> CountedInputs { get; } = [];
         public int TokenDivisor { get; init; } = 4;
         public int? ConstantTokenCount { get; init; }
         public Func<string, float[]>? GetVector { get; init; }
         public Func<string, Task>? BeforeReturn { get; init; }
         public int Calls { get; private set; }
-        public int CountTokens(string input) => ConstantTokenCount ?? input.Length / TokenDivisor;
+        public int CountTokens(string input)
+        {
+            CountedInputs.Add(input);
+            return ConstantTokenCount ?? input.Length / TokenDivisor;
+        }
         public async Task<float[]> EmbedAsync(string input, CancellationToken cancellationToken)
         {
             Calls++;
