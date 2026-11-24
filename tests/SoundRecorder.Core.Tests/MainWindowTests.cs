@@ -17,6 +17,54 @@ namespace SoundRecorder.Core.Tests;
 public sealed class MainWindowTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task SearchText_NonCancellableOldSnapshot_CannotReplaceNewResultsEvenWhenQueryMatchesAgain(bool repeatQuery) =>
+        OnStaAsync(async () =>
+        {
+            using var context = new DesktopTestContext();
+            var alpha = context.Recording(Guid.NewGuid()) with { Title = "Alpha" };
+            var beta = context.Recording(Guid.NewGuid()) with { Title = "Beta" };
+            foreach (var recording in new[] { alpha, beta })
+                await File.WriteAllBytesAsync(recording.AudioPath, [1, 2, 3]);
+            context.History.Items.AddRange([alpha, beta]);
+            var library = new DeferredSearchLibrary(new RecordingLibrary(context.History));
+            var viewModel = new MainViewModel(context.Recorder, context.Engine, context.Queue, context.Models,
+                context.History, new RecoveryManager(context.Recovery), context, context.Logger, library);
+            viewModel.Recordings.Add(alpha);
+            viewModel.Recordings.Add(beta);
+            try
+            {
+                viewModel.SearchText = "Alpha";
+                await library.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                viewModel.SearchText = "Beta";
+                await UntilAsync(() => viewModel.FilteredRecordings.Count == 1 &&
+                    viewModel.FilteredRecordings[0].Id == beta.Id);
+                if (repeatQuery)
+                {
+                    var added = context.Recording(Guid.NewGuid()) with { Title = "Alpha follow-up" };
+                    await File.WriteAllBytesAsync(added.AudioPath, [4, 5, 6]);
+                    context.History.Items.Add(added);
+                    viewModel.SearchText = "Alpha";
+                    await UntilAsync(() => viewModel.FilteredRecordings.Count == 2);
+                }
+                var latest = viewModel.FilteredRecordings.Select(recording => recording.Id).ToArray();
+                library.Release.SetResult();
+                await UntilAsync(() => !viewModel.HasPendingViewWork);
+
+                Assert.Equal(latest, viewModel.FilteredRecordings.Select(recording => recording.Id));
+                Assert.Equal(string.Empty, viewModel.LibraryMessage);
+                Assert.Empty(context.Logger.Errors);
+                Assert.Empty(context.Queue.Jobs);
+            }
+            finally
+            {
+                library.Release.TrySetResult();
+                await viewModel.PrepareViewCloseAsync();
+            }
+        });
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public Task MeetingWorkspace_StopDistinguishesKnownWorkerErrorsWithoutWeakeningPhysicalRelease(bool knownFailure) => OnStaAsync(async () =>
@@ -881,6 +929,8 @@ public sealed class MainWindowTests
                 System.Windows.Automation.AutomationProperties.GetName(element) == "Recording playback");
             Assert.Equal(Visibility.Visible, playbackPanel.Visibility);
             viewModel.PlaybackVolume = 0.4;
+            var playbackChanges = new List<string?>();
+            viewModel.PropertyChanged += (_, args) => playbackChanges.Add(args.PropertyName);
             viewModel.PlayRecordingCommand.Execute(null);
             var device = Assert.Single(devices);
             device.PositionBytes = 120_000;
@@ -891,6 +941,8 @@ public sealed class MainWindowTests
             Assert.False(device.Disposed);
             Assert.True(viewModel.IsPlaying);
             Assert.Equal(recording.AudioPath, viewModel.PlaybackSourcePath);
+            Assert.Contains(nameof(MainViewModel.PlaybackSourcePath), playbackChanges);
+            playbackChanges.Clear();
             viewModel.PlayRecordingCommand.Execute(null);
             Assert.Single(devices);
             device.Fail(new IOException("Device cannot continue saved audio."));
@@ -929,6 +981,7 @@ public sealed class MainWindowTests
                 StringComparison.Ordinal) || entry.Message.Contains("private meeting", StringComparison.Ordinal));
             using var exclusivelyReopened = File.Open(recording.AudioPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             viewModel.SelectedRecording = null;
+            Assert.Contains(nameof(MainViewModel.PlaybackSourcePath), playbackChanges);
             content.UpdateLayout();
             await UntilAsync(() => playbackPanel.Visibility == Visibility.Collapsed);
         }
@@ -2859,6 +2912,31 @@ public sealed class MainWindowTests
                 if (!closed) await window.RequestExitAsync();
             }
         });
+
+    private sealed class DeferredSearchLibrary(IRecordingLibrary library) : IRecordingLibrary
+    {
+        private bool _first = true;
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<IReadOnlyList<RecordingLibraryEntry>> LoadAsync(CancellationToken token) => library.LoadAsync(token);
+        public async Task<IReadOnlyList<RecordingLibraryEntry>> SearchAsync(string query, CancellationToken token)
+        {
+            var entries = await library.SearchAsync(query, token);
+            if (_first)
+            {
+                _first = false;
+                Started.SetResult();
+                await Release.Task;
+            }
+            return entries;
+        }
+        public Task<TranscriptReadResult> ReadTranscriptAsync(Guid recordingId, Guid jobId, CancellationToken token) =>
+            library.ReadTranscriptAsync(recordingId, jobId, token);
+        public Task<LibraryDeletionResult> DeleteRecordingAsync(Guid id, RecordingDeletionScope scope, CancellationToken token) =>
+            library.DeleteRecordingAsync(id, scope, token);
+        public Task<LibraryDeletionResult> DeleteJobHistoryAsync(Guid id, CancellationToken token) =>
+            library.DeleteJobHistoryAsync(id, token);
+    }
 
     private static MainWindow CreateWindow(
         DesktopTestContext context, DesktopDialogs dialogs, DesktopEnvironment environment) =>

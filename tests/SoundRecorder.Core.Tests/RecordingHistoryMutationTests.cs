@@ -11,6 +11,52 @@ public sealed class RecordingHistoryMutationTests : IDisposable
     private readonly StorageTestDirectory _directory = new();
 
     [Theory]
+    [InlineData(null, "Brazilian Portuguese", "Brazilian Portuguese")]
+    [InlineData("Brazilian Portuguese", null, "Brazilian Portuguese")]
+    public async Task UpdateAsync_AttemptLanguageMigration_RetainsKnownLanguageWithoutChangingOtherAttempts(
+        string? storedLanguage, string? incomingLanguage, string expectedLanguage)
+    {
+        var path = _directory.PathFor("history.json");
+        var history = new JsonRecordingHistory(path);
+        var recording = Recording();
+        var first = new OwnedTranscriptOutputs(Guid.NewGuid(),
+            new(_directory.PathFor("first.txt"), _directory.PathFor("first.srt"))) { Language = storedLanguage };
+        var other = new OwnedTranscriptOutputs(Guid.NewGuid(),
+            new(_directory.PathFor("other.txt"), _directory.PathFor("other.srt"))) { Language = "English" };
+        await history.AddAsync(recording with { TranscriptOutputs = [first, other] }, default);
+
+        await history.UpdateAsync(recording with
+        {
+            TranscriptOutputs = [first with { Language = incomingLanguage }],
+        }, default);
+
+        var restored = Assert.Single(await new JsonRecordingHistory(path).LoadAsync(default));
+        Assert.Equal("English", restored.Language);
+        Assert.Equal(first with { Language = expectedLanguage }, restored.TranscriptOutputs[0]);
+        Assert.Equal(other, restored.TranscriptOutputs[1]);
+    }
+
+    [Fact]
+    public async Task RegisterOutputsAsync_LegacyAttemptGainsLanguage_DoesNotRelabelAnotherAttempt()
+    {
+        var path = _directory.PathFor("history.json");
+        var history = new JsonRecordingHistory(path);
+        var recording = Recording();
+        var legacy = new OwnedTranscriptOutputs(Guid.NewGuid(),
+            new(_directory.PathFor("legacy.txt"), _directory.PathFor("legacy.srt")));
+        var other = new OwnedTranscriptOutputs(Guid.NewGuid(),
+            new(_directory.PathFor("other.txt"), _directory.PathFor("other.srt"))) { Language = "English" };
+        await history.AddAsync(recording with { TranscriptOutputs = [legacy, other] }, default);
+
+        await history.RegisterOutputsAsync(recording.Id, legacy with { Language = "Brazilian Portuguese" }, default);
+
+        var restored = Assert.Single(await new JsonRecordingHistory(path).LoadAsync(default));
+        Assert.Equal("English", restored.Language);
+        Assert.Equal(legacy with { Language = "Brazilian Portuguese" }, restored.TranscriptOutputs[0]);
+        Assert.Equal(other, restored.TranscriptOutputs[1]);
+    }
+
+    [Theory]
     [InlineData("Outcome")]
     [InlineData("CapturedDuration")]
     public async Task LoadAsync_MissingRequiredLegacyMetadata_RejectsRatherThanInventingDefaults(string property)
