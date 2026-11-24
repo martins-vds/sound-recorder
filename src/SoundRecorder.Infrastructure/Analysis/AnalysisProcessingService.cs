@@ -109,7 +109,7 @@ public sealed partial class AnalysisProcessingService(ITranscriptAnalysisStore s
                 yield return Input(chunk);
             yield break;
         }
-        await foreach (var chunk in store.ReadChunksAsync(revision, token))
+        await foreach (var chunk in IndexedChunksAsync(token))
             yield return Input(chunk);
     }
 

@@ -543,6 +543,14 @@ public sealed class AnalysisProcessingTests
         Assert.Equal(AnalysisStoreStatus.Cancelled, saved.Status);
         Assert.Equal("Indexed", saved.Checkpoint!.Stage);
         Assert.Equal(1, saved.Checkpoint.NextOrdinal);
+        await store.ResumeAsync(revision, default);
+        var reusedVectors = new Vectors();
+        var resumed = await new AnalysisProcessingService(store, revision, files.Directory, new CandidateGeneration(),
+            reusedVectors, AnalysisProcessingMode.GlobalQuestion)
+            .AnalyzeAsync(request with { Question = "What happened?" }, new Progress<string>(), default);
+        Assert.Equal("Completed", resumed.Status);
+        Assert.Equal(0, reusedVectors.Calls);
+        Assert.Equal(revision.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
     }
 
     [Theory]
@@ -754,7 +762,7 @@ public sealed class AnalysisProcessingTests
         var request = await files.Source(new string('x', 1008) + "👋 fim.");
         var store = SqliteTranscriptAnalysisStore.Create(files.Database);
         var revision = await store.BeginAsync(files.Identity(request), default);
-        var generation = new CandidateGeneration { TokenDivisor = 1, StatementLimit = 80 };
+        var generation = new CandidateGeneration { TokenDivisor = 1, TokenOverhead = 768, StatementLimit = 80 };
         var result = await new AnalysisProcessingService(store, revision, files.Directory, generation, new Vectors(),
             AnalysisProcessingMode.Summary).AnalyzeAsync(request, new Progress<string>(), default);
         Assert.Equal("Completed", result.Status);
@@ -777,12 +785,483 @@ public sealed class AnalysisProcessingTests
         using var ledger = ClaimLedger.Open(result.LedgerPath);
         Assert.Equal(request.AttemptId.ToString("N"), ledger.ReadRun().Identity.SuccessfulTranscriptionAttemptId);
         Assert.Equal(revision.Identity.TextSha256, ledger.ReadRun().Identity.TranscriptSha256);
+        Assert.Contains(ledger.ReadClaims().SelectMany(claim => ledger.ReadEvidence(claim.Id)), evidence => evidence.Offset > 0);
     }
 
     private static async IAsyncEnumerable<T> Stream<T>(T value)
     {
         yield return value;
         await Task.CompletedTask;
+    }
+
+    [Theory]
+    [InlineData(AnalysisProcessingMode.GlobalQuestion, 0)]
+    [InlineData(AnalysisProcessingMode.GlobalQuestion, 1)]
+    [InlineData(AnalysisProcessingMode.LocalQuestion, 0)]
+    [InlineData(AnalysisProcessingMode.LocalQuestion, 1)]
+    public async Task AnalyzeAsync_IndexLosesCommittedRangeAfterIndexing_NeverActivatesIncompleteSourceCoverage(
+        AnalysisProcessingMode mode, int missingOrdinal)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("First report.", "Final decision: postpone the launch.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await new AnalysisProcessingService(store, prior, files.Directory, new CandidateGeneration(), new Vectors(),
+            AnalysisProcessingMode.Summary).AnalyzeAsync(request, new Progress<string>(), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        var damaged = false;
+        var progress = new CallbackProgress(_ =>
+        {
+            if (damaged || store.LoadAsync(revision.Identity, default).GetAwaiter().GetResult().Checkpoint?.Stage != "Indexed") return;
+            damaged = true;
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + files.Database + ";Pooling=False");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM chunks WHERE revision=$revision AND ordinal=$ordinal";
+            command.Parameters.AddWithValue("$revision", revision.Id.ToString());
+            command.Parameters.AddWithValue("$ordinal", missingOrdinal);
+            command.ExecuteNonQuery();
+        });
+
+        var result = await new AnalysisProcessingService(store, revision, files.Directory, new CandidateGeneration(), new Vectors(), mode)
+            .AnalyzeAsync(request with { Question = "What was agreed?" }, progress, default);
+
+        Assert.True(damaged);
+        Assert.Equal("Failed", result.Status);
+        Assert.Empty(result.Claims);
+        var restored = await SqliteTranscriptAnalysisStore.Open(files.Database).LoadAsync(revision.Identity, default);
+        Assert.Equal(prior.Id, restored.Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Failed, restored.Status);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Collect(store.ReadOutputsAsync(revision, default)));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_RetainedIndexHasUnownedTrailingRange_RejectsReuseAndPreservesPriorActivation()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        var indexed = new[]
+        {
+            new AnalysisStoreChunk(0, "cue-1 [00:00:00,000 --> 00:00:01,000]", 0, 0, 1000,
+                "[00:00:00.000] The selected transcript.", [1, 0]),
+            new AnalysisStoreChunk(1, "unowned-cue", 0, 1000, 2000, "An unrelated decision.", [1, 0])
+        };
+        await store.SaveCheckpointAsync(prior, new(2, "Indexed", "processing-v1"), indexed.ToAsyncEnumerable(), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        var generation = new CandidateGeneration();
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new AnalysisProcessingService(store, revision,
+            files.Directory, generation, new Vectors(), AnalysisProcessingMode.Summary).AnalyzeAsync(request, new Progress<string>(), default));
+
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        Assert.Empty(generation.Prompts);
+        Assert.Equal(prior.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Failed, (await store.LoadAsync(revision.Identity, default)).Status);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task AnalyzeAsync_CancelledBeforeDeferredCaptureLeaseIsGranted_DoesNotEnterNativeBackend(int heldEntry)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        using var cancellation = new CancellationTokenSource();
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var grant = new TaskCompletionSource<IDisposable>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entries = 0;
+        var releases = 0;
+        Task<IDisposable> Enter(CancellationToken _)
+        {
+            if (++entries != heldEntry) return Task.FromResult<IDisposable>(new Lease(() => releases++));
+            reached.SetResult();
+            return grant.Task;
+        }
+        var vectors = new Vectors();
+        var generation = new CandidateGeneration();
+        var work = new AnalysisProcessingService(store, revision, files.Directory, generation, vectors,
+            AnalysisProcessingMode.Summary, enterInferenceAsync: Enter).AnalyzeAsync(request, new Progress<string>(), cancellation.Token);
+        await reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(prior.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        cancellation.Cancel();
+        grant.SetResult(new Lease(() => releases++));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
+
+        Assert.Equal(heldEntry - 1, vectors.Calls);
+        Assert.Empty(generation.Prompts);
+        Assert.Equal(entries, releases);
+        var restored = await SqliteTranscriptAnalysisStore.Open(files.Database).LoadAsync(revision.Identity, default);
+        Assert.Equal(prior.Id, restored.Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Cancelled, restored.Status);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task AnalyzeAsync_CancelledDuringModelLeaseWait_DoesNotLoadAnotherModel(int heldEntry)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(await AnalysisProcessingNative.PinAsync(request, default), default);
+        using var cancellation = new CancellationTokenSource();
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var grant = new TaskCompletionSource<IDisposable>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entries = 0;
+        var releases = 0;
+        Task<IDisposable> Enter(CancellationToken _)
+        {
+            if (++entries != heldEntry) return Task.FromResult<IDisposable>(new Lease(() => releases++));
+            reached.SetResult();
+            return grant.Task;
+        }
+        var models = new List<NativeModel>();
+        var service = new AnalysisProcessingNative(store, revision, files.Directory, files.Directory, AnalysisProcessingMode.Summary,
+            enterInferenceAsync: Enter,
+            loader: (settings, _) =>
+            {
+                var model = new NativeModel(settings.Embeddings);
+                models.Add(model);
+                return Task.FromResult<INativeModel>(model);
+            }, verifier: (_, _, _) => Task.CompletedTask);
+        var work = service.AnalyzeAsync(request, new Progress<string>(), cancellation.Token);
+        await reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cancellation.Cancel();
+        grant.SetResult(new Lease(() => releases++));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
+
+        Assert.Equal(heldEntry - 1, models.Count);
+        Assert.All(models, model => Assert.True(model.Disposed));
+        Assert.Equal(entries, releases);
+        Assert.Null((await store.LoadAsync(revision.Identity, default)).Completed);
+        Assert.Equal(AnalysisStoreStatus.Cancelled, (await store.LoadAsync(revision.Identity, default)).Status);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_AsymmetricQuery_RanksCosineEvidenceRatherThanInverseVectorComponents()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("First report.", "Second report.", "Third report.", "Last decision.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(files.Identity(request), default);
+        var vectors = new Vectors
+        {
+            GetVector = input =>
+            {
+                if (input.StartsWith("search_query: ")) return [1, 3];
+                if (input.Contains("First")) return [9, 1];
+                if (input.Contains("Second")) return [1, 8];
+                if (input.Contains("Third")) return [8, 2];
+                return [5, 6];
+            }
+        };
+
+        var result = await new AnalysisProcessingService(store, revision, files.Directory, new CandidateGeneration(), vectors,
+            AnalysisProcessingMode.LocalQuestion).AnalyzeAsync(request with { Question = "Find the relevant reports." }, new Progress<string>(), default);
+
+        Assert.Equal(new[] { "[00:00:02.000] Second report.", "[00:00:06.000] Last decision.", "[00:00:04.000] Third report." },
+            result.Claims.Select(claim => Assert.Single(claim.Evidence).Text).ToArray());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnalyzeAsync_NativeDirectoryBoundary_UsesOnlyThePinnedLocalDirectoryWithoutImplicitLease(bool network)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(await AnalysisProcessingNative.PinAsync(request, default), default);
+        var directory = network ? @"\\not-contacted.invalid\share\models" : files.Directory;
+        var loaded = new List<NativeModel>();
+        var service = new AnalysisProcessingNative(store, revision, directory, files.Directory, AnalysisProcessingMode.Summary,
+            loader: (settings, _) =>
+            {
+                Assert.Equal(files.Directory, Path.GetDirectoryName(settings.ModelPath));
+                var model = new NativeModel(settings.Embeddings);
+                loaded.Add(model);
+                return Task.FromResult<INativeModel>(model);
+            }, verifier: (actual, _, _) =>
+            {
+                Assert.Equal(files.Directory, actual);
+                return Task.CompletedTask;
+            });
+        if (network)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => service.AnalyzeAsync(request, new Progress<string>(), default));
+            Assert.Empty(loaded);
+            Assert.Null((await store.LoadAsync(revision.Identity, default)).Completed);
+        }
+        else
+        {
+            Assert.Equal("Completed", (await service.AnalyzeAsync(request, new Progress<string>(), default)).Status);
+            Assert.Equal(2, loaded.Count);
+            Assert.All(loaded, model => Assert.True(model.Disposed));
+            Assert.Equal(revision.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        }
+    }
+
+    [Theory]
+    [InlineData(AnalysisProcessingMode.GlobalQuestion)]
+    [InlineData(AnalysisProcessingMode.LocalQuestion)]
+    public async Task AnalyzeAsync_PriorAssistantClaimsAndCitationsArePoisoned_NewEvidenceStillComesOnlyFromSavedSource(AnalysisProcessingMode mode)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("Ana reviews the selected draft.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        var poison = new TranscriptAnalysisClaim("Marco has approved everything.",
+            [new("invented prior evidence", null, "Assistant invented a different transcript.")]);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Discussion", "Who reviews the draft?", "Invented assistant facts.", [poison])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+
+        var result = await new AnalysisProcessingService(store, revision, files.Directory, new CandidateGeneration(), new Vectors(),
+            mode, new TranscriptDiscussionContext(true, "the draft"))
+            .AnalyzeAsync(request with { Question = "Who reviews it?" }, new Progress<string>(), default);
+
+        var fresh = Assert.Single(result.Claims);
+        Assert.Equal("[00:00:00.000] Ana reviews the selected draft.", Assert.Single(fresh.Evidence).Text);
+        var restored = await Collect(SqliteTranscriptAnalysisStore.Open(files.Database).ReadOutputsAsync(revision, default));
+        Assert.Equal(poison.Text, Assert.Single(restored[0].Claims).Text);
+        Assert.Equal(fresh.Evidence, Assert.Single(restored[^1].Claims).Evidence);
+        Assert.Equal("Who reviews it?", restored[^1].Question);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_FinalSourceIsStillBeingIndexed_DoesNotStartGenerationOrReplacePreviousCompletion()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("First report.", "Second report.", "Final decision: postpone the launch.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vectors = new Vectors
+        {
+            BeforeReturn = input =>
+            {
+                if (!input.Contains("Final decision")) return Task.CompletedTask;
+                reached.SetResult();
+                return finish.Task;
+            }
+        };
+        var generation = new CandidateGeneration();
+        var work = new AnalysisProcessingService(store, revision, files.Directory, generation, vectors,
+            AnalysisProcessingMode.GlobalQuestion).AnalyzeAsync(request with { Question = "What was agreed?" }, new Progress<string>(), default);
+        await reached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var unfinished = await store.LoadAsync(revision.Identity, default);
+        Assert.Equal(prior.Id, unfinished.Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Processing, unfinished.Status);
+        Assert.Equal(2, unfinished.Checkpoint!.NextOrdinal);
+        Assert.Empty(generation.Prompts);
+        finish.SetResult();
+
+        var result = await work;
+
+        Assert.Equal("Completed", result.Status);
+        Assert.Equal(3, (await Collect(store.ReadChunksAsync(revision, default))).Count);
+        Assert.Equal(revision.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        Assert.Contains(result.Claims.SelectMany(claim => claim.Evidence),
+            evidence => evidence.Text == "[00:00:04.000] Final decision: postpone the launch.");
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_CurrentGenerationFinishesAfterCancellation_DoesNotCommitItsCandidateClaims()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        using var cancellation = new CancellationTokenSource();
+        var boundary = new NativeBoundary();
+        var generation = new CandidateGeneration { OnCall = cancellation.Cancel };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new AnalysisProcessingService(store, revision,
+            files.Directory, generation, new Vectors(), AnalysisProcessingMode.GlobalQuestion, enterInferenceAsync: boundary.Enter)
+            .AnalyzeAsync(request with { Question = "What was agreed?" }, new Progress<string>(), cancellation.Token));
+
+        Assert.Single(generation.Prompts);
+        Assert.Equal(0, boundary.Active);
+        var restored = await SqliteTranscriptAnalysisStore.Open(files.Database).LoadAsync(revision.Identity, default);
+        Assert.Equal(prior.Id, restored.Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Cancelled, restored.Status);
+        Assert.Equal(1, restored.Checkpoint!.NextOrdinal);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Collect(store.ReadOutputsAsync(revision, default)));
+    }
+
+    [Theory]
+    [InlineData("generation")]
+    [InlineData("embedding")]
+    [InlineData("configuration")]
+    [InlineData("attempt")]
+    public async Task AnalyzeAsync_OnePinnedIdentityFieldIsDifferent_RejectsBeforeLeaseOrNativeLoading(string changed)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var pinned = await AnalysisProcessingNative.PinAsync(request, default);
+        var configuration = """{"selectedBeforeQueueing":false}""";
+        var identity = changed switch
+        {
+            "generation" => pinned with { Generation = pinned.Generation with { Sha256 = new('A', 64) } },
+            "embedding" => pinned with { Embedding = pinned.Embedding with { Sha256 = new('B', 64) } },
+            "configuration" => pinned with { Generation = pinned.Generation with
+            {
+                CanonicalConfiguration = configuration,
+                ConfigurationSha256 = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(configuration)))
+            } },
+            _ => pinned with { AttemptId = Guid.NewGuid() }
+        };
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(identity, default);
+        var boundary = new NativeBoundary();
+        var loads = 0;
+        var service = new AnalysisProcessingNative(store, revision, files.Directory, files.Directory, AnalysisProcessingMode.Summary,
+            enterInferenceAsync: boundary.Enter, loader: (settings, _) =>
+            {
+                loads++;
+                return Task.FromResult<INativeModel>(new NativeModel(settings.Embeddings));
+            }, verifier: (_, _, _) => Task.CompletedTask);
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => service.AnalyzeAsync(request, new Progress<string>(), default));
+
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        Assert.Equal(0, loads);
+        Assert.Equal(0, boundary.Entries);
+        Assert.Null((await store.LoadAsync(identity, default)).Completed);
+        Assert.Equal(AnalysisStoreStatus.Failed, (await store.LoadAsync(identity, default)).Status);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_NoOriginalScalarFitsEmbeddingBudget_FailsWithoutTruncatingOrEnteringTheBackend()
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        var vectors = new Vectors { ConstantTokenCount = 513 };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new AnalysisProcessingService(store, revision, files.Directory,
+            new CandidateGeneration(), vectors, AnalysisProcessingMode.Summary).AnalyzeAsync(request, new Progress<string>(), default));
+        Assert.False(string.IsNullOrWhiteSpace(error.Message));
+        Assert.Equal(0, vectors.Calls);
+        Assert.Empty(await Collect(store.ReadChunksAsync(revision, default)));
+        Assert.Equal(prior.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Failed, (await store.LoadAsync(revision.Identity, default)).Status);
+    }
+
+    [Theory]
+    [InlineData(GenerationFinish.TokenLimit, null, "TokenLimited")]
+    [InlineData(GenerationFinish.Completed, "Final ranges remain uncertain.", "Partial")]
+    public async Task AnalyzeAsync_LaterGlobalBatchIsIncomplete_DoesNotActivateEarlierCandidateRecordsAsFullResult(
+        GenerationFinish finish, string? limitation, string status)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("First.", "Second.", "Third.", "Fourth.", "Fifth.", "Sixth.", "Final decision.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var prior = await store.BeginAsync(files.Identity(request), default);
+        await store.CompleteAsync(prior, Stream(new AnalysisStoreOutput(0, "Summary", null, "Prior retained result.", [])), default);
+        var revision = await store.BeginAsync(prior.Identity, default);
+        var generation = new CandidateGeneration
+        {
+            FinishForCall = call => call == 1 ? GenerationFinish.Completed : finish,
+            LimitationForCall = call => call == 1 ? null : limitation
+        };
+
+        var result = await new AnalysisProcessingService(store, revision, files.Directory, generation, new Vectors(),
+            AnalysisProcessingMode.GlobalQuestion).AnalyzeAsync(request with { Question = "What was agreed across the transcript?" }, new Progress<string>(), default);
+
+        Assert.Equal(status, result.Status);
+        Assert.Empty(result.Claims);
+        Assert.Equal(2, generation.Prompts.Count);
+        using var ledger = ClaimLedger.Open(result.LedgerPath);
+        Assert.True(ledger.ReadClaims().Any());
+        Assert.Equal(prior.Id, (await store.LoadAsync(revision.Identity, default)).Completed!.Id);
+        Assert.Equal(AnalysisStoreStatus.Failed, (await store.LoadAsync(revision.Identity, default)).Status);
+        Assert.Equal(7, (await Collect(store.ReadChunksAsync(revision, default))).Count);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Collect(store.ReadOutputsAsync(revision, default)));
+    }
+
+    [Theory]
+    [InlineData("stage")]
+    [InlineData("algorithm")]
+    public async Task AnalyzeAsync_IndexedCheckpointChangesBeforeInference_RejectsStaleProcessingState(string changed)
+    {
+        using var files = new ProcessingFiles();
+        var request = await files.Source("The selected transcript.");
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var revision = await store.BeginAsync(files.Identity(request), default);
+        var changedOnce = false;
+        var generation = new CandidateGeneration();
+        var progress = new CallbackProgress(_ =>
+        {
+            var checkpoint = store.LoadAsync(revision.Identity, default).GetAwaiter().GetResult().Checkpoint;
+            if (changedOnce || checkpoint?.Stage != "Indexed") return;
+            changedOnce = true;
+            var replacement = changed == "stage" ? checkpoint with { Stage = "Index" } : checkpoint with { Cursor = "obsolete" };
+            store.SaveCheckpointAsync(revision, replacement, Array.Empty<AnalysisStoreChunk>().ToAsyncEnumerable(), default)
+                .GetAwaiter().GetResult();
+        });
+
+        var result = await new AnalysisProcessingService(store, revision, files.Directory, generation, new Vectors(),
+            AnalysisProcessingMode.Summary).AnalyzeAsync(request, progress, default);
+
+        Assert.True(changedOnce);
+        Assert.Equal("Failed", result.Status);
+        Assert.Empty(generation.Prompts);
+        Assert.Null((await store.LoadAsync(revision.Identity, default)).Completed);
+        Assert.Equal(AnalysisStoreStatus.Failed, (await store.LoadAsync(revision.Identity, default)).Status);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_IntegratedCoordinatorResolver_RespectsRecordingIntentAndCommitsOnlyOwnedRevision()
+    {
+        using var files = new ProcessingFiles();
+        var request = (await files.Source("First report.", "Final decision: postpone the launch.")) with { Question = "What was agreed?" };
+        var identity = files.Identity(request);
+        var store = SqliteTranscriptAnalysisStore.Create(files.Database);
+        var repository = AnalysisQueueRepository.Create(Path.Combine(files.Directory, "queue.sqlite"));
+        var vectors = new Vectors();
+        var generation = new CandidateGeneration();
+        var coordinator = new AnalysisJobCoordinator(repository, store, execution =>
+        {
+            Assert.Equal(identity, execution.Revision.Identity);
+            Assert.Equal(files.Directory, execution.Request.ModelDirectory);
+            Assert.Equal(AnalysisJobMode.GlobalQuestion, execution.Request.Mode);
+            return new AnalysisProcessingService(store, execution.Revision, files.Directory, generation, vectors,
+                AnalysisProcessingMode.GlobalQuestion, enterInferenceAsync: execution.EnterInferenceAsync);
+        });
+        await coordinator.RecoverAsync();
+        await coordinator.SetRecordingIntentAsync(true);
+        var job = await coordinator.EnqueueAsync(new(request, identity, files.Directory, AnalysisJobMode.GlobalQuestion));
+        await coordinator.WaitForIdleAsync();
+        Assert.Equal(AnalysisJobStatus.Queued, Assert.Single(coordinator.Jobs).Status);
+        Assert.Equal(0, vectors.Calls);
+        Assert.Empty(generation.Prompts);
+        await coordinator.SetRecordingIntentAsync(false);
+
+        await coordinator.WaitForIdleAsync();
+
+        var completed = Assert.Single(coordinator.Jobs);
+        Assert.Equal(job.Id, completed.Id);
+        Assert.Equal(AnalysisJobStatus.Complete, completed.Status);
+        Assert.Equal(completed.Revision!.Id, (await store.LoadAsync(identity, default)).Completed!.Id);
+        var outputs = await Collect(SqliteTranscriptAnalysisStore.Open(files.Database).ReadOutputsAsync(completed.Revision, default));
+        Assert.Contains(outputs.SelectMany(output => output.Claims).SelectMany(claim => claim.Evidence),
+            evidence => evidence.Text == "[00:00:02.000] Final decision: postpone the launch.");
     }
 
     private static async Task<List<T>> Collect<T>(IAsyncEnumerable<T> values)
@@ -826,11 +1305,14 @@ public sealed class AnalysisProcessingTests
         public string? Limitation { get; init; }
         public int StatementLimit { get; init; } = 512;
         public int TokenDivisor { get; init; } = 4;
+        public int TokenOverhead { get; init; }
         public bool NoClaims { get; init; }
         public string? Response { get; init; }
+        public Func<int, GenerationFinish>? FinishForCall { get; init; }
+        public Func<int, string?>? LimitationForCall { get; init; }
         public List<string> Prompts { get; } = [];
         public string RenderPrompt(string instruction, string input) => input;
-        public int CountTokens(string prompt) => prompt.Length / TokenDivisor;
+        public int CountTokens(string prompt) => prompt.Length / TokenDivisor + TokenOverhead;
         public Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
         {
             OnCall?.Invoke();
@@ -845,8 +1327,8 @@ public sealed class AnalysisProcessingTests
                 deadline = new { state = "Absent", value = (string?)null },
                 qualifiers = new[] { "unverified" }, references = new[] { index }
             });
-            return Task.FromResult(new GenerationResult(JsonSerializer.Serialize(new { claims, limitation = Limitation }),
-                Finish, 50));
+            return Task.FromResult(new GenerationResult(JsonSerializer.Serialize(new { claims, limitation = LimitationForCall is null ? Limitation : LimitationForCall(Prompts.Count) }),
+                FinishForCall?.Invoke(Prompts.Count) ?? Finish, 50));
         }
     }
 
@@ -855,15 +1337,18 @@ public sealed class AnalysisProcessingTests
         public Action? OnCall { get; init; }
         public List<string> Inputs { get; } = [];
         public int TokenDivisor { get; init; } = 4;
+        public int? ConstantTokenCount { get; init; }
         public Func<string, float[]>? GetVector { get; init; }
+        public Func<string, Task>? BeforeReturn { get; init; }
         public int Calls { get; private set; }
-        public int CountTokens(string input) => input.Length / TokenDivisor;
-        public Task<float[]> EmbedAsync(string input, CancellationToken cancellationToken)
+        public int CountTokens(string input) => ConstantTokenCount ?? input.Length / TokenDivisor;
+        public async Task<float[]> EmbedAsync(string input, CancellationToken cancellationToken)
         {
             Calls++;
             Inputs.Add(input);
             OnCall?.Invoke();
-            return Task.FromResult(GetVector?.Invoke(input) ?? [1, 0]);
+            if (BeforeReturn is not null) await BeforeReturn(input);
+            return GetVector?.Invoke(input) ?? [1, 0];
         }
     }
 

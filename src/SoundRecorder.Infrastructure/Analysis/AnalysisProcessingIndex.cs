@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using SoundRecorder.Core;
 
 namespace SoundRecorder.Infrastructure.Analysis;
@@ -105,6 +106,7 @@ public sealed partial class AnalysisProcessingService
     {
         if (embedding.CountTokens(input) > 512) throw new InvalidDataException("Query exceeds embedding token budget; no truncation.");
         using var lease = enterInferenceAsync is null ? null : await enterInferenceAsync(token);
+        token.ThrowIfCancellationRequested();
         var vector = await embedding.EmbedAsync(input, token);
         token.ThrowIfCancellationRequested();
         ValidateVector(vector);
@@ -124,12 +126,36 @@ public sealed partial class AnalysisProcessingService
     {
         var query = await VectorAsync("search_query: " + question, token);
         var matches = new List<(AnalysisStoreChunk Chunk, double Score)>();
-        await foreach (var chunk in store.ReadChunksAsync(revision, token))
+        await foreach (var chunk in IndexedChunksAsync(token))
         {
             var score = chunk.Vector.Select((value, index) => (double)value * query[index]).Sum();
             matches.Add((chunk, score));
             matches = matches.OrderByDescending(match => match.Score).ThenBy(match => match.Chunk.Ordinal).Take(3).ToList();
         }
         return matches.Select(match => match.Chunk).ToArray();
+    }
+
+    private async IAsyncEnumerable<AnalysisStoreChunk> IndexedChunksAsync([EnumeratorCancellation] CancellationToken token)
+    {
+        var checkpoint = await RequireIndexedAsync(token);
+        var ordinal = 0;
+        await foreach (var chunk in store.ReadChunksAsync(revision, token))
+        {
+            token.ThrowIfCancellationRequested();
+            if (chunk.Ordinal != ordinal++)
+                throw new InvalidDataException("The indexed source sequence is incomplete; explicit rebuild is required.");
+            yield return chunk;
+        }
+        if (ordinal != checkpoint.NextOrdinal)
+            throw new InvalidDataException("Not every committed source range was read; no complete result can be activated.");
+    }
+
+    private async Task<AnalysisStoreCheckpoint> RequireIndexedAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var checkpoint = (await AnalysisProcessingRevision.RequireActiveAsync(store, revision)).Checkpoint;
+        if (checkpoint?.Stage != "Indexed" || checkpoint.Cursor != revision.Identity.AlgorithmVersion || checkpoint.NextOrdinal < 1)
+            throw new InvalidDataException("A complete compatible source index is required before inference.");
+        return checkpoint;
     }
 }

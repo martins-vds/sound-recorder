@@ -13,6 +13,7 @@ public sealed partial class AnalysisProcessingService
         public async Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
         {
             using var lease = enter is null ? null : await enter(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             return await backend.GenerateAsync(prompt, outputTokens, cancellationToken);
         }
     }

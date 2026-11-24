@@ -26,6 +26,14 @@ ILocalTranscriptAnalysis processor = new AnalysisProcessingNative(
 var candidate = await processor.AnalyzeAsync(request, progress, token);
 ```
 
+The integrated `AnalysisJobCoordinator` resolver can construct this adapter from
+`AnalysisJobExecution` without a production dependency on job types inside the
+processor. Map `Request.Mode` to the corresponding `AnalysisProcessingMode`,
+`Request.Discussion` to `TranscriptDiscussionContext`, and pass `Revision`,
+`Request.ModelDirectory` and `EnterInferenceAsync` unchanged. `Revision.Identity`
+already carries the validated `Request.Identity`. Queue identities should be
+created with `PinAsync`; neither resolver nor processor reads global selection.
+
 The controlled-backend constructor takes the same revision/mode/context/lease,
 with generation and embedding adapters instead of a directory. Its backends must
 belong to the revision's pinned configuration. The native constructor rechecks
@@ -35,6 +43,10 @@ native-policy tests, not model-correctness claims. Production uses their default
 Each model load, embedding call and generation call owns a recording-priority
 lease when provided. The scheduling caller must serialize jobs and provide that
 lease; the processor is not an independent scheduling implementation.
+Cancellation is rechecked after a deferred lease is granted and before entering
+the native loader/backend. A cancelled wait releases its lease without starting
+new model work; a current generation that finishes after cancellation cannot
+activate its candidate output.
 
 ## Coverage, records and conversation
 
@@ -52,6 +64,12 @@ against every source range and reused without reembedding. A bounded disk spool
 avoids holding a store reader while committing to the same SQLite database; it is
 removed on success/failure. Changed source/model/configuration cannot reuse an
 incompatible identity.
+Inference requires the exact revision's completed `Indexed` checkpoint. Both
+global scanning and local retrieval verify contiguous range ordinals and the
+committed range count while reading the index. A missing range, including one
+removed after indexing finished, fails rather than activating incomplete
+coverage. Trailing unowned ranges also reject reuse; a damaged committed prefix
+requires an explicit rebuild, not silent skipping or retargeting.
 
 The production engine's disk claim ledger is authoritative initial extraction:
 structured kind, statement, stated/absent owner and deadline, qualifications and

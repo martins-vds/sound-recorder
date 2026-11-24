@@ -57,6 +57,7 @@ public sealed class AnalysisProcessingNative(ITranscriptAnalysisStore store, Ana
     private async Task<LlamaGeneration> LoadGenerationAsync(CancellationToken token)
     {
         using var lease = enterInferenceAsync is null ? null : await enterInferenceAsync(token);
+        token.ThrowIfCancellationRequested();
         return await LlamaGeneration.LoadAsync(directory, loader ?? LlamaNativeModel.LoadAsync,
             verifier ?? ModelFiles.VerifyAsync, token, phiMini: true);
     }
@@ -64,6 +65,7 @@ public sealed class AnalysisProcessingNative(ITranscriptAnalysisStore store, Ana
     private async Task<LlamaEmbedding> LoadEmbeddingAsync(CancellationToken token)
     {
         using var lease = enterInferenceAsync is null ? null : await enterInferenceAsync(token);
+        token.ThrowIfCancellationRequested();
         return await LlamaEmbedding.LoadAsync(directory, loader ?? LlamaNativeModel.LoadAsync,
             verifier ?? ModelFiles.VerifyAsync, token);
     }
