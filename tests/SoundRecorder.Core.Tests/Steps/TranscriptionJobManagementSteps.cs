@@ -14,7 +14,7 @@ namespace SoundRecorder.Core.Tests.Steps;
 public sealed class TranscriptionJobManagementSteps
 {
     private readonly string _directory = Path.Combine(Environment.CurrentDirectory, "artifacts", $"job-management-{Guid.NewGuid():N}");
-    private readonly Models _models = new();
+    private readonly TranscriptionJobManagementTests.Models _models = new();
     private readonly Repository _repository = new();
     private ControlledTranscriber _worker = new();
     private TranscriptionQueue _queue = null!;

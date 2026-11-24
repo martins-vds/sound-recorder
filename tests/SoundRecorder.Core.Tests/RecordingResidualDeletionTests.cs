@@ -85,6 +85,7 @@ public sealed class RecordingResidualDeletionTests : IDisposable
         var queue = new TranscriptionQueue(new ImmediateTranscriber(), new AtomicTranscriptWriter(), _fixture.Jobs,
             history: _fixture.History);
         await queue.RestoreAsync(default);
+        var retainedOutputs = Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs;
         var rejectLast = true;
         var library = _fixture.CreateLibrary(cancel: queue.CancelRecordingAsync, deleteJob: async (id, token) =>
         {
@@ -96,7 +97,10 @@ public sealed class RecordingResidualDeletionTests : IDisposable
         Assert.Equal(LibraryDeletionStatus.Incomplete, incomplete.Status);
         Assert.Equal(residualJobs[1].Id, Assert.Single(incomplete.PendingDeletion!.RemainingJobIds));
         Assert.Equal(residualJobs[1].Id, Assert.Single(await _fixture.Jobs.LoadAsync(default)).Id);
-        Assert.Equal(_fixture.Outputs, Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs);
+        var retained = Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs;
+        Assert.Equal(retainedOutputs.Select(output => (output.JobId, output.Outputs)),
+            retained.Select(output => (output.JobId, output.Outputs)));
+        Assert.All(retained, output => Assert.Equal(_fixture.Recording.Language, output.Language));
         rejectLast = false;
 
         var complete = await library.DeleteRecordingAsync(_fixture.Recording.Id, RecordingDeletionScope.AllArtifacts, default);

@@ -1,0 +1,151 @@
+name: Native x64 transcript feasibility
+
+on:
+  push:
+    branches: [feasibility/local-transcript-analysis]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-harnesses:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      RestoreLockedMode: 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Inventory hardware and require native Windows x64
+        run: |
+          New-Item -ItemType Directory -Force -Path .\artifacts\transcript-feasibility | Out-Null
+          $os = Get-CimInstance Win32_OperatingSystem
+          $system = Get-CimInstance Win32_ComputerSystem
+          $cpu = Get-CimInstance Win32_Processor
+          $inventory = [ordered]@{
+            commit = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            runnerImage = $env:ImageOS
+            runnerImageVersion = $env:ImageVersion
+            os = $os.Caption
+            osVersion = $os.Version
+            osBuild = $os.BuildNumber
+            osArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+            physicalRamBytes = $system.TotalPhysicalMemory
+            cpu = @($cpu | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors)
+            scope = 'Synthetic harnesses only; no model, offline inference, or 16-GB acceptance claim.'
+          }
+          $inventory | ConvertTo-Json -Depth 5 | Set-Content .\artifacts\transcript-feasibility\hardware.json -Encoding utf8
+          if (-not $IsWindows -or $inventory.osArchitecture -ne 'X64' -or $inventory.processArchitecture -ne 'X64') {
+            throw 'Native Windows x64 OS and PowerShell process are required; emulation is not evidence.'
+          }
+
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Record and require native x64 SDK runtime
+        run: |
+          $info = & dotnet --info
+          $info | Set-Content .\artifacts\transcript-feasibility\dotnet-info.txt -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'SDK inventory failed.' }
+          if (($info -join "`n") -notmatch 'RID:\s+win-x64\b' -or ($info -join "`n") -notmatch 'Architecture:\s+x64\b') {
+            throw 'The actual .NET SDK/runtime must be native win-x64.'
+          }
+          Copy-Item .\global.json .\artifacts\transcript-feasibility\global.json
+
+      - name: Locked restore Evaluation generator and tests
+        id: restore-evaluation
+        run: |
+          dotnet restore .\feasibility\Evaluation\Generator\Evaluation.Generator.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Generator locked restore failed.' }
+          dotnet restore .\feasibility\Evaluation\Generator.Tests\Evaluation.Generator.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Evaluation tests locked restore failed.' }
+
+      - name: Locked restore portable and native SQLite tests
+        id: restore-sqlite
+        if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
+        run: |
+          dotnet restore .\feasibility\SqliteRetrieval\SqliteRetrieval.Tests\SqliteRetrieval.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Portable SQLite locked restore failed.' }
+          dotnet restore .\feasibility\SqliteRetrieval\Native.Tests\Native.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Native SQLite locked restore failed.' }
+
+      - name: Regenerate deterministic synthetic corpus
+        id: corpus
+        if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
+        run: .\feasibility\Evaluation\Generate.ps1
+
+      - name: Locked restore production analysis consumers without weights
+        id: restore-model-harness
+        if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
+        run: |
+          dotnet restore .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw 'Structured model harness locked restore failed.' }
+          dotnet build .\src\SoundRecorder.Analysis\SoundRecorder.Analysis.csproj --no-restore -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Production analysis engine build failed.' }
+
+      - name: Run deterministic structured ledger and native CPU boundary
+        if: ${{ !cancelled() && steps.restore-model-harness.outcome == 'success' }}
+        run: |
+          dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --no-restore -c Release --filter "type!=IntegrationTests" --logger "trx;LogFileName=models-ledger.trx" --results-directory .\artifacts\transcript-feasibility --logger "console;verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { throw 'Structured ledger/model-free native boundary tests failed.' }
+
+      - name: Validate Evaluation corpus and generator
+        if: ${{ !cancelled() && steps.corpus.outcome == 'success' }}
+        run: |
+          dotnet test .\feasibility\Evaluation\Generator.Tests\Evaluation.Generator.Tests.csproj --no-restore -c Release --logger "trx;LogFileName=evaluation.trx" --results-directory .\artifacts\transcript-feasibility --logger "console;verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { throw 'Evaluation tests failed.' }
+
+      - name: Run all 15 portable SQLite tests including measurements
+        if: ${{ !cancelled() && steps.restore-sqlite.outcome == 'success' }}
+        run: |
+          dotnet test .\feasibility\SqliteRetrieval\SqliteRetrieval.Tests\SqliteRetrieval.Tests.csproj --no-restore -c Release --logger "trx;LogFileName=sqlite-portable.trx" --results-directory .\artifacts\transcript-feasibility --logger "console;verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { throw 'Portable SQLite tests failed.' }
+
+      - name: Run required native extension comparison
+        if: ${{ !cancelled() && steps.restore-sqlite.outcome == 'success' }}
+        run: |
+          dotnet test .\feasibility\SqliteRetrieval\Native.Tests\Native.Tests.csproj --no-restore -c Release --logger "trx;LogFileName=sqlite-native.trx" --results-directory .\artifacts\transcript-feasibility --logger "console;verbosity=detailed"
+          if ($LASTEXITCODE -ne 0) { throw 'Native extension comparison failed; missing extensions are not skipped.' }
+
+      - name: Require complete passing test evidence
+        if: always()
+        run: |
+          foreach ($suite in @(
+            @{ File = 'evaluation.trx'; Count = 14 },
+            @{ File = 'sqlite-portable.trx'; Count = 15 },
+            @{ File = 'sqlite-native.trx'; Count = 1 },
+            @{ File = 'models-ledger.trx'; Count = 175 }
+          )) {
+            $path = Join-Path .\artifacts\transcript-feasibility $suite.File
+            if (-not (Test-Path $path)) { throw "Missing required test evidence: $($suite.File)" }
+            [xml]$trx = Get-Content $path -Raw
+            $counts = $trx.TestRun.ResultSummary.Counters
+            if ([int]$counts.total -ne $suite.Count -or [int]$counts.executed -ne $suite.Count -or [int]$counts.passed -ne $suite.Count) {
+              throw "Incomplete or failed suite: $($suite.File)"
+            }
+          }
+
+      - name: Upload synthetic test and hardware evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: transcript-feasibility-win-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/transcript-feasibility/
+            feasibility/Evaluation/generated/corpus-manifest.json
+          if-no-files-found: error
+          retention-days: 14

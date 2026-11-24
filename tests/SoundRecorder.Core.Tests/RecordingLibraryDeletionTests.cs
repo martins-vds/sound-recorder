@@ -695,7 +695,8 @@ public sealed class RecordingLibraryDeletionTests : IDisposable
         Assert.Equal("Transcript attempt 2", transcript.Text);
         Assert.Equal("1\r\n00:00:00,000 --> 00:00:04,000\r\nSubtitle attempt 2\r\n", transcript.Subtitles);
         Assert.Empty(transcript.Issues);
-        Assert.Equal(_fixture.Outputs, Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs);
+        Assert.Equal(_fixture.Outputs.Select(output => output with { Language = recording.Language }),
+            Assert.Single(await _fixture.History.LoadAsync(default)).TranscriptOutputs);
         Assert.Equal(jobsBefore, await File.ReadAllBytesAsync(_fixture.JobsPath));
     }
 

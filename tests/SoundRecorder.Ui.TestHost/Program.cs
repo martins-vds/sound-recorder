@@ -13,6 +13,8 @@ using SoundRecorder.Infrastructure.Models;
 using SoundRecorder.Infrastructure.Persistence;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
+using SoundRecorder.Infrastructure.Analysis;
+using SoundRecorder.Infrastructure.Analysis.Storage;
 
 namespace SoundRecorder.Ui.TestHost;
 
@@ -21,6 +23,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length == 0)
+            args = [Path.Combine(AppContext.BaseDirectory, "manual-fixtures", Guid.NewGuid().ToString("N")), "saved transcript"];
+        var restored = args.Length == 2 && args[1] == "restored transcript";
+        if (restored) args[1] = "saved transcript";
+        var realAnalysis = args.Length == 2 && args[1] == "analysis real model";
+        if (realAnalysis) args[1] = "saved transcript";
         var searchable = args.Length == 2 && args[1] == "searchable meetings";
         var workspace = args.Length == 2 && args[1] == "meeting workspace";
         var mixedHistory = args.Length == 2 && args[1] == "workspace with mixed job history";
@@ -85,6 +93,7 @@ internal static class Program
         }
 
         var root = Path.GetFullPath(args[0]);
+        Directory.CreateDirectory(root);
         var engine = new FixtureEngine();
         using var downloadHandler = modelDownloads ? new FixtureModelDownloads(root, unknownModelLength) : null;
         using var client = new System.Net.Http.HttpClient(downloadHandler is null ? new OfflineHandler(root) : downloadHandler);
@@ -103,7 +112,8 @@ internal static class Program
             downloadHandler.Controlled = !pinnedJobs;
             models = new FixtureModelManager(localModels, root, unknownModelLength);
         }
-        var selectedPackage = CreatePackage(root, "valid.zip", invalidHash: false, englishOnly: englishOnlyModel);
+        var selectedPackage = restored ? Path.Combine(root, "valid.zip")
+            : CreatePackage(root, "valid.zip", invalidHash: false, englishOnly: englishOnlyModel);
         if (catalog || englishOnlyModel || args[1] == "invalid package")
         {
             models.ImportAsync(selectedPackage, CancellationToken.None).GetAwaiter().GetResult();
@@ -116,7 +126,7 @@ internal static class Program
         var repository = new JsonTranscriptionJobRepository(Path.Combine(root, "jobs.json"));
         var writer = new AtomicTranscriptWriter();
         FileStream? heldArtifact = null;
-        if (args[1] is "missing recording" or "saved transcript" or "running job")
+        if (!restored && args[1] is "missing recording" or "saved transcript" or "running job")
         {
             var recording = new SavedRecording(multipleAttempts
                     ? Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff") : Guid.NewGuid(),
@@ -139,6 +149,12 @@ internal static class Program
                     models.ImportAsync(selectedPackage, CancellationToken.None).GetAwaiter().GetResult();
                 }
                 var document = FixtureTranscriber.Document(recording, playable);
+                if (realAnalysis)
+                {
+                    document = new TranscriptDocument(recording, "English",
+                        [new(TimeSpan.Zero, recording.CapturedDuration,
+                            "Ana will send the draft on Friday. The launch date has not been decided.")]);
+                }
                 if (longTranscript)
                 {
                     document = new TranscriptDocument(recording, recording.Language,
@@ -255,7 +271,10 @@ internal static class Program
             new RecoveryManager(new LocalRecoveryStorage(Path.Combine(root, "capture"))),
             new FixtureDevices(), NullLogger<MainViewModel>.Instance,
             library,
-            playback)
+            playback,
+            realAnalysis ? new LocalTranscriptAnalysis(
+                Environment.GetEnvironmentVariable("SOUNDRECORDER_ANALYSIS_MODELS") ?? "",
+                Path.Combine(root, "experimental-analysis")) : CreateAnalysis(root))
         {
             DestinationFolder = root,
         };
@@ -267,6 +286,7 @@ internal static class Program
                 file.FileName = selectedPackage;
                 return true;
             }
+
             throw new InvalidOperationException("No folder-dialog selection fixture is configured.");
         }, System.Windows.MessageBox.Show);
         var window = new MainWindow(viewModel, engine, dialogs,
@@ -280,6 +300,19 @@ internal static class Program
         {
             heldArtifact?.Dispose();
         }
+    }
+
+    private static PersistentTranscriptAnalysis CreateAnalysis(string root)
+    {
+        var database = Path.Combine(root, "analysis.sqlite");
+        var journal = Path.Combine(root, "analysis-jobs.sqlite");
+        var store = File.Exists(database) ? SqliteTranscriptAnalysisStore.Open(database) : SqliteTranscriptAnalysisStore.Create(database);
+        var repository = File.Exists(journal) ? AnalysisQueueRepository.Open(journal) : AnalysisQueueRepository.Create(journal);
+        return new(store, repository, new FixtureAnalysisSetup(), execution =>
+        {
+            File.AppendAllText(Path.Combine(root, "fixture-analysis-calls.txt"), "request\n");
+            return new FixtureDurableAnalysis(store, execution);
+        });
     }
 
     private static string CreatePackage(string root, string name, bool invalidHash, bool englishOnly = false)
@@ -299,6 +332,63 @@ internal static class Program
             JsonSerializer.Serialize(manifest, package);
         }
         return path;
+    }
+}
+
+internal sealed class FixtureAnalysisSetup : IAnalysisModelSetup
+{
+    public AnalysisModelProfile Profile => new("controlled-UI-profile", "Deterministic CPU adapter; no model files", [
+        new("generation", "fixture-generation", 16, new('A', 64), "MIT"),
+        new("embedding", "fixture-embedding", 16, new('B', 64), "Apache-2.0")]);
+    public Task<AnalysisModelReadiness> GetReadinessAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new AnalysisModelReadiness(AnalysisModelReadinessState.Ready, "controlled-pinned-directory", null));
+    public Task<string> ImportAsync(string packagePath, IProgress<AnalysisModelSetupProgress>? progress = null,
+        CancellationToken cancellationToken = default) => Task.FromResult("controlled-pinned-directory");
+    public Task<string> DownloadAsync(IProgress<AnalysisModelSetupProgress>? progress = null,
+        CancellationToken cancellationToken = default) => Task.FromResult("controlled-pinned-directory");
+    public Task SelectDirectoryAsync(string directory, CancellationToken cancellationToken = default) => Task.CompletedTask;
+}
+
+internal sealed class FixtureDurableAnalysis(ITranscriptAnalysisStore store, AnalysisJobExecution execution)
+    : ILocalTranscriptAnalysis
+{
+    public async Task<TranscriptAnalysisResult> AnalyzeAsync(TranscriptAnalysisRequest request,
+        IProgress<string> progress, CancellationToken token)
+    {
+        using var lease = await execution.EnterInferenceAsync(token);
+        var result = await new FixtureTranscriptAnalysis().AnalyzeAsync(request, progress, token);
+        var previous = (await store.LoadAsync(execution.Request.Identity, token)).Completed;
+        await store.CompleteAsync(execution.Revision, Outputs(previous, request, result, token), token);
+        return result;
+    }
+
+    private async IAsyncEnumerable<AnalysisStoreOutput> Outputs(AnalysisStoreRevision? previous,
+        TranscriptAnalysisRequest request, TranscriptAnalysisResult result,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        var ordinal = 0;
+        if (previous is not null)
+            await foreach (var output in store.ReadOutputsAsync(previous, token))
+                yield return output with { Ordinal = ordinal++ };
+        var kind = request.Question is null ? "Summary" : "Discussion";
+        yield return new(ordinal++, kind, request.Question, "UNVERIFIED · " + execution.Request.Mode, []);
+        yield return new(ordinal, kind, request.Question, "Controlled UI fixture candidate", result.Claims);
+    }
+}
+
+internal sealed class FixtureTranscriptAnalysis : ILocalTranscriptAnalysis
+{
+    public async Task<TranscriptAnalysisResult> AnalyzeAsync(TranscriptAnalysisRequest request,
+        IProgress<string> progress, CancellationToken token)
+    {
+        progress.Report("Controlled UI fixture analysis — no real inference");
+        if (request.Question == "UI fixture wait") await Task.Delay(Timeout.Infinite, token);
+        if (request.Question == "UI fixture failure") throw new IOException("Controlled unavailable cache fixture.");
+        await Task.Delay(150, token);
+        var original = await File.ReadAllTextAsync(request.Outputs.TextPath, token);
+        return new("Completed", "UI fixture only — not model evidence.", "",
+            [new("UI fixture candidate — no real inference.",
+                [new($"{request.AttemptId:N} · original fixture", 0, original)])]);
     }
 }
 

@@ -47,7 +47,8 @@ public sealed partial class MainViewModel : ObservableObject
         WindowsAudioDeviceCatalog devices,
         ILogger<MainViewModel> logger,
         IRecordingLibrary? library = null,
-        IRecordingPlayback? playback = null)
+        IRecordingPlayback? playback = null,
+        ILocalTranscriptAnalysis? analysis = null)
         : this(
             recorder,
             (IRecordingMonitor)recordingEngine,
@@ -58,7 +59,8 @@ public sealed partial class MainViewModel : ObservableObject
             devices,
             logger,
             library,
-            playback)
+            playback,
+            analysis)
     {
     }
 
@@ -73,7 +75,8 @@ public sealed partial class MainViewModel : ObservableObject
         IAudioDeviceCatalog devices,
         ILogger<MainViewModel> logger,
         IRecordingLibrary? library = null,
-        IRecordingPlayback? playback = null)
+        IRecordingPlayback? playback = null,
+        ILocalTranscriptAnalysis? analysis = null)
     {
         _recorder = recorder;
         _recordingEngine = recordingEngine;
@@ -85,6 +88,7 @@ public sealed partial class MainViewModel : ObservableObject
         _logger = logger;
         _library = library;
         _playback = playback;
+        _analysis = analysis;
         destinationFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
             "Sound Recorder");
@@ -307,6 +311,11 @@ public sealed partial class MainViewModel : ObservableObject
         try
         {
             var library = _library!;
+            _transcriptReadVersion++;
+            _searchCancellation?.Cancel();
+            await Task.WhenAll(_viewReads.ToArray());
+            if (scope == RecordingDeletionScope.AllArtifacts)
+                await DeleteOwnedAnalysisAsync(recording);
             var result = await Task.Run(() =>
                 library.DeleteRecordingAsync(recording.Id, scope, CancellationToken.None));
             await RefreshHistoryAsync();
@@ -489,11 +498,16 @@ public sealed partial class MainViewModel : ObservableObject
         _playback?.Dispose();
     }
 
-    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel;
+    public bool HasPendingViewWork => _viewReads.Count != 0 || IsDownloadingModel || IsSelectingModel || IsAnalyzing || IsSettingUpAnalysis;
 
     public async Task PrepareViewCloseAsync()
     {
         _closingView = true;
+        StartCommand.NotifyCanExecuteChanged();
+        NotifyAnalysisAvailability();
+        _analysisSetupCancellation?.Cancel();
+        await ReleaseAnalysisForCaptureAsync();
+        if (_analysisSetupTask is { } setup) await setup;
         _transcriptReadVersion++;
         _searchCancellation?.Cancel();
         _modelDownloadCancellation?.Cancel();
@@ -568,6 +582,7 @@ public sealed partial class MainViewModel : ObservableObject
             await Task.Run(() => _queue.RestoreAsync(CancellationToken.None));
             RefreshJobs();
             await Task.Run(() => _modelManager.RefreshInventoryAsync(CancellationToken.None));
+            await InitializeAnalysisAsync();
             SelectedRecording = Recordings.FirstOrDefault();
             RefreshModelStatus();
             RefreshState();
@@ -599,9 +614,12 @@ public sealed partial class MainViewModel : ObservableObject
 
     public async Task StartRecordingAsync(bool allowShortRecording)
     {
+        if (_closingView) return;
         IsBusy = true;
         try
         {
+            await ReleaseAnalysisForCaptureAsync();
+            if (_closingView) return;
             var privacyWarning = GetSynchronizedFolderWarning();
             var request = BuildRequest() with
             {
@@ -626,7 +644,7 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     private bool CanStart() =>
-        !IsBusy && IsIdle;
+        !_closingView && !IsBusy && IsIdle;
 
     [RelayCommand(CanExecute = nameof(CanPause))]
     private async Task PauseAsync()
@@ -858,7 +876,25 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RetryRecordingAsync(SavedRecording? recording)
     {
-        if (!await WaitForPendingModelSelectionAsync())
+        if (_closingView) return;
+        if (IsAnalyzing)
+        {
+            Message = "Cancel experimental analysis and wait for native release, then explicitly retry transcription.";
+            return;
+        }
+        _pendingTranscriptionRequests++;
+        NotifyAnalysisAvailability();
+        try { await RetryRecordingCoreAsync(recording); }
+        finally
+        {
+            _pendingTranscriptionRequests--;
+            NotifyAnalysisAvailability();
+        }
+    }
+
+    private async Task RetryRecordingCoreAsync(SavedRecording? recording)
+    {
+        if (!await CanRetryAfterModelSelectionAsync())
         {
             return;
         }
@@ -882,10 +918,25 @@ public sealed partial class MainViewModel : ObservableObject
         RefreshJobs();
     }
 
-    private async Task<bool> WaitForPendingModelSelectionAsync() =>
-        _modelSelection is not { IsCompleted: false } selection || await selection;
+    private async Task<bool> CanRetryAfterModelSelectionAsync()
+    {
+        var selected = _modelSelection is not { IsCompleted: false } selection || await selection;
+        return selected && !_closingView;
+    }
 
     private async Task EnqueueAfterSelectionAsync(SavedRecording recording, Task<bool> selection)
+    {
+        _pendingTranscriptionRequests++;
+        NotifyAnalysisAvailability();
+        try { await EnqueueAfterSelectionCoreAsync(recording, selection); }
+        finally
+        {
+            _pendingTranscriptionRequests--;
+            NotifyAnalysisAvailability();
+        }
+    }
+
+    private async Task EnqueueAfterSelectionCoreAsync(SavedRecording recording, Task<bool> selection)
     {
         if (!await selection)
         {
@@ -1016,6 +1067,7 @@ public sealed partial class MainViewModel : ObservableObject
         SystemAudioLevel = _recordingEngine.SystemAudioLevel;
         RefreshState();
         RefreshJobs();
+        RefreshCurrentAnalysisJobs();
     }
 
     public bool HasActiveWork() =>
@@ -1167,6 +1219,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void RefreshJobs()
     {
+        NotifyAnalysisAvailability();
         var selectedJobId = SelectedJob?.Id;
         var current = _queue.Jobs;
         if (!Jobs.SequenceEqual(current))
@@ -1372,6 +1425,7 @@ public sealed partial class MainViewModel : ObservableObject
     private void RefreshState()
     {
         Status = _recorder.VisibleStatus;
+        NotifyAnalysisAvailability();
         OnPropertyChanged(nameof(IsIdle));
         OnPropertyChanged(nameof(IsRecording));
         OnPropertyChanged(nameof(IsPaused));
@@ -1417,6 +1471,7 @@ public sealed partial class MainViewModel : ObservableObject
     partial void OnSelectedRecordingChanged(SavedRecording? value)
     {
         if (_closingView) return;
+        ResetTranscriptAnalysis();
         _transcriptReadVersion++;
         Transcript = null;
         CanCopyTranscript = false;

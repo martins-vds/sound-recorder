@@ -10,6 +10,34 @@ public sealed class RecordingLibraryStorageTests : IDisposable
 {
     private readonly StorageTestDirectory _directory = new();
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadAsync_ConflictingHistoricalAttempt_RejectsAmbiguousOwnershipWithoutChangingArtifacts(bool sameJob)
+    {
+        var path = _directory.PathFor("history.json");
+        var history = new JsonRecordingHistory(path);
+        var recording = Recording("meeting.wav");
+        var owned = new OwnedTranscriptOutputs(Guid.NewGuid(), Outputs("meeting"));
+        await history.AddAsync(recording with { TranscriptOutputs = [owned] }, default);
+        await File.WriteAllTextAsync(owned.Outputs.TextPath, "Retained transcript");
+        await File.WriteAllTextAsync(owned.Outputs.SubtitlePath, "Retained subtitles");
+        var conflicting = new TranscriptionJob(sameJob ? owned.JobId : Guid.NewGuid(), recording,
+            DateTimeOffset.UtcNow, TranscriptionJobStatus.Succeeded,
+            sameJob ? Outputs("meeting.transcript-2") : owned.Outputs, null);
+        var jobs = new JsonTranscriptionJobRepository(_directory.PathFor("jobs.json"));
+        await jobs.SaveAsync([conflicting], default);
+        var before = await File.ReadAllBytesAsync(path);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => new RecordingLibrary(history, jobs).LoadAsync(default));
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        Assert.Equal(owned, Assert.Single(Assert.Single(await history.LoadAsync(default)).TranscriptOutputs));
+        Assert.Equal("Retained transcript", await File.ReadAllTextAsync(owned.Outputs.TextPath));
+        Assert.Equal("Retained subtitles", await File.ReadAllTextAsync(owned.Outputs.SubtitlePath));
+        Assert.Equal(conflicting.Id, Assert.Single(await jobs.LoadAsync(default)).Id);
+    }
+
     [Fact]
     public async Task LoadAsync_NullHistory_ReportsMalformedStorageWithoutReplacingIt()
     {
@@ -189,7 +217,8 @@ public sealed class RecordingLibraryStorageTests : IDisposable
 
         var restored = Assert.Single(await library.LoadAsync(default)).Recording;
 
-        Assert.Equal(new[] { first, second }, restored.TranscriptOutputs);
+        Assert.Equal(new[] { first with { Language = original.Language }, second with { Language = original.Language } },
+            restored.TranscriptOutputs);
         Assert.Equal(original.Id, restored.Id);
         Assert.Equal(original.AudioPath, restored.AudioPath);
         Assert.Equal(original.Language, restored.Language);

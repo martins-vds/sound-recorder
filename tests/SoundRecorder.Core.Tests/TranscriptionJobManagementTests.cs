@@ -1626,7 +1626,15 @@ public sealed class TranscriptionJobManagementTests
         {
             if (RegisterFailure is not null) throw RegisterFailure;
             if (Registration is not null) await Registration(outputs);
-            if (Recording.TranscriptOutputs.Contains(outputs)) return;
+            if (Recording.TranscriptOutputs.Any(item => item.JobId == outputs.JobId))
+            {
+                Recording = Recording with
+                {
+                    TranscriptOutputs = Recording.TranscriptOutputs.Select(item => item.JobId == outputs.JobId
+                        ? item with { Language = outputs.Language ?? item.Language } : item).ToArray()
+                };
+                return;
+            }
             Recording = Recording with { TranscriptOutputs = [.. Recording.TranscriptOutputs, outputs] };
         }
     }

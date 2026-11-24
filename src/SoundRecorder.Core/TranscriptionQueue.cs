@@ -223,7 +223,8 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
         TranscriptionJob selected, TranscriptOutputs outputs, CancellationToken cancellationToken)
     {
         if (_history is not null)
-            await _history.RegisterOutputsAsync(selected.Recording.Id, new(selected.Id, outputs), cancellationToken);
+            await _history.RegisterOutputsAsync(selected.Recording.Id,
+                new(selected.Id, outputs) { Language = selected.Language }, cancellationToken);
         else if (!selected.Recording.TranscriptOutputs.Any(owned => owned.JobId == selected.Id && owned.Outputs == outputs))
             throw new InvalidOperationException("Register the output pair independently in recording history before deleting job history.");
     }
@@ -417,7 +418,8 @@ public sealed class TranscriptionQueue : ITranscriptionQueue
     private async Task RegisterPublishedOutputsAsync(TranscriptionJob job)
     {
         if (_history is not null)
-            await _history.RegisterOutputsAsync(job.Recording.Id, new(job.Id, job.Outputs!), CancellationToken.None);
+            await _history.RegisterOutputsAsync(job.Recording.Id,
+                new(job.Id, job.Outputs!) { Language = job.Language }, CancellationToken.None);
     }
 
     private void CompleteCanceledJob(TranscriptionJob job)

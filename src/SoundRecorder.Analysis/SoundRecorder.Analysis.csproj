@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Profiles\candidate-profile.json" LogicalName="SoundRecorder.Analysis.candidate-profile.json" />
+    <EmbeddedResource Include="Profiles\qwen3-candidate-profile.json" LogicalName="SoundRecorder.Analysis.qwen3-candidate-profile.json" />
+    <EmbeddedResource Include="Profiles\phi-mini-candidate-profile.json" LogicalName="SoundRecorder.Analysis.phi-mini-candidate-profile.json" />
+    <PackageReference Include="LLamaSharp" Version="[0.30.0]" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" Version="[0.30.0]" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.0]" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="[3.0.5]" />
+  </ItemGroup>
+</Project>

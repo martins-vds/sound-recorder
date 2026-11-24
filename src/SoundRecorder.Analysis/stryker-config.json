@@ -1,0 +1,16 @@
+{
+  "stryker-config": {
+    "project": "SoundRecorder.Analysis.csproj",
+    "test-projects": [
+      "..\\..\\tests\\SoundRecorder.Core.Tests\\SoundRecorder.Core.Tests.csproj",
+      "..\\..\\feasibility\\Models\\Harness.Tests\\Models.Harness.Tests.csproj"
+    ],
+    "configuration": "Release",
+    "mutation-level": "Complete",
+    "test-case-filter": "(type!=IntegrationTests&Category!=type:IntegrationTests)|purpose=NativeAdapterSmoke|purpose=PhiMiniNative",
+    "concurrency": 1,
+    "thresholds": { "high": 99, "low": 99, "break": 99 },
+    "reporters": ["progress", "html", "json"],
+    "break-on-initial-test-failure": true
+  }
+}

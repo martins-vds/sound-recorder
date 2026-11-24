@@ -24,6 +24,37 @@ The Core and native UI Gherkin files are executable and discoverable. Completed 
 
 Each new transcription job retains its model and language at enqueue; later selection changes affect only new jobs. During implementation, keep [the scoped visual-reference instructions](.github/instructions/approved-meeting-workspace.instructions.md) active and record repeated comparison evidence as required by the plan.
 
+## Local transcript analysis: production lifecycle, UNVERIFIED output
+
+The [formal implementation baseline](requirements/local-transcript-analysis-design.md#formal-implementation-baseline---2026-11-23) is approved. The existing **Experimental local transcript analysis** controls now use the production SQLite store, durable FIFO coordinator and pinned Phi-mini/Nomic processor. This is not semantic verification or release certification.
+
+1. Select one successful saved transcript and expand its analysis controls.
+2. Open **Analysis model setup**. Reuse the approved cache containing `Phi-4-mini-instruct-Q4_K_M.gguf` and `nomic-embed-text-v2-moe.Q8_0.gguf`: enter its directory and explicitly choose **Verify and select directory**. Alternatively import the exact pinned ZIP. **Download pinned profile...** shows filenames, roles, licenses, total bytes and local destination, and requires confirmation before requesting a download. Nothing downloads or infers automatically.
+3. Choose **Generate summary**, or enter a question and choose **Ask**. Questions cover the whole selected transcript unless **Local lookup only (not exhaustive)** is explicitly checked. Lookup cannot establish exhaustive coverage or absence. Optional follow-up context requires an explicit antecedent; prior generated answers are not source evidence.
+4. Select a candidate to inspect original excerpts and timestamps. Source TXT/SRT hashes are rechecked; missing or changed source is an explicit error, never a replacement attempt. Every model claim remains **UNVERIFIED**, even with resolvable citations.
+
+Readiness verifies the selected profile offline without loading a model. `SOUNDRECORDER_ANALYSIS_MODELS` supplies only an editable directory suggestion, not permission to select or infer. Generation and embedding remain separate from Whisper transcription models. The configured preflight reserves 256 MiB of disk and requires 4 GiB available memory; these conservative implementation budgets are not measured supported hardware limits or an OOM guarantee.
+
+Completed summary/discussion history and per-transcript analysis job statuses restore locally after restart. Previously queued/running work becomes **Interrupted**, not Complete or automatically retried. Select a released unfinished job and explicitly request **Retry analysis (original pins)** for a new job, or **Resume compatible checkpoint** for its retained compatible revision. Every request pins the successful transcription attempt, language, original TXT/SRT hashes, effective model/configuration hashes and verified directory. Changing capture language or current model selection never retargets an older request.
+
+Capture intent blocks new native inference leases immediately. Starting capture cancels analysis and waits asynchronously for its current native call to release before capture starts. Selection changes and close also cancel/drain owned work; delayed progress/results cannot publish against another selection. Cancellation is a safe-boundary request, not instantaneous native interruption. Concurrent transcription remains excluded from new Desktop analysis requests.
+
+Private results/indexes/checkpoints are in `%LOCALAPPDATA%\SoundRecorder\analysis.sqlite`; scheduling metadata is in `analysis-jobs.sqlite`; diagnostic claim ledgers are in `analysis-diagnostics\<attempt-id>`. Full recording deletion removes only its independently owned attempts from the store, journal and diagnostics, including retained outputs whose transcription history was deleted. Audio-only and transcription-job-history deletion retain analysis. Failures stop deletion before source artifacts are removed and remain explicit; missing/corrupt existing analysis databases are not silently recreated.
+
+If the analysis journal becomes unavailable during work, cancellation still reaches the worker and capture/close wait for safe release. The active analysis command remains busy until that release even when saving cancellation fails; model setup and new analysis remain unavailable meanwhile. The UI reports unavailable storage and potentially stale job metadata; another analysis or full recording deletion requires repairing storage and restarting. Source artifacts are not discarded to conceal that failure.
+
+The reader previews at most 200 output portions/candidates; complete records and citations remain in the store. Processing keeps bounded context and five-/three-minute generation deadlines for summary/question stages. Full source traversal is not proof of faithful interpretation. There is no cloud fallback, model tuning, new model trial or 12-hour acceptance claim. See [PROCESSING.md](src/SoundRecorder.Infrastructure/Analysis/PROCESSING.md) for processing bounds and the queue bridge.
+
+For a **separate** framework-dependent ARM64 development publish (requires the ARM64 .NET 10 Windows Desktop runtime):
+
+```powershell
+dotnet publish .\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj -c Release -r win-arm64 `
+    --self-contained false -o .\artifacts\manual-validation\formal-desktop
+& .\artifacts\manual-validation\formal-desktop\SoundRecorder.Desktop.exe
+```
+
+Do not publish over an existing validation app in use. Publishing `win-x64` also works, but compilation is not native x64 execution or distribution acceptance. Strict full-owner CRAP/mutation gates and the prototype-B/native acceptance matrix remain required; earlier failing owner gates are not waived by this integration.
+
 ## Build
 
 ```powershell
@@ -93,7 +124,7 @@ Run the FlaUI/UIA3 scenarios on an unlocked Windows interactive desktop. Do not 
 dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj
 ```
 
-The six feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover workspace navigation/search, recording controls, playback/artifact deletion, model setup/progress, transcription jobs, accessibility, and lifecycle. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
+The feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover workspace navigation/search, recording controls, playback/artifact deletion, model setup/progress, transcription jobs, analysis restoration, accessibility, and lifecycle. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
 
 `MainWindow` loads the shared native WPF styles from `src\SoundRecorder.Desktop\Themes\RecorderTheme.xaml`, so the desktop app and isolated host use the same typography, spacing, and controls. Colors use dynamic Windows system brushes. Recording actions, status, captured duration, and feedback stay visible while setup and history scroll; model controls use the available width rather than a fixed URL field. The layout scenarios check the 760 x 560 and 980 x 720 window sizes using DPI-aware bounds and save local screenshots under the UI test output's `TestResults\Layout\` folder.
 
@@ -123,9 +154,25 @@ crap4csharp @sources --test-project .\tests\SoundRecorder.Core.Tests\SoundRecord
     --framework net10.0-windows --all-tests --crap-threshold 7.999999999999999
 ```
 
-Repeat for Core and Desktop. Core's domain gate can use the default unit selection by omitting `--all-tests`; native adapter evidence uses the integration-inclusive selection shown above. Every executable member must have a numeric result: `N/A` is incomplete evidence even if the tool exits zero. The threshold is the largest representable value below 8, so a member scoring exactly 8 fails rather than passing the tool's inclusive boundary. CRAP does not score constructors.
+Repeat for Core, Desktop and Analysis. Analysis is exercised by **both** Core consumer tests and migrated historical Harness tests. Select every handwritten owner source and combine the suites by line-union coverage:
+
+```powershell
+$analysisSources = Get-ChildItem .\src\SoundRecorder.Analysis -Filter *.cs |
+    Select-Object -ExpandProperty FullName
+$analysisFilter = "(type!=IntegrationTests&Category!=type:IntegrationTests)|purpose=NativeAdapterSmoke|purpose=PhiMiniNative"
+crap4csharp @analysisSources `
+    --test-project .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj `
+    --test-project .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj `
+    --test-filter $analysisFilter --crap-threshold 7.999999999999999 --dry-run
+```
+
+After previewing, remove `--dry-run` to execute. Omit `--framework`: each suite has one TFM, respectively `net10.0-windows` and `net10.0`, and both reports are required. Reqnroll's existing integration tags appear as `Category=type:IntegrationTests`; xUnit uses `type=IntegrationTests`. The filter honors both declarations, then includes only the five bounded native adapter cases already authorized for foundation verification. Configure `SR_APPROVED_MODEL_DIRECTORY` to the existing approved cache. These checks never download models and are not semantic model comparisons. A Harness-only model-free run is development feedback, not the full-owner gate.
+
+Core's domain gate can use the default unit selection by omitting `--all-tests`; native adapter evidence uses the integration-inclusive selection shown above. Every executable member must have a numeric result: `N/A` is incomplete evidence even if the tool exits zero. The threshold is the largest representable value below 8, so a member scoring exactly 8 fails rather than passing the tool's inclusive boundary. CRAP does not score constructors.
 
 Run Stryker separately for each production project using `--project SoundRecorder.Core.csproj`, `SoundRecorder.Infrastructure.csproj`, or `SoundRecorder.Desktop.csproj` from the test directory. Inspect the JSON report's unrounded detected/eligible mutant ratio: each project must exceed 98%; exit status or a rounded display alone is not proof.
+
+Run full-owner Analysis mutation from `src\SoundRecorder.Analysis` with `dotnet stryker`. Its owner-local configuration selects both test projects, the same declared-integration filter and the five authorized cached-model native cases. The installed runner also supports repeated `--test-project` arguments from the production owner. Native checks run in one test session to avoid competing native loads and shared diagnostic-file writers. Do not build or run another validation command against those outputs while mutation is active. The historical Harness configuration remains a narrower diagnostic, not the production gate. Moving the engine does not reset earlier Infrastructure/analysis quality failures or waive native coverage. See the design's foundation checkpoints for actual scope and results.
 
 The Desktop project keeps ordinary XAML compilation unchanged. Its WPF temporary type-inspection project disables implicit XAML re-inclusion and compiles local types even during a design-time analysis, avoiding duplicate generated sources without disabling handwritten compilation or source generators.
 
@@ -147,8 +194,9 @@ The app records startup readiness, capture lifecycle, recovery, queue transition
 
 ## Architecture
 
-- `SoundRecorder.Core`: public recording, queue, history, and recovery state machines without Windows or third-party dependencies.
-- `SoundRecorder.Infrastructure`: NAudio/WASAPI capture, local Whisper processing, atomic TXT/SRT output, model-package validation, recovery, and JSON persistence.
+- `SoundRecorder.Core`: public recording, queue, history, and recovery state machines, plus transcript-analysis request/result/evidence and service contracts; independent of WPF, SQLite, JSON, Whisper and LLamaSharp.
+- `SoundRecorder.Analysis`: in-process LLamaSharp CPU generation/embedding, bounded source processing, exact-evidence SQLite ledger and pinned profile resources; independent of WPF and Whisper.
+- `SoundRecorder.Infrastructure`: NAudio/WASAPI capture, local Whisper processing, atomic TXT/SRT output, model-package validation, recovery, JSON persistence, and the Core-facing local analysis adapter.
 - `SoundRecorder.Desktop`: MVVM-based WPF UI using CommunityToolkit.Mvvm. Async commands own recording/model/queue operations; code-behind remains limited to dialogs, notification-area behavior, and Windows lifecycle integration.
 - `tests\SoundRecorder.Core.Tests\Features\`: canonical Reqnroll specifications discovered directly within the test project.
 

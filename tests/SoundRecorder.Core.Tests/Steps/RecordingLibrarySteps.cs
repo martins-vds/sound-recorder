@@ -101,7 +101,10 @@ public sealed class RecordingLibrarySteps
             "Brazilian Portuguese", RecordingOutcome.Recovered, TimeSpan.FromTicks(123456789));
         var legacy = new { recording.Id, recording.AudioPath, recording.Language, recording.Outcome, recording.CapturedDuration };
         await File.WriteAllTextAsync(_directory.PathFor("history.json"), JsonSerializer.Serialize(new[] { legacy }));
-        _owned = new(Guid.NewGuid(), new(_directory.PathFor("legacy.txt"), _directory.PathFor("legacy.srt")));
+        _owned = new(Guid.NewGuid(), new(_directory.PathFor("legacy.txt"), _directory.PathFor("legacy.srt")))
+        {
+            Language = "Brazilian Portuguese"
+        };
         var createdAt = DateTimeOffset.Parse("2026-03-04T05:06:07+02:00");
         var job = new
         {

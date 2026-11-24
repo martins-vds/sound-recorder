@@ -88,10 +88,15 @@ public sealed partial class RecordingLibrary(
                 JobId: job.Id);
         }
 
+        if (AlreadyRegistered(recording, job))
+            return null;
         await history.RegisterOutputsAsync(job.Recording.Id,
-            new OwnedTranscriptOutputs(job.Id, job.Outputs), cancellationToken);
+            new OwnedTranscriptOutputs(job.Id, job.Outputs) { Language = job.Language }, cancellationToken);
         return null;
     }
+
+    private static bool AlreadyRegistered(SavedRecording recording, TranscriptionJob job) =>
+        recording.TranscriptOutputs.Any(output => output.JobId == job.Id && output.Outputs == job.Outputs);
 
     private RecordingLibraryEntry ToEntry(SavedRecording recording)
     {

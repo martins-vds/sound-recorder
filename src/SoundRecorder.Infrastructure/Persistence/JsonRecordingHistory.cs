@@ -77,11 +77,33 @@ public sealed class JsonRecordingHistory : IRecordingHistory
                 AudioDeleted = previous.AudioDeleted || recording.AudioDeleted,
                 PendingDeletion = recording.PendingDeletion ??
                     (NeedsDeletionCompletion(previous.PendingDeletion) ? previous.PendingDeletion : null),
-                TranscriptOutputs = previous.TranscriptOutputs
-                    .Concat(recording.TranscriptOutputs).Distinct().ToArray(),
+                TranscriptOutputs = MergeOwnedOutputs(previous.TranscriptOutputs, recording.TranscriptOutputs),
             };
             return true;
         }, cancellationToken);
+    }
+
+    private static IReadOnlyList<OwnedTranscriptOutputs> MergeOwnedOutputs(
+        IReadOnlyList<OwnedTranscriptOutputs> previous, IReadOnlyList<OwnedTranscriptOutputs> incoming)
+    {
+        var outputs = previous.ToList();
+        foreach (var output in incoming)
+        {
+            var index = outputs.FindIndex(item => item.JobId == output.JobId);
+            if (index < 0)
+                outputs.Add(output);
+            else
+            {
+                var existing = outputs[index];
+                try { EnsureSameOutputPair(existing, output); }
+                catch (InvalidDataException error)
+                {
+                    throw new InvalidDataException("A job or artifact is already owned by another output pair or recording.", error);
+                }
+                outputs[index] = existing with { Language = existing.Language ?? output.Language };
+            }
+        }
+        return outputs;
     }
 
     public Task RemoveAsync(Guid recordingId, CancellationToken cancellationToken) =>
@@ -108,7 +130,7 @@ public sealed class JsonRecordingHistory : IRecordingHistory
         if (existing is not null)
         {
             EnsureSameOutputPair(existing, outputs);
-            return false;
+            return RetainAttemptLanguage(history, index, existing, outputs);
         }
 
         EnsurePublicationAvailable(recording);
@@ -119,9 +141,23 @@ public sealed class JsonRecordingHistory : IRecordingHistory
         return true;
     }
 
+    private static bool RetainAttemptLanguage(List<SavedRecording> history, int index,
+        OwnedTranscriptOutputs existing, OwnedTranscriptOutputs outputs)
+    {
+        if (existing.Language is not null || outputs.Language is null) return false;
+        var recording = history[index];
+        history[index] = recording with
+        {
+            TranscriptOutputs = recording.TranscriptOutputs.Select(item => item.JobId == outputs.JobId
+                ? item with { Language = outputs.Language } : item).ToArray()
+        };
+        return true;
+    }
+
     private static void EnsureSameOutputPair(OwnedTranscriptOutputs existing, OwnedTranscriptOutputs outputs)
     {
-        if (existing != outputs)
+        if (existing.Outputs != outputs.Outputs ||
+            existing.Language is not null && outputs.Language is not null && existing.Language != outputs.Language)
             throw new InvalidDataException("The job already owns a different transcript output pair.");
     }
 

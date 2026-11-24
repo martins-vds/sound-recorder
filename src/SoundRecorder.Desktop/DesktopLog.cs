@@ -5,6 +5,15 @@ namespace SoundRecorder.Desktop;
 
 internal static partial class DesktopLog
 {
+    [LoggerMessage(EventId = 950, Level = LogLevel.Error, Message = "Experimental transcript analysis failed ({ErrorType})")]
+    public static partial void TranscriptAnalysisFailed(ILogger logger, string errorType);
+
+    [LoggerMessage(EventId = 951, Level = LogLevel.Information, Message = "Native transcription runtime loaded: {RuntimeInfo}")]
+    public static partial void NativeTranscriptionRuntimeReady(ILogger logger, string runtimeInfo);
+
+    [LoggerMessage(EventId = 952, Level = LogLevel.Warning, Message = "Native transcription runtime unavailable ({ErrorType}); capture remains independent")]
+    public static partial void NativeTranscriptionRuntimeFailed(ILogger logger, string errorType);
+
     [LoggerMessage(
         EventId = 100,
         Level = LogLevel.Information,
