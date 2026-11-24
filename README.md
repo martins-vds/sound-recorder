@@ -24,30 +24,36 @@ The Core and native UI Gherkin files are executable and discoverable. Completed 
 
 Each new transcription job retains its model and language at enqueue; later selection changes affect only new jobs. During implementation, keep [the scoped visual-reference instructions](.github/instructions/approved-meeting-workspace.instructions.md) active and record repeated comparison evidence as required by the plan.
 
-## Experimental transcript analysis: production foundation
+## Local transcript analysis: production lifecycle, UNVERIFIED output
 
-The [formal implementation baseline](requirements/local-transcript-analysis-design.md#formal-implementation-baseline---2026-11-23) is approved. Production ownership is established, but the current user-facing slice remains experimental, not the complete transcript-analysis product contract or release acceptance. Select a successful saved transcript and expand **Experimental local transcript analysis** below its text. Explicitly choose **Generate summary**, or enter a question and choose **Ask**. Select a candidate to inspect exact original saved text and any original start marker. All candidates remain **semantically UNVERIFIED**, including apparently valid citations. No unsupported statement is automatically repaired.
+The [formal implementation baseline](requirements/local-transcript-analysis-design.md#formal-implementation-baseline---2026-11-23) is approved. The existing **Experimental local transcript analysis** controls now use the production SQLite store, durable FIFO coordinator and pinned Phi-mini/Nomic processor. This is not semantic verification or release certification.
 
-Reuse an already approved cache containing `Phi-4-mini-instruct-Q4_K_M.gguf` and `nomic-embed-text-v2-moe.Q8_0.gguf`. Configure `SOUNDRECORDER_ANALYSIS_MODELS` before launch, or put the cache directory in `analysis-model-cache.txt` beside the executable. The environment variable takes precedence. The adapter verifies the pinned model hashes and runs locally; it never downloads weights or falls back to a cloud service.
+1. Select one successful saved transcript and expand its analysis controls.
+2. Open **Analysis model setup**. Reuse the approved cache containing `Phi-4-mini-instruct-Q4_K_M.gguf` and `nomic-embed-text-v2-moe.Q8_0.gguf`: enter its directory and explicitly choose **Verify and select directory**. Alternatively import the exact pinned ZIP. **Download pinned profile...** shows filenames, roles, licenses, total bytes and local destination, and requires confirmation before requesting a download. Nothing downloads or infers automatically.
+3. Choose **Generate summary**, or enter a question and choose **Ask**. Questions cover the whole selected transcript unless **Local lookup only (not exhaustive)** is explicitly checked. Lookup cannot establish exhaustive coverage or absence. Optional follow-up context requires an explicit antecedent; prior generated answers are not source evidence.
+4. Select a candidate to inspect original excerpts and timestamps. Source TXT/SRT hashes are rechecked; missing or changed source is an explicit error, never a replacement attempt. Every model claim remains **UNVERIFIED**, even with resolvable citations.
 
-For bounded native ARM64 development validation on a machine with the ARM64 .NET 10 Windows Desktop runtime:
+Readiness verifies the selected profile offline without loading a model. `SOUNDRECORDER_ANALYSIS_MODELS` supplies only an editable directory suggestion, not permission to select or infer. Generation and embedding remain separate from Whisper transcription models. The configured preflight reserves 256 MiB of disk and requires 4 GiB available memory; these conservative implementation budgets are not measured supported hardware limits or an OOM guarantee.
+
+Completed summary/discussion history and per-transcript analysis job statuses restore locally after restart. Previously queued/running work becomes **Interrupted**, not Complete or automatically retried. Select a released unfinished job and explicitly request **Retry analysis (original pins)** for a new job, or **Resume compatible checkpoint** for its retained compatible revision. Every request pins the successful transcription attempt, language, original TXT/SRT hashes, effective model/configuration hashes and verified directory. Changing capture language or current model selection never retargets an older request.
+
+Capture intent blocks new native inference leases immediately. Starting capture cancels analysis and waits asynchronously for its current native call to release before capture starts. Selection changes and close also cancel/drain owned work; delayed progress/results cannot publish against another selection. Cancellation is a safe-boundary request, not instantaneous native interruption. Concurrent transcription remains excluded from new Desktop analysis requests.
+
+Private results/indexes/checkpoints are in `%LOCALAPPDATA%\SoundRecorder\analysis.sqlite`; scheduling metadata is in `analysis-jobs.sqlite`; diagnostic claim ledgers are in `analysis-diagnostics\<attempt-id>`. Full recording deletion removes only its independently owned attempts from the store, journal and diagnostics, including retained outputs whose transcription history was deleted. Audio-only and transcription-job-history deletion retain analysis. Failures stop deletion before source artifacts are removed and remain explicit; missing/corrupt existing analysis databases are not silently recreated.
+
+If the analysis journal becomes unavailable during work, cancellation still reaches the worker and capture/close wait for safe release. The UI reports unavailable storage and potentially stale job metadata; another analysis or full recording deletion requires repairing storage and restarting. Source artifacts are not discarded to conceal that failure.
+
+The reader previews at most 200 output portions/candidates; complete records and citations remain in the store. Processing keeps bounded context and five-/three-minute generation deadlines for summary/question stages. Full source traversal is not proof of faithful interpretation. There is no cloud fallback, model tuning, new model trial or 12-hour acceptance claim. See [PROCESSING.md](src/SoundRecorder.Infrastructure/Analysis/PROCESSING.md) for processing bounds and the queue bridge.
+
+For a **separate** framework-dependent ARM64 development publish (requires the ARM64 .NET 10 Windows Desktop runtime):
 
 ```powershell
-.\scripts\publish-analysis-dev.ps1 -ModelDirectory C:\models\approved-analysis-cache
-& .\artifacts\walking-skeleton\app\SoundRecorder.Desktop.exe
+dotnet publish .\src\SoundRecorder.Desktop\SoundRecorder.Desktop.csproj -c Release -r win-arm64 `
+    --self-contained false -o .\artifacts\manual-validation\formal-desktop
+& .\artifacts\manual-validation\formal-desktop\SoundRecorder.Desktop.exe
 ```
 
-The script also accepts `-RuntimeIdentifier win-x64`. This framework-dependent development launch does **not** change the Windows x64 shipping/installer declaration. Native Whisper loading is probed during real desktop startup without blocking capture prerequisites.
-
-Analysis cannot start during capture, queued/running transcription, or a pending transcription request. Starting capture cancels analysis and waits asynchronously for native release before capture starts; fresh permission requirements remain unchanged. While analysis is active, a new transcription request explains that analysis must first be cancelled and released, then explicitly retried. Cancellation is a safe-boundary request, not instantaneous native interruption. Changing the selected recording or successful attempt cancels old work, discards stale UI output, and never starts analysis on the new selection implicitly.
-
-This slice uses the production-owned `SoundRecorder.Analysis` streamed claim ledger and embedding retrieval, through the Infrastructure adapter and Core application contracts. No application project references a feasibility project, directly or transitively. Historical model tests consume this same engine, not copied test sources. Its embedded profiles preserve the approved file identities: the application explicitly selects Phi-mini generation and Nomic embedding; the retained Qwen profiles/loaders serve historical experiment consumers, not automatic selection or fallback. The original feasibility profiles and reports remain unchanged.
-
-Summary output is readable candidate observations, not a second model-written polished narrative. The adapter validates the saved TXT/SRT pair and retains complete original subtitle cues and their timestamps instead of cutting text into arbitrary 512-character pieces. Oversized embedding inputs are split into token-fitted overlapping ranges; the question is embedded once per request. Questions use bounded top-three original-range retrieval, not whole-transcript coverage, and explicitly warn that retrieval cannot establish exhaustive results or the absence of an answer. Diagnostic generation deadlines are five minutes for summaries and three minutes for answers; these are development bounds, not approved product performance thresholds. The reader shows at most 200 candidates and states when this limit is reached.
-
-The successful attempt's language is retained with its owned output pair independently of job-history deletion. Known historical jobs can supply missing legacy metadata; otherwise analysis is unavailable with an explicit explanation rather than guessing a language. Pending deletion history is not rewritten just to enrich metadata.
-
-Local run artifacts, including the selected TXT/SRT snapshot pair and diagnostic ledger, remain under `%LOCALAPPDATA%\SoundRecorder\experimental-analysis\<attempt-id>\<run-id>`. They may contain private transcript content. Explicit full recording deletion releases analysis and removes that recording's owned diagnostics; audio-only and job-history deletion retain them. Cleanup failure is reported before saved recording artifacts are removed. Automatic discussion restoration, persistent retrieval indexes, resumability, long-running stress, and release certification are not implemented. Full-project CRAP/mutation gates and the complete visual/native acceptance matrix remain mandatory and must not be inferred from focused walking-skeleton tests.
+Do not publish over an existing validation app in use. Publishing `win-x64` also works, but compilation is not native x64 execution or distribution acceptance. Strict full-owner CRAP/mutation gates and the prototype-B/native acceptance matrix remain required; earlier failing owner gates are not waived by this integration.
 
 ## Build
 
@@ -118,7 +124,7 @@ Run the FlaUI/UIA3 scenarios on an unlocked Windows interactive desktop. Do not 
 dotnet test .\tests\SoundRecorder.Ui.Tests\SoundRecorder.Ui.Tests.csproj
 ```
 
-The six feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover workspace navigation/search, recording controls, playback/artifact deletion, model setup/progress, transcription jobs, accessibility, and lifecycle. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
+The feature files under `tests\SoundRecorder.Ui.Tests\Features\` cover workspace navigation/search, recording controls, playback/artifact deletion, model setup/progress, transcription jobs, analysis restoration, accessibility, and lifecycle. Each scenario launches the real `MainWindow` in `SoundRecorder.Ui.TestHost` with a unique disposable state directory. Tests run serially, use bounded waits, and terminate only their owned host process before deleting its files.
 
 `MainWindow` loads the shared native WPF styles from `src\SoundRecorder.Desktop\Themes\RecorderTheme.xaml`, so the desktop app and isolated host use the same typography, spacing, and controls. Colors use dynamic Windows system brushes. Recording actions, status, captured duration, and feedback stay visible while setup and history scroll; model controls use the available width rather than a fixed URL field. The layout scenarios check the 760 x 560 and 980 x 720 window sizes using DPI-aware bounds and save local screenshots under the UI test output's `TestResults\Layout\` folder.
 

@@ -31,12 +31,22 @@ ends or its start is abandoned. This prevents new native calls; it does not
 kill, immediately pause or reclaim resources from a call already in progress.
 The capture host need not wait for `WaitForIdleAsync`.
 
-`CancelAsync` durably records **CancellationPending** before signalling the
-worker token. Only safe worker release produces **Cancelled**. Queued work can
+`CancelAsync` attempts to durably record **CancellationPending** before signalling
+the worker token. If that write fails, it still signals cancellation for capture
+safety and surfaces the persistence failure; it does not claim durable cancellation.
+Only safe worker release produces **Cancelled**. Queued work can
 be cancelled without inference. `RetryAsync` creates a new job and revision
 with the original immutable pins and a link to the previous job.
 `ResumeAsync(jobId, expectedIdentity)` explicitly continues only the current
 compatible revision/checkpoint; a stale or changed identity is rejected.
+
+`DeleteOwnedAsync(attemptIds)` cancels and releases only the explicit owned
+attempts, deletes their store revisions/indexes/checkpoints, then removes their
+journal entries. It does not stop unrelated jobs or delete source files/models.
+The Desktop caller removes those attempts' private diagnostics afterward and
+keeps recording ownership until the requested full deletion succeeds. Errors may
+leave partial cleanup and must remain explicit; audio-only and transcription-job
+history deletion do not call this analysis deletion boundary.
 
 Read `Jobs` for immutable scheduling snapshots, and use the store for actual
 completed output and evidence. `WaitForIdleAsync` observes worker release and

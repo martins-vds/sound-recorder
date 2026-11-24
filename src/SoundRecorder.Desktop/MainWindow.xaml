@@ -182,6 +182,23 @@
                                         <TextBlock Text="{Binding AnalysisWarning}" TextWrapping="Wrap" FontWeight="SemiBold"/>
                                         <TextBlock Text="{Binding AnalysisOwnership}" TextWrapping="Wrap"
                                                    Style="{StaticResource HelperText}" Margin="0,8,0,12"/>
+                                        <TextBlock x:Name="AnalysisReadinessText" Text="{Binding AnalysisReadiness}" TextWrapping="Wrap"
+                                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,8"/>
+                                        <Expander x:Name="AnalysisModelSetupExpander" Header="Analysis model setup (separate from transcription)" Margin="0,0,0,12">
+                                            <StackPanel>
+                                                <TextBlock x:Name="AnalysisSetupDetailsText" Text="{Binding AnalysisSetupDetails}" TextWrapping="Wrap" Margin="0,8"/>
+                                                <Label Content="Existing pinned model directory" Target="{Binding ElementName=AnalysisModelDirectoryBox}"/>
+                                                <TextBox x:Name="AnalysisModelDirectoryBox" Text="{Binding AnalysisModelDirectory, UpdateSourceTrigger=PropertyChanged}"
+                                                        automation:AutomationProperties.Name="Existing analysis model directory"/>
+                                                <WrapPanel Margin="0,8">
+                                                   <Button Content="Verify and select directory" Command="{Binding SelectAnalysisModelDirectoryCommand}"/>
+                                                   <Button Content="Import analysis ZIP..." Click="ImportAnalysisModels_Click" IsEnabled="{Binding CanSetupAnalysis}"/>
+                                                   <Button Content="Download pinned profile..." Click="DownloadAnalysisModels_Click" IsEnabled="{Binding CanSetupAnalysis}"/>
+                                                   <Button Content="Check readiness" Command="{Binding RefreshAnalysisReadinessCommand}"/>
+                                                   <Button Content="Cancel model setup" Command="{Binding CancelAnalysisSetupCommand}" IsEnabled="{Binding IsSettingUpAnalysis}"/>
+                                                </WrapPanel>
+                                            </StackPanel>
+                                        </Expander>
                                         <Button Content="Generate summary" Command="{Binding GenerateSummaryCommand}"
                                                 HorizontalAlignment="Left"
                                                 automation:AutomationProperties.Name="Generate experimental summary"/>
@@ -189,6 +206,17 @@
                                         <TextBox x:Name="AnalysisQuestionBox" MaxLength="512"
                                                  Text="{Binding AnalysisQuestion, UpdateSourceTrigger=PropertyChanged}"
                                                  automation:AutomationProperties.Name="Question about this transcript"/>
+                                        <CheckBox x:Name="AnalysisLocalLookupCheck" Content="Local lookup only (not exhaustive)"
+                                                 IsChecked="{Binding AnalysisUseLocalLookup}" Margin="0,8"/>
+                                        <TextBlock Text="Unchecked: cover the whole selected transcript. Coverage does not verify model interpretation."
+                                                  TextWrapping="Wrap" Style="{StaticResource HelperText}"/>
+                                        <Expander Header="Explicit follow-up context" Margin="0,8">
+                                            <StackPanel>
+                                                <CheckBox Content="This question is a follow-up" IsChecked="{Binding AnalysisIsFollowUp}"/>
+                                                <Label Content="What does this question refer to?" Target="{Binding ElementName=AnalysisAntecedentBox}"/>
+                                                <TextBox x:Name="AnalysisAntecedentBox" MaxLength="48" Text="{Binding AnalysisAntecedent, UpdateSourceTrigger=PropertyChanged}"/>
+                                            </StackPanel>
+                                        </Expander>
                                         <WrapPanel Margin="0,8,0,4">
                                             <Button Content="Ask" Command="{Binding AskTranscriptCommand}"
                                                     automation:AutomationProperties.Name="Ask selected transcript"/>
@@ -219,6 +247,28 @@
                                                  automation:AutomationProperties.Name="Exact original analysis excerpts"/>
                                         <TextBlock Text="{Binding AnalysisArtifact}" TextWrapping="Wrap"
                                                    Style="{StaticResource HelperText}" Margin="0,8,0,0"/>
+                                        <Expander x:Name="AnalysisHistoryExpander" Header="Saved summary and discussion history" Margin="0,12">
+                                           <TextBox x:Name="AnalysisHistoryText" Text="{Binding AnalysisHistory, Mode=OneWay}" IsReadOnly="True"
+                                                    TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="240" VerticalScrollBarVisibility="Auto"/>
+                                        </Expander>
+                                        <TextBlock Text="Exact-transcript analysis jobs" FontWeight="SemiBold" Margin="0,12,0,8"/>
+                                        <ListBox x:Name="AnalysisJobsList" ItemsSource="{Binding AnalysisJobs}" SelectedItem="{Binding SelectedAnalysisJob}" MaxHeight="160"
+                                                HorizontalContentAlignment="Stretch">
+                                           <ListBox.ItemTemplate>
+                                               <DataTemplate>
+                                                   <StackPanel Margin="4">
+                                                       <TextBlock Text="{Binding Status}"/>
+                                                       <TextBlock Text="{Binding Request.Mode}"/>
+                                                       <TextBlock Text="{Binding ErrorCode}" TextWrapping="Wrap"/>
+                                                   </StackPanel>
+                                               </DataTemplate>
+                                           </ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <WrapPanel Margin="0,8">
+                                            <Button Content="Retry analysis (original pins)" Command="{Binding RetryAnalysisCommand}"/>
+                                            <Button Content="Resume compatible checkpoint" Command="{Binding ResumeAnalysisCommand}"/>
+                                            <Button Content="Reload saved analysis" Command="{Binding RestoreAnalysisCommand}"/>
+                                        </WrapPanel>
                                     </StackPanel>
                                 </Expander>
                             </StackPanel>

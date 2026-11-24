@@ -13,6 +13,9 @@ using SoundRecorder.Infrastructure.Privacy;
 using SoundRecorder.Infrastructure.Recovery;
 using SoundRecorder.Infrastructure.Transcription;
 using SoundRecorder.Infrastructure.Analysis;
+using SoundRecorder.Infrastructure.Analysis.Models;
+using SoundRecorder.Infrastructure.Analysis.Storage;
+using SoundRecorder.Analysis;
 
 namespace SoundRecorder.Desktop;
 
@@ -171,6 +174,14 @@ public partial class MainWindow : Window
                         playback.Close();
                     }
                 }, DispatcherPriority.Normal, token).Task);
+        PersistentTranscriptAnalysis? analysis = null;
+        string? analysisFailure = null;
+        try { analysis = CreateAnalysis(root); }
+        catch (Exception error)
+        {
+            DesktopLog.TranscriptAnalysisFailed(loggerFactory.CreateLogger<MainViewModel>(), error.GetType().Name);
+            analysisFailure = "Analysis storage unavailable. " + error.Message + " Existing private data was not recreated or cleared.";
+        }
         _viewModel = new MainViewModel(
             recorder,
             recordingEngine,
@@ -182,9 +193,13 @@ public partial class MainWindow : Window
             loggerFactory.CreateLogger<MainViewModel>(),
             library,
             playback,
-            new LocalTranscriptAnalysis(
-                Environment.GetEnvironmentVariable("SOUNDRECORDER_ANALYSIS_MODELS") ?? "",
-                Path.Combine(root, "experimental-analysis")));
+            analysis);
+        if (analysisFailure is not null)
+        {
+            _viewModel.AnalysisStorageError = analysisFailure;
+            _viewModel.AnalysisReadiness = analysisFailure;
+            _viewModel.AnalysisStatus = analysisFailure;
+        }
         _dialogs = dialogs();
         _environment = environment();
         _lifecycleEvents = lifecycleEvents(recordingEngine);
@@ -196,6 +211,46 @@ public partial class MainWindow : Window
         string workerPath, ITranscriptionModelStore models, ILoggerFactory loggerFactory) =>
         new WhisperProcessTranscriber(workerPath, models,
             loggerFactory.CreateLogger<WhisperProcessTranscriber>());
+
+    private static PersistentTranscriptAnalysis CreateAnalysis(string root)
+    {
+        Directory.CreateDirectory(root);
+        var database = Path.Combine(root, "analysis.sqlite");
+        var journal = Path.Combine(root, "analysis-jobs.sqlite");
+        var existing = File.Exists(database) || File.Exists(journal);
+        var store = existing ? SqliteTranscriptAnalysisStore.Open(database) : SqliteTranscriptAnalysisStore.Create(database);
+        var repository = existing ? AnalysisQueueRepository.Open(journal) : AnalysisQueueRepository.Create(journal);
+        var setup = new AnalysisModelSetup(Path.Combine(root, "analysis-models"), new HttpClient(),
+            new AnalysisModelLimits(256L * 1024 * 1024, 4L * 1024 * 1024 * 1024));
+        return new(store, repository, setup, execution => new AnalysisProcessingNative(store, execution.Revision,
+            execution.Request.ModelDirectory,
+            Path.Combine(root, "analysis-diagnostics", execution.Request.Identity.AttemptId.ToString("N")),
+            Enum.Parse<AnalysisProcessingMode>(execution.Request.Mode.ToString()),
+            execution.Request.Discussion is { } discussion
+                ? new TranscriptDiscussionContext(discussion.IsFollowUp, discussion.Antecedent) : null,
+            execution.EnterInferenceAsync), Path.Combine(root, "analysis-models"),
+            [new LocalTranscriptAnalysis("", Path.Combine(root, "analysis-diagnostics")),
+             new LocalTranscriptAnalysis("", Path.Combine(root, "experimental-analysis"))]);
+
+    }
+
+    private async void ImportAnalysisModels_Click(object sender, RoutedEventArgs args)
+        => await ImportAnalysisModelsAsync();
+
+    /// <summary>Imports analysis weights only after the user chooses the pinned local package.</summary>
+    public async Task ImportAnalysisModelsAsync()
+    {
+        if (_dialogs.ChooseModelPackage() is { } package)
+            await _viewModel.ImportAnalysisModelsCommand.ExecuteAsync(package);
+    }
+
+    private async void DownloadAnalysisModels_Click(object sender, RoutedEventArgs args)
+    {
+        if (_dialogs.Show(_viewModel.AnalysisSetupDetails + "\n\nDownload and verify this exact profile now?",
+            "Explicit analysis model download", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+            == MessageBoxResult.Yes)
+            await _viewModel.DownloadAnalysisModelsCommand.ExecuteAsync(null);
+    }
 
     private void ConnectWindowServices()
     {
