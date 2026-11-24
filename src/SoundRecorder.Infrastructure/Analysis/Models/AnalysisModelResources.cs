@@ -9,16 +9,26 @@ namespace SoundRecorder.Infrastructure.Analysis.Models;
 internal sealed record AnalysisModelResources(long AvailableDiskBytes, long AvailableMemoryBytes, bool SupportedPlatform)
 {
     internal static AnalysisModelResources Read(string cacheDirectory)
+        => Read(OperatingSystem.IsWindows(), RuntimeInformation.ProcessArchitecture,
+            ReadMemory, () => new DriveInfo(Path.GetPathRoot(cacheDirectory)!).AvailableFreeSpace);
+
+    internal static AnalysisModelResources Read(bool windows, Architecture architecture,
+        Func<(bool Measured, long AvailableBytes)> memory, Func<long> disk)
     {
-        var supported = OperatingSystem.IsWindows() &&
-            RuntimeInformation.ProcessArchitecture is Architecture.Arm64 or Architecture.X64;
+        var supported = windows && architecture is Architecture.Arm64 or Architecture.X64;
         if (!supported)
             return new(0, 0, false);
-        var status = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
-        if (!GlobalMemoryStatusEx(ref status))
+        var available = memory();
+        if (!available.Measured)
             throw new AnalysisModelResourceException("Available RAM could not be measured. Check system resources and explicitly retry.");
-        var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(cacheDirectory))!);
-        return new(drive.AvailableFreeSpace, (long)status.AvailablePhysical, true);
+        return new(disk(), available.AvailableBytes, true);
+    }
+
+    private static (bool Measured, long AvailableBytes) ReadMemory()
+    {
+        var status = new MemoryStatus { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
+        var measured = GlobalMemoryStatusEx(ref status);
+        return (measured, (long)status.AvailablePhysical);
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]

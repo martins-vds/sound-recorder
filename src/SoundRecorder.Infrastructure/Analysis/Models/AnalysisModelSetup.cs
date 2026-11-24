@@ -16,6 +16,7 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     private readonly PinnedModelFile[] files;
     private readonly Func<AnalysisModelResources> resources;
     private readonly ILogger<AnalysisModelSetup> logger;
+    private readonly AnalysisModelFileAccess fileAccess;
     private long TotalBytes => files.Sum(file => file.Bytes);
 
     /// <summary>Constructing setup does not touch storage or the network. Budgets must be explicitly configured.</summary>
@@ -26,17 +27,20 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     }
 
     internal AnalysisModelSetup(string cacheDirectory, HttpClient httpClient, AnalysisModelLimits limits,
-        PinnedModelFile[] files, Func<AnalysisModelResources>? resources, ILogger<AnalysisModelSetup>? logger = null)
+        PinnedModelFile[] files, Func<AnalysisModelResources>? resources, ILogger<AnalysisModelSetup>? logger = null,
+        AnalysisModelFileAccess? fileAccess = null)
     {
-        this.cacheDirectory = AnalysisModelPaths.LocalPath(cacheDirectory);
+        this.cacheDirectory = AnalysisModelPaths.SelectionDirectory(cacheDirectory);
         this.httpClient = httpClient;
         this.limits = limits;
         this.files = files.ToArray();
         this.resources = resources ?? (() => AnalysisModelResources.Read(this.cacheDirectory));
         this.logger = logger ?? NullLogger<AnalysisModelSetup>.Instance;
-        if (limits.DiskReserveBytes < 0 || limits.RequiredAvailableMemoryBytes <= 0 ||
-            limits.DiskReserveBytes > long.MaxValue - TotalBytes)
+        this.fileAccess = fileAccess ?? AnalysisModelFileAccess.Default;
+        if (limits.DiskReserveBytes < 0 || limits.RequiredAvailableMemoryBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(limits), "Configure a nonnegative disk reserve and a positive memory budget.");
+        if (limits.DiskReserveBytes > long.MaxValue - TotalBytes)
+            throw new ArgumentOutOfRangeException(nameof(limits), "Reduce the disk reserve so the complete profile and reserve fit in an integer byte budget.");
         Profile = new("sr-model-phi4-mini-v1", "LLamaSharp 0.30.0 / CPU 0.30.0; Windows ARM64/x64; English/Brazilian Portuguese",
             Array.AsReadOnly(files.Select(file => new AnalysisModelFile(file.Role, file.Name, file.Bytes, file.Sha256,
                 file.Role == "generation" ? "MIT" : "Apache-2.0")).ToArray()));
@@ -65,6 +69,11 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
         {
             return new(AnalysisModelReadinessState.ResourceUnavailable, null, exception.Message);
         }
+        catch (InvalidDataException exception)
+        {
+            return new(AnalysisModelReadinessState.Invalid, null,
+                $"{exception.Message} Explicitly re-import or select the verified profile.");
+        }
         catch (Exception exception) when (IsReadinessFailure(exception))
         {
             return new(AnalysisModelReadinessState.Invalid, null, "The selected analysis profile is unavailable or invalid. Explicitly re-import or download the approved files.");
@@ -73,25 +82,25 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
 
     private async Task<string?> ReadSelectionAsync(CancellationToken cancellationToken)
     {
-        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory);
+        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory, fileAccess);
         var marker = Path.Combine(cacheDirectory, "selected-profile.txt");
         if (!File.Exists(marker))
             return null;
-        AnalysisModelPaths.RequireLocalUnlinked(marker);
+        AnalysisModelPaths.RequireLocalUnlinked(marker, fileAccess);
         if (new FileInfo(marker).Length > 4096)
-            throw new InvalidDataException("Invalid model selection. Explicitly select a verified local directory.");
+            throw new InvalidDataException("The model selection metadata is too large. Explicitly select a verified local directory.");
         return await File.ReadAllTextAsync(marker, cancellationToken);
     }
 
     private static bool IsReadinessFailure(Exception exception)
-        => exception is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException;
+        => exception is IOException or UnauthorizedAccessException or ArgumentException;
 
     /// <inheritdoc/>
     public Task<string> ImportAsync(string packagePath, IProgress<AnalysisModelSetupProgress>? progress = null,
         CancellationToken cancellationToken = default)
         => InstallAsync(async staging =>
         {
-            AnalysisModelPaths.RequireLocalUnlinked(packagePath);
+            AnalysisModelPaths.RequireLocalUnlinked(packagePath, fileAccess);
             using var archive = ZipFile.OpenRead(packagePath);
             ValidateArchive(archive);
             long transferred = 0;
@@ -121,7 +130,7 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     {
         if (entry.Length != expectedBytes)
             throw new InvalidDataException("The package entry size does not match the pinned profile.");
-        if (((entry.ExternalAttributes >> 16) & 0xF000) is not (0 or 0x8000))
+        if ((entry.ExternalAttributes >>> 28) is not (0 or 8))
             throw new InvalidDataException("Archive links are not supported. Import regular pinned weight files.");
     }
 
@@ -149,7 +158,8 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     public async Task SelectDirectoryAsync(string directory, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory);
+        directory = AnalysisModelPaths.SelectionDirectory(directory);
+        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory, fileAccess);
         SetupStarted(logger);
         Preflight(installing: false);
         await VerifyAsync(directory, null, TotalBytes, cancellationToken);
@@ -162,7 +172,7 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory);
+        AnalysisModelPaths.RequireLocalUnlinked(cacheDirectory, fileAccess);
         Preflight(installing: true);
         SetupStarted(logger);
         var staging = Path.Combine(cacheDirectory, $".staging-{Guid.NewGuid():N}");
@@ -206,10 +216,9 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
         var pending = Path.Combine(cacheDirectory, $".selection-{Guid.NewGuid():N}");
         try
         {
-            await using (var stream = new FileStream(pending, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                4096, FileOptions.Asynchronous))
+            await using (var stream = fileAccess.OpenSelection(pending))
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(AnalysisModelPaths.LocalPath(directory));
+                var bytes = System.Text.Encoding.UTF8.GetBytes(AnalysisModelPaths.SelectionDirectory(directory));
                 await stream.WriteAsync(bytes, cancellationToken);
                 stream.Flush(flushToDisk: true);
             }
@@ -231,7 +240,7 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     private async Task<long> CopyAsync(Stream source, string destination, long expected, long priorBytes,
         IProgress<AnalysisModelSetupProgress>? progress, CancellationToken cancellationToken)
     {
-        await using var output = File.Create(destination);
+        await using var output = fileAccess.OpenStage(destination);
         var buffer = new byte[81920];
         long transferred = 0;
         progress?.Report(new(AnalysisModelSetupPhase.Transferring, priorBytes, TotalBytes));
@@ -252,9 +261,9 @@ public sealed partial class AnalysisModelSetup : IAnalysisModelSetup
     private async Task VerifyAsync(string directory, IProgress<AnalysisModelSetupProgress>? progress,
         long transferred, CancellationToken cancellationToken)
     {
-        AnalysisModelPaths.RequireLocalUnlinked(directory);
+        AnalysisModelPaths.RequireLocalUnlinked(directory, fileAccess);
         foreach (var file in files)
-            AnalysisModelPaths.RequireLocalUnlinked(Path.Combine(directory, file.Name));
+            AnalysisModelPaths.RequireLocalUnlinked(Path.Combine(directory, file.Name), fileAccess);
         progress?.Report(new(AnalysisModelSetupPhase.Verifying, transferred, TotalBytes));
         await ModelFiles.VerifyAsync(directory, files, cancellationToken);
         foreach (var file in files)

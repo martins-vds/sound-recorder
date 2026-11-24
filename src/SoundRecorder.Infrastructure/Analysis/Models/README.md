@@ -96,12 +96,22 @@ preflight; this is **not an OOM guarantee**. Local mapped/network drives and
 reparse points are rejected. Storage must be application-owned and not
 concurrently edited by other processes; file verification cannot promise
 immunity to an external change after verification.
+Selected-directory metadata is bounded to 4,096 UTF-8 bytes. This limit applies
+to the selected directory, not its longer pinned artifact filenames.
+Invalid selection metadata offers explicit reselection rather than hiding the
+cause behind a generic unavailable-profile message.
 
 `AnalysisModelSetupTests` exercises the public boundary with tiny GGUF-header
 fixtures, real isolated local storage, a controlled HTTP handler and resource
 snapshots. Its internal fixture constructor is available only to the existing
 friend test assembly; production callers cannot supply files, hashes or URLs.
 No approved cache weight is downloaded, modified or needed for these tests.
+The same public tests can replace native resource measurements and model-owned
+file opening/attributes/drive queries. This exposes real query/flush failures,
+post-flush cancellation and stream overruns without changing the production
+pins or adding a general filesystem framework. A controlled selection stream
+discards non-durable writes to check the activation protocol; this is not
+physical power-loss or hardware durability evidence.
 
 Run focused tests from the repository root:
 

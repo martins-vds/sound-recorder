@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Net;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using System.Runtime.InteropServices;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using SoundRecorder.Analysis;
@@ -12,6 +13,292 @@ namespace SoundRecorder.Core.Tests;
 
 public sealed class AnalysisModelSetupTests
 {
+    [Fact]
+    public async Task ImportAsync_RolesHaveDifferentSizes_VerifiesEachNamedArtifact()
+    {
+        using var fixture = new Fixture(unequalSizes: true);
+        var installed = await fixture.Setup.ImportAsync(fixture.Package());
+        Assert.Equal(fixture.Embedding, await File.ReadAllBytesAsync(Path.Combine(installed, "embedding.gguf")));
+        Assert.Equal(installed, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task ImportAsync_RegularUnixPermissions_AreNotMisclassifiedAsLinkType()
+    {
+        using var fixture = new Fixture();
+        var package = fixture.Package();
+        using (var archive = ZipFile.Open(package, ZipArchiveMode.Update))
+            archive.GetEntry("generation.gguf")!.ExternalAttributes = unchecked((int)0x81A40000);
+        var installed = await fixture.Setup.ImportAsync(package);
+        Assert.Equal(installed, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task SelectDirectoryAsync_LinkedDestinationCannotOverwriteUnrelatedExternalSelection()
+    {
+        using var fixture = new Fixture();
+        var external = Path.Combine(fixture.Root, "external");
+        Directory.CreateDirectory(external);
+        await File.WriteAllBytesAsync(Path.Combine(external, "generation.gguf"), fixture.Generation);
+        await File.WriteAllBytesAsync(Path.Combine(external, "embedding.gguf"), fixture.Embedding);
+        await fixture.Setup.SelectDirectoryAsync(external);
+        var cache = Path.Combine(fixture.Root, "cache");
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            GetAttributes = path => path == cache ? FileAttributes.ReparsePoint : File.GetAttributes(path)
+        };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Setup.SelectDirectoryAsync(external));
+        Assert.Contains("owned local path", error.Message);
+        fixture.FileAccess = null;
+        Assert.Equal(external, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task SelectDirectoryAsync_MaximumSelectionPath_HasRoomForPinnedFilenamesAndRestarts()
+    {
+        using var fixture = new Fixture();
+        var directory = fixture.Root;
+        while (directory.Length + 81 < 4096)
+            directory = Path.Combine(directory, new string('a', 80));
+        directory = Path.Combine(directory, new string('b', 4096 - directory.Length - 1));
+        Directory.CreateDirectory(directory);
+        await File.WriteAllBytesAsync(Path.Combine(directory, "generation.gguf"), fixture.Generation);
+        await File.WriteAllBytesAsync(Path.Combine(directory, "embedding.gguf"), fixture.Embedding);
+
+        await fixture.Setup.SelectDirectoryAsync(directory);
+
+        Assert.Equal(directory, (await fixture.CreateSetup().GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task GetReadinessAsync_OversizedSelectionMetadata_ExplainsExplicitReselection()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        await File.WriteAllTextAsync(Path.Combine(fixture.Root, "cache", "selected-profile.txt"), new string('x', 4097));
+        var readiness = await fixture.Setup.GetReadinessAsync();
+        Assert.Equal(AnalysisModelReadinessState.Invalid, readiness.State);
+        Assert.Contains("too large", readiness.Error!);
+        Assert.Contains("select", readiness.Error!);
+        Assert.Equal(fixture.Generation, await File.ReadAllBytesAsync(Path.Combine(previous, "generation.gguf")));
+    }
+
+    [Fact]
+    public void Construct_OverflowingReserve_ExplainsReducingBudgetAndAcceptsLastRepresentableReserve()
+    {
+        using var fixture = new Fixture();
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() => fixture.CreateSetup(new(long.MaxValue, 20)));
+        Assert.Contains("reduce", error.Message, StringComparison.OrdinalIgnoreCase);
+        var valid = fixture.CreateSetup(new(long.MaxValue - 32, 20));
+        Assert.NotNull(valid);
+        Assert.False(Directory.Exists(fixture.Root));
+    }
+
+    [Theory]
+    [InlineData(Architecture.Arm64)]
+    [InlineData(Architecture.X64)]
+    public async Task ImportAsync_SupportedNativeHostAndMeasuredResources_ActivatesOffline(Architecture architecture)
+    {
+        using var fixture = new Fixture();
+        fixture.ResourceProbe = () => AnalysisModelResources.Read(true, architecture, () => (true, 1000L), () => 1000);
+        var installed = await fixture.Setup.ImportAsync(fixture.Package());
+        Assert.Equal(installed, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task ImportAsync_LinkedPackage_RejectsBeforeConsumingItsContents()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        var package = fixture.Package();
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            GetAttributes = path => path == package ? FileAttributes.ReparsePoint : File.GetAttributes(path)
+        };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Setup.ImportAsync(package));
+        Assert.Contains("owned local path", error.Message);
+        Assert.Equal(previous, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task GetReadinessAsync_LinkedSelectionPointer_RejectsWithoutFollowingIt()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        var marker = Path.Combine(fixture.Root, "cache", "selected-profile.txt");
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            GetAttributes = path => path == marker ? FileAttributes.ReparsePoint : File.GetAttributes(path)
+        };
+        Assert.Equal(AnalysisModelReadinessState.Invalid, (await fixture.Setup.GetReadinessAsync()).State);
+        fixture.FileAccess = null;
+        Assert.Equal(previous, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task SelectDirectoryAsync_CacheBecomesLinked_RejectsBeforeWritingSelection()
+    {
+        using var fixture = new Fixture();
+        var selected = await fixture.Setup.ImportAsync(fixture.Package());
+        var cache = Path.Combine(fixture.Root, "cache");
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            GetAttributes = path => path == cache ? FileAttributes.ReparsePoint : File.GetAttributes(path)
+        };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Setup.SelectDirectoryAsync(selected));
+        Assert.Contains("owned local path", error.Message);
+        fixture.FileAccess = null;
+        Assert.Equal(selected, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task ImportAsync_StagingConsumesWeightSpace_RetainsConfiguredReserveWithoutRequiringDuplicateSpace()
+    {
+        using var fixture = new Fixture();
+        var installed = await fixture.Setup.ImportAsync(fixture.Package(), new InlineProgress(item =>
+        {
+            if (item.Phase == AnalysisModelSetupPhase.Transferring && item.BytesTransferred == 32)
+                fixture.Resources = new(10, 20, true);
+        }));
+        Assert.Equal(installed, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_OversizedStream_StopsBeforeWritingBeyondPinnedSize()
+    {
+        var transport = new ControlledDownload { ReportLength = false };
+        using var fixture = new Fixture(transport: transport);
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        transport.Files["generation"] = fixture.Generation.Concat(new byte[] { 99 }).ToArray();
+        var writes = new List<int>();
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            OpenStage = path => new StageFile(path, count => writes.Add(count))
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Setup.DownloadAsync());
+
+        Assert.Contains("exceeded", error.Message);
+        Assert.Equal(16, writes.Sum());
+        Assert.Equal(previous, (await fixture.Setup.GetReadinessAsync()).Directory);
+        Assert.Single(Directory.GetDirectories(Path.Combine(fixture.Root, "cache")));
+    }
+
+    [Fact]
+    public async Task GetReadinessAsync_SelectedWeightBecomesReparsePoint_RejectsWithoutSwitchingProfile()
+    {
+        using var fixture = new Fixture();
+        var selected = await fixture.Setup.ImportAsync(fixture.Package());
+        var linked = Path.Combine(selected, "embedding.gguf");
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            GetAttributes = path => path == linked ? FileAttributes.ReparsePoint : File.GetAttributes(path)
+        };
+        var readiness = await fixture.Setup.GetReadinessAsync();
+        Assert.Equal(AnalysisModelReadinessState.Invalid, readiness.State);
+        Assert.Null(readiness.Directory);
+        fixture.FileAccess = null;
+        Assert.Equal(selected, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
+    [Theory]
+    [InlineData(DriveType.Network)]
+    [InlineData(DriveType.NoRootDirectory)]
+    [InlineData(DriveType.Unknown)]
+    public async Task ImportAsync_DriveCannotProvideLocalStorage_RejectsBeforeWriting(DriveType drive)
+    {
+        using var fixture = new Fixture
+        {
+            FileAccess = AnalysisModelFileAccess.Default with { GetDriveType = _ => drive }
+        };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Setup.ImportAsync(fixture.Package()));
+        Assert.Contains("available local storage", error.Message);
+        Assert.False(Directory.Exists(Path.Combine(fixture.Root, "cache")));
+    }
+
+    [Theory]
+    [InlineData(false, Architecture.Arm64)]
+    [InlineData(false, Architecture.X64)]
+    [InlineData(true, Architecture.X86)]
+    [InlineData(true, Architecture.Arm)]
+    public async Task ImportAsync_UnsupportedNativeHost_ReportsPrerequisiteWithoutProbingMemory(bool windows, Architecture architecture)
+    {
+        using var fixture = new Fixture();
+        fixture.ResourceProbe = () => AnalysisModelResources.Read(windows, architecture,
+            () => throw new InvalidOperationException("Do not probe RAM on an unsupported host."),
+            () => throw new InvalidOperationException("Do not probe disk on an unsupported host."));
+        var error = await Assert.ThrowsAsync<AnalysisModelResourceException>(() => fixture.Setup.ImportAsync(fixture.Package()));
+        Assert.Contains("Windows ARM64 or x64", error.Message);
+        Assert.False(Directory.Exists(Path.Combine(fixture.Root, "cache")));
+    }
+
+    [Fact]
+    public async Task ImportAsync_SelectionStorageDiscardsUnflushedWrites_ActivatesOnlyDurableSelection()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        fixture.FileAccess = AnalysisModelFileAccess.Default with { OpenSelection = path => new SelectionFile(path) };
+
+        var installed = await fixture.Setup.ImportAsync(fixture.Package());
+
+        Assert.NotEqual(previous, installed);
+        Assert.Equal(installed, (await fixture.CreateSetup().GetReadinessAsync()).Directory);
+        Assert.Equal(fixture.Generation, await File.ReadAllBytesAsync(Path.Combine(previous, "generation.gguf")));
+    }
+
+    [Fact]
+    public async Task ImportAsync_DurableFlushFails_PreservesPreviousSelectionAndReportsStorageFailure()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            OpenSelection = path => new SelectionFile(path, _ => throw new IOException("Storage could not flush the selection."))
+        };
+
+        await Assert.ThrowsAsync<IOException>(() => fixture.Setup.ImportAsync(fixture.Package()));
+
+        Assert.Equal(previous, (await fixture.Setup.GetReadinessAsync()).Directory);
+        Assert.Single(Directory.GetDirectories(Path.Combine(fixture.Root, "cache")));
+    }
+
+    [Fact]
+    public async Task ImportAsync_CancelWhileSelectionIsFlushed_DoesNotPublishNewSelection()
+    {
+        using var fixture = new Fixture();
+        var previous = await fixture.Setup.ImportAsync(fixture.Package());
+        using var cancellation = new CancellationTokenSource();
+        fixture.FileAccess = AnalysisModelFileAccess.Default with
+        {
+            OpenSelection = path => new SelectionFile(path, _ => cancellation.Cancel())
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            fixture.Setup.ImportAsync(fixture.Package(), cancellationToken: cancellation.Token));
+
+        Assert.Equal(previous, (await fixture.Setup.GetReadinessAsync()).Directory);
+        Assert.Single(Directory.GetDirectories(Path.Combine(fixture.Root, "cache")));
+        Assert.Empty(Directory.GetFiles(Path.Combine(fixture.Root, "cache"), ".selection-*"));
+    }
+
+    [Fact]
+    public async Task GetReadinessAsync_NativeMemoryQueryFails_PreservesSelectionAndOffersExplicitRetry()
+    {
+        using var fixture = new Fixture();
+        var selected = await fixture.Setup.ImportAsync(fixture.Package());
+        fixture.ResourceProbe = () => AnalysisModelResources.Read(
+            true, Architecture.Arm64, () => (false, 1000L), () => 1000);
+
+        var readiness = await fixture.Setup.GetReadinessAsync();
+
+        Assert.Equal(AnalysisModelReadinessState.ResourceUnavailable, readiness.State);
+        Assert.Contains("RAM", readiness.Error!);
+        Assert.Contains("measured", readiness.Error!);
+        Assert.Contains("retry", readiness.Error!);
+        fixture.ResourceProbe = null;
+        Assert.Equal(selected, (await fixture.Setup.GetReadinessAsync()).Directory);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
@@ -89,7 +376,9 @@ public sealed class AnalysisModelSetupTests
         var link = Path.Combine(fixture.Root, "cache");
         using var create = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
         {
-            CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         })!;
         await create.WaitForExitAsync();
         Assert.Equal(0, create.ExitCode);
@@ -104,7 +393,9 @@ public sealed class AnalysisModelSetupTests
         {
             using var remove = Process.Start(new ProcessStartInfo("cmd.exe", $"/c rmdir \"{link}\"")
             {
-                CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             })!;
             await remove.WaitForExitAsync();
             Assert.Equal(0, remove.ExitCode);
@@ -239,7 +530,8 @@ public sealed class AnalysisModelSetupTests
     public void Construct_InvalidResourceBudgets_RejectsWithoutIO(long reserve, long memory)
     {
         using var fixture = new Fixture();
-        Assert.Throws<ArgumentOutOfRangeException>(() => fixture.CreateSetup(new(reserve, memory)));
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() => fixture.CreateSetup(new(reserve, memory)));
+        Assert.Contains(reserve == long.MaxValue ? "Reduce" : "positive memory budget", error.Message);
         Assert.False(Directory.Exists(fixture.Root));
     }
 
@@ -397,7 +689,8 @@ public sealed class AnalysisModelSetupTests
     public void Construct_NetworkOrDevicePath_RejectsBeforeAnyAccess(string path)
     {
         using var client = new HttpClient(new RejectNetwork());
-        Assert.Throws<InvalidDataException>(() => new AnalysisModelSetup(path, client, new(10, 20)));
+        var error = Assert.Throws<InvalidDataException>(() => new AnalysisModelSetup(path, client, new(10, 20)));
+        Assert.Contains("Choose local storage", error.Message);
     }
 
     [Fact]
@@ -410,7 +703,9 @@ public sealed class AnalysisModelSetupTests
         using var junction = Process.Start(new ProcessStartInfo("cmd.exe",
             $"/c mklink /J \"{Path.Combine(fixture.Root, "cache")}\" \"{target}\"")
         {
-            CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         })!;
         await junction.WaitForExitAsync();
         Assert.Equal(0, junction.ExitCode);
@@ -425,7 +720,9 @@ public sealed class AnalysisModelSetupTests
             using var remove = Process.Start(new ProcessStartInfo("cmd.exe",
                 $"/c rmdir \"{Path.Combine(fixture.Root, "cache")}\"")
             {
-                CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             })!;
             await remove.WaitForExitAsync();
             Assert.Equal(0, remove.ExitCode);
@@ -564,11 +861,13 @@ public sealed class AnalysisModelSetupTests
     private sealed class Fixture : IDisposable
     {
         private readonly PinnedModelFile[] trustedFiles;
-        public Fixture(bool incompatible = false, HttpMessageHandler? transport = null)
+        public Fixture(bool incompatible = false, HttpMessageHandler? transport = null, bool unequalSizes = false)
         {
             Client = new(transport ?? new RejectNetwork());
             if (incompatible)
                 Generation[0] = 0;
+            if (unequalSizes)
+                Embedding = [.. Embedding, 9, 10, 11, 12, 13, 14, 15, 16];
             trustedFiles = [File("generation", Generation), File("embedding", Embedding)];
         }
         public byte[] Generation { get; } = [0x47, 0x47, 0x55, 0x46, 3, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
@@ -578,11 +877,12 @@ public sealed class AnalysisModelSetupTests
         public AnalysisModelResources Resources { get; set; } = new(1000, 1000, true);
         public Func<AnalysisModelResources>? ResourceProbe { get; set; }
         public ILogger<AnalysisModelSetup>? Logger { get; set; }
+        public AnalysisModelFileAccess? FileAccess { get; set; }
         public AnalysisModelSetup Setup => CreateSetup();
         public AnalysisModelSetup CreateSetup(AnalysisModelLimits? limits = null) => new(Path.Combine(Root, "cache"), Client,
             limits ?? new AnalysisModelLimits(10, 20),
             trustedFiles,
-            () => ResourceProbe?.Invoke() ?? Resources, Logger);
+            () => ResourceProbe?.Invoke() ?? Resources, Logger, FileAccess);
         private static PinnedModelFile File(string role, byte[] bytes)
             => new(role, $"{role}.gguf", bytes.Length, Convert.ToHexStringLower(SHA256.HashData(bytes)),
                 $"https://example.invalid/{role}");
@@ -604,38 +904,67 @@ public sealed class AnalysisModelSetupTests
             Client.Dispose();
             if (Directory.Exists(Root))
                 Directory.Delete(Root, true);
-    }
+        }
     }
 
     private sealed class ControlledDownload : HttpMessageHandler
     {
-    public Dictionary<string, byte[]> Files { get; } = new();
-    public List<string> Requests { get; } = [];
-    public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
-    public bool ReportLength { get; set; } = true;
-    public long? DeclaredLength { get; set; }
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        Requests.Add(request.RequestUri!.AbsoluteUri);
-        var response = new HttpResponseMessage(Status);
-        if (Status == HttpStatusCode.OK)
+        public Dictionary<string, byte[]> Files { get; } = new();
+        public List<string> Requests { get; } = [];
+        public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
+        public bool ReportLength { get; set; } = true;
+        public long? DeclaredLength { get; set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            response.Content = ReportLength
-                ? new ByteArrayContent(Files[request.RequestUri.AbsolutePath.Trim('/')])
-                : new StreamContent(new ControlledStream(Files[request.RequestUri.AbsolutePath.Trim('/')]));
-            if (!ReportLength)
-                response.Content.Headers.ContentLength = null;
-            if (DeclaredLength.HasValue)
-                response.Content.Headers.ContentLength = DeclaredLength;
+            Requests.Add(request.RequestUri!.AbsoluteUri);
+            var response = new HttpResponseMessage(Status);
+            if (Status == HttpStatusCode.OK)
+            {
+                response.Content = ReportLength
+                    ? new ByteArrayContent(Files[request.RequestUri.AbsolutePath.Trim('/')])
+                    : new StreamContent(new ControlledStream(Files[request.RequestUri.AbsolutePath.Trim('/')]));
+                if (!ReportLength)
+                    response.Content.Headers.ContentLength = null;
+                if (DeclaredLength.HasValue)
+                    response.Content.Headers.ContentLength = DeclaredLength;
+            }
+            return Task.FromResult(response);
         }
-        return Task.FromResult(response);
-    }
     }
 
     private sealed class ControlledStream(byte[] bytes) : MemoryStream(bytes)
     {
-    public override bool CanSeek => false;
-    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        => base.ReadAsync(buffer[..Math.Min(4, buffer.Length)], cancellationToken);
+        public override bool CanSeek => false;
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => base.ReadAsync(buffer[..Math.Min(4, buffer.Length)], cancellationToken);
+    }
+
+    private sealed class SelectionFile(string path, Action<bool>? flushed = null) :
+        FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous)
+    {
+        private bool durable;
+        public override void Flush(bool flushToDisk)
+        {
+            base.Flush(flushToDisk);
+            durable |= flushToDisk;
+            flushed?.Invoke(flushToDisk);
+        }
+        public override async ValueTask DisposeAsync()
+        {
+            await base.DisposeAsync();
+            if (!durable)
+                File.Delete(Name);
+        }
+
+    }
+
+    private sealed class StageFile(string path, Action<int> written) :
+        FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous)
+    {
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await base.WriteAsync(buffer, cancellationToken);
+            written(buffer.Length);
+        }
     }
 }
