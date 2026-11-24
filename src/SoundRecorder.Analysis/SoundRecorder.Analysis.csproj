@@ -3,12 +3,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="..\candidate-profile.json" Link="candidate-profile.json" />
-    <EmbeddedResource Include="..\qwen3-candidate-profile.json" Link="qwen3-candidate-profile.json" />
-    <EmbeddedResource Include="..\phi-mini-candidate-profile.json" Link="phi-mini-candidate-profile.json" />
+    <EmbeddedResource Include="Profiles\candidate-profile.json" LogicalName="SoundRecorder.Analysis.candidate-profile.json" />
+    <EmbeddedResource Include="Profiles\qwen3-candidate-profile.json" LogicalName="SoundRecorder.Analysis.qwen3-candidate-profile.json" />
+    <EmbeddedResource Include="Profiles\phi-mini-candidate-profile.json" LogicalName="SoundRecorder.Analysis.phi-mini-candidate-profile.json" />
     <PackageReference Include="LLamaSharp" Version="[0.30.0]" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="[0.30.0]" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.0]" />

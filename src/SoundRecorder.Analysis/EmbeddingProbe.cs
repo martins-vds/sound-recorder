@@ -1,4 +1,4 @@
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>The embedding-only native seam; input already contains its task prefix.</summary>
 public interface IEmbeddingBackend

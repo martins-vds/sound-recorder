@@ -1,7 +1,7 @@
 using System.Text;
 using LLama.Common;
 using LLama.Native;
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 
 namespace Models.Harness.Tests;

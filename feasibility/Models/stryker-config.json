@@ -1,6 +1,6 @@
 {
   "stryker-config": {
-    "project": "Models.Harness.csproj",
+    "project": "SoundRecorder.Analysis.csproj",
     "configuration": "Release",
     "mutation-level": "Complete",
     "test-case-filter": "type!=IntegrationTests|purpose=NativeAdapterSmoke|purpose=PhiMiniNative",

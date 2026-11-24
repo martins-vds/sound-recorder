@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 internal static class SourceText
 {

@@ -88,12 +88,14 @@ jobs:
         if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
         run: .\feasibility\Evaluation\Generate.ps1
 
-      - name: Locked restore structured model harness without weights
+      - name: Locked restore production analysis consumers without weights
         id: restore-model-harness
         if: ${{ !cancelled() && steps.restore-evaluation.outcome == 'success' }}
         run: |
           dotnet restore .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --locked-mode
           if ($LASTEXITCODE -ne 0) { throw 'Structured model harness locked restore failed.' }
+          dotnet build .\src\SoundRecorder.Analysis\SoundRecorder.Analysis.csproj --no-restore -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'Production analysis engine build failed.' }
 
       - name: Run deterministic structured ledger and native CPU boundary
         if: ${{ !cancelled() && steps.restore-model-harness.outcome == 'success' }}

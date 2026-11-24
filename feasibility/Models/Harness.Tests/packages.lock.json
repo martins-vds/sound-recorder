@@ -219,7 +219,7 @@
       "evaluation.generator": {
         "type": "Project"
       },
-      "models.harness": {
+      "soundrecorder.analysis": {
         "type": "Project",
         "dependencies": {
           "LLamaSharp": "[0.30.0, 0.30.0]",

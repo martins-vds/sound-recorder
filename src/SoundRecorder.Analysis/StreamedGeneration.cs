@@ -2,9 +2,9 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
-using static Models.Harness.SourceText;
+using static SoundRecorder.Analysis.SourceText;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>One source body supplied as a reader; the probe consumes and disposes it.</summary>
 public sealed record ExcerptInput(string Id, long? StartMs, long? EndMs, TextReader Text);

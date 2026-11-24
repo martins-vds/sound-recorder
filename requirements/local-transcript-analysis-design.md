@@ -178,6 +178,160 @@ grounded processing requires steps 2 and 3. Desktop integration joins scheduling
 and processing. Final validation requires the integrated desktop. Ticket blocking
 relationships, rather than list order, determine the implementation frontier.
 
+### Step 1 foundation checkpoint - 2026-11-23
+
+The reusable engine now belongs to `src\SoundRecorder.Analysis`, not
+`feasibility\Models\Harness`. Core owns the existing `ILocalTranscriptAnalysis`,
+`ILocalAnalysisDiagnostics` and request/result/claim/evidence records.
+Infrastructure retains the adapter and saved TXT/SRT reader; Desktop retains
+the existing commands and lifecycle. There is no new coordinator, durable job
+behavior, UI redesign or public-seam expansion in this step.
+
+The runtime project graph is `Desktop -> Infrastructure -> Analysis`, with
+Desktop and Infrastructure also referencing Core. Historical
+`Models.Harness.Tests` references Analysis directly and retains its original
+test identities, fixtures and native experiment cases. The obsolete engine
+project is removed rather than kept as a forwarding runtime dependency.
+These manually validated in-repository symbols are migrated to production
+namespaces; no external NuGet API compatibility claim is made.
+
+All eleven engine source files preserve their behavior byte-for-byte after
+namespace/resource binding changes and newline normalization. SQLite schemas,
+serialized record fields, original-source evidence, native package versions,
+model filenames/SHA-256 and inference parameters are unchanged. Production
+embeds frozen copies of the approved profile metadata so it has no build-time
+resource dependency on feasibility. Original profiles and historical reports
+remain intact. The application still explicitly loads Phi-mini and Nomic;
+legacy Qwen loaders/resources remain only for existing experiment consumers,
+not fallback or automatic model selection.
+
+Baseline: solution build passed, **54 analysis tests** and **175 model-free
+pipeline tests** passed, with no skipped cases. Post-move Debug/Release builds
+passed; **302 relevant Core/Desktop consumer tests** and the same **175 pipeline
+tests** passed. Clean framework-dependent publishes succeeded for `win-arm64`
+and `win-x64`, without the old engine DLL or dependency. Forty deployed native
+binary hashes across those publishes match the baseline; the model-free native
+CPU probe passed on Windows ARM64. Publishing x64 is not native x64 execution
+or distribution acceptance. No new behavior is introduced, so the existing
+confirmed seam tests remain the behavioral oracle rather than adding
+assembly/file assertions.
+
+Quality remains **incomplete**, not waived by ownership migration. The recorded
+pre-move full Infrastructure mutation failure (**77.385%**) and focused analysis
+failure (**83.76%**) remain unresolved historical blockers; neither becomes a
+passing gate because an owner changes. Full-owner Analysis CRAP selected all
+eleven handwritten sources with the 175 permitted model-free tests: **86 numeric
+members**, maximum **20**, with source-boundary and native inference coverage
+gaps, so it failed.
+Constructors remain outside the fork's analysis. Native model execution is not
+authorized in this step; the model-free native CPU probe is not model-semantic
+or distribution evidence.
+
+The isolated full-owner Analysis mutation run selected all eleven source files
+and 175 model-free tests: **504 killed**, **3 detected timeouts**, **9 survivors**
+and **43 uncovered**; **507 / 559 = 90.69767441860465%**, so Stryker exited **2**
+against the unchanged 99 break threshold. Eighteen compile errors and 92
+tool-default ignored mutants are not detected mutations; no handwritten source
+exclusions or manual suppressions were added. Every source embedded in the
+report matches the production owner. An earlier run overlapped a Release build
+and was discarded; only the isolated completed run is authoritative. Subsequent
+clean build and pipeline regression passed.
+
+Current local evidence is under `artifacts\analysis-foundation` in the foundation
+worktree: `crap-analysis.txt`, `coverage`, `mutation-summary.json`,
+`mutation-analysis-isolated\reports`, `ownership-evidence.json` and `tests`.
+Reports are private and ignored by Git. The full reusable engine stays
+in its new owner's CRAP/mutation scope. No full legacy quality rerun, 12-hour
+stress, model trial/download, release acceptance or working-app replacement is
+included in this ownership checkpoint.
+
+### Full-owner foundation validation follow-up - 2026-11-23
+
+The initial model-free Harness-only checkpoint above is retained as partial
+evidence, not the complete production-owner gate. The production engine is also
+exercised directly by Core's `TranscriptAnalysisTests`. Current owner validation
+therefore combines both referencing suites, selecting every handwritten
+`SoundRecorder.Analysis` source without changing production scope or thresholds.
+
+Fork CRAP dry-run confirms two separate coverage directories, one for Harness's
+single `net10.0` TFM and one for Core's single `net10.0-windows` TFM. No framework
+harmonization or `--framework` override is needed. Repeated `--test-project`
+selectors combine source-line coverage by union. Stryker's installed `init`
+command confirms repeated selectors become a `test-projects` array; the runner
+executes from the production owner. Its owner-local configuration persists both
+consumers and fails immediately if the initial test run is red.
+
+The user clarified permission for exactly the five existing
+`NativeAdapterSmoke`/`PhiMiniNative` cases: native EOG versus cap, tokenizer/role
+tokens, bounded JSON transport, mean pooling and disposal, using the cached
+approved weights only. These are native interface checks, not new model trials
+or real-model semantic comparisons. All four required cached files passed their
+unchanged size/SHA-256 identities before execution.
+
+Reqnroll exposes existing `@type:IntegrationTests` tags as
+`Category=type:IntegrationTests`, whereas xUnit uses the `type` trait. The gate
+filter honors both declared forms before explicitly adding the five permitted
+native purpose cases:
+`(type!=IntegrationTests&Category!=type:IntegrationTests)|purpose=NativeAdapterSmoke|purpose=PhiMiniNative`.
+No scenario is retagged or newly quarantined. Earlier mutation attempts that
+incorrectly included the reference-PC worker integration scenario failed their
+initial run and are retained as invalid attempts, not scores.
+
+Union coverage initially established CRAP maximum **7** without changing engine
+logic. Completed full-owner mutation then measured **530 / 559 =
+94.81216457960644%** (522 kills, eight detected timeouts, 24 survivors and five
+uncovered), still failing the unchanged 99 break threshold. The remaining range
+gaps were not hidden by the owner move or by calling native coverage unavailable.
+
+Fourteen focused C# cases now exercise `EmbeddingProbe` through its public
+backend seam: blank sources, sentence/word separators, range-midpoint and
+one-character overflow boundaries, surrogate-safe token fitting, deterministic
+source references, overlap and complete original-text traversal. Existing
+request-contract cases also require nonempty trusted instructions separate from
+the supplied source. No private-method, source/assembly-location or constant-only
+tests were added. Focused mutation feedback detected all 26 identified
+range/protocol gaps; that restricted feedback is not a final gate.
+
+Final union CRAP after those assertions selects all eleven sources and reports
+**86 numeric members**, maximum **7**, with constructors outside the fork's
+analysis. **194 Harness cases** (189 model-free plus the five permitted native
+cases) and **757 Core cases** passed. The seven ignored release-acceptance
+scenarios remain incomplete release evidence, not passing requirements.
+
+Production engine code, model/profile identities, native binaries, application
+project references and existing UI behavior are unchanged by this follow-up.
+Full Infrastructure and earlier adapter mutation failures remain historical
+blockers; successful engine validation cannot reset or waive them.
+
+Final full-owner Analysis mutation after those tests: **552 killed**, **four
+detected timeouts**, **three survivors**, **zero uncovered**; **556 / 559 =
+99.46332737030411%**. Stryker exited **0** against the unchanged 99 break
+threshold. Eighteen compile errors and 92 tool-default ignored mutants are
+separate from detected mutations. All eleven report-embedded source files match
+the production owner. There are no handwritten source exclusions, manual
+suppressions, new native cases or semantic model runs.
+
+The three retained survivors remove the iterator's completed-task await, the
+native loader's CPU-initialization call, or embedding-context disposal. They are
+reported, not suppressed or asserted equivalent. The strict owner gate passes;
+this is not a claim of perfect mutation detection or proof of every native
+resource-lifetime behavior. Stryker's WPF simulated-build warning remains a tool
+limitation; actual dependent builds and the initial test run succeeded.
+
+Clean post-mutation Release build passed with zero warnings/errors. **189**
+model-free pipeline cases and **302** relevant Core/Desktop consumer cases
+passed, including the unchanged 54 analysis cases. Source/model/native identity
+checks and both clean architecture publishes from the ownership checkpoint
+remain retained. No integration/main edit, push, ticket closure, working-app
+replacement or release claim is included.
+
+Current reproducible commands are in the root README and
+`src\SoundRecorder.Analysis\stryker-config.json`. Raw coverage/TRX, native proof,
+both full mutation runs, targeted feedback, source/model identities and
+publication dependency/hash reports are preserved in
+`files\formal-foundation\analysis-foundation-01d7ed9` under the persistent parent
+session directory, outside the implementation worktree.
+
 Use the canonical terms in [GLOSSARY.md](../GLOSSARY.md). This proposal extends
 the local transcript workflow; it is not evidence that transcript analysis or
 native Windows ARM64 support already exists. The approved

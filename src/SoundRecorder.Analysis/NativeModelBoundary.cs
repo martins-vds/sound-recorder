@@ -5,7 +5,7 @@ using LLama.Common;
 using LLama.Sampling;
 using LLama.Native;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>Replaceable native model/resource boundary, separate from policy and file integrity.</summary>
 public interface INativeModel : IDisposable

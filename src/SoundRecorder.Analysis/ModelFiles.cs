@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 
-namespace Models.Harness;
+namespace SoundRecorder.Analysis;
 
 /// <summary>One exact local candidate file; a URL is approval metadata, never a download instruction.</summary>
 public sealed record PinnedModelFile(string Role, string Name, long Bytes, string Sha256, string Url);
@@ -14,15 +14,15 @@ public static class ModelFiles
 {
     /// <summary>Reads the embedded, proposed file identities.</summary>
     public static PinnedModelFile[] CandidateFiles()
-        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.candidate-profile.json"));
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("SoundRecorder.Analysis.candidate-profile.json"));
 
     /// <summary>Reads only the separately approved issue #9 generation file; embedding remains unchanged.</summary>
     public static PinnedModelFile[] Qwen3Files()
-        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.qwen3-candidate-profile.json"));
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("SoundRecorder.Analysis.qwen3-candidate-profile.json"));
 
     /// <summary>Reads only the separately approved issue #10 Phi-4-mini generation file.</summary>
     public static PinnedModelFile[] PhiMiniFiles()
-        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("Models.Harness.phi-mini-candidate-profile.json"));
+        => CandidateFiles(() => typeof(ModelFiles).Assembly.GetManifestResourceStream("SoundRecorder.Analysis.phi-mini-candidate-profile.json"));
 
     /// <summary>Reads profile data through a replaceable local resource transport.</summary>
     public static PinnedModelFile[] CandidateFiles(Func<Stream?> openProfile)

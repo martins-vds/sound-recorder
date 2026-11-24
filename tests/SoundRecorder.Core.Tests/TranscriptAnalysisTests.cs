@@ -1,4 +1,4 @@
-using Models.Harness;
+using SoundRecorder.Analysis;
 using SoundRecorder.Core;
 using SoundRecorder.Infrastructure.Analysis;
 using SoundRecorder.Desktop;

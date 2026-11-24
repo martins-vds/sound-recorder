@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using Models.Harness;
+using SoundRecorder.Analysis;
 using Xunit;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
