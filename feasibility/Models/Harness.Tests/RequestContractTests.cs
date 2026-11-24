@@ -37,7 +37,12 @@ public sealed class RequestContractTests
     private sealed class ContractBackend(string task, string language, string? question) : IGenerationBackend
     {
         public int Calls { get; private set; }
-        public string RenderPrompt(string instruction, string input) => input;
+        public string RenderPrompt(string instruction, string input)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(instruction), "The model needs trusted task instructions separate from source data.");
+            Assert.DoesNotContain("Ana verifies access.", instruction);
+            return input;
+        }
         public int CountTokens(string prompt) => 100;
         public Task<GenerationResult> GenerateAsync(string prompt, int outputTokens, CancellationToken cancellationToken)
         {

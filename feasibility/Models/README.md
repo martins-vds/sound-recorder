@@ -7,10 +7,13 @@ Reusable engine sources now live in `src\SoundRecorder.Analysis`.
 directly; the former `Harness\Models.Harness.csproj` is removed. Existing test
 names, native experiment cases, frozen profiles, data and reports remain
 historical evidence. Commands below naming the old engine owner describe their
-original runs, not the current project graph. Current full-owner mutation uses
-`stryker-config.json` with `SoundRecorder.Analysis.csproj`; model execution still
-requires explicit approval. See the root README and formal design checkpoint
-for current production ownership and incomplete quality gates.
+original runs, not the current project graph. Current full-owner mutation runs
+from `src\SoundRecorder.Analysis` with its owner-local configuration, combining
+this Harness suite and Core consumer tests. This folder's configuration remains
+a narrower historical diagnostic. Exactly five existing tiny native adapter
+cases are authorized for foundation verification using approved cached weights;
+semantic comparisons and downloads are not. See the root README and formal
+design checkpoints for current ownership and actual gate results.
 
 ## Focused #11 quality follow-up (v4)
 

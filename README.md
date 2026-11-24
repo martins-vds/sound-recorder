@@ -148,17 +148,25 @@ crap4csharp @sources --test-project .\tests\SoundRecorder.Core.Tests\SoundRecord
     --framework net10.0-windows --all-tests --crap-threshold 7.999999999999999
 ```
 
-Repeat for Core, Desktop and Analysis. For Analysis, select every handwritten `src\SoundRecorder.Analysis\*.cs` source and the historical consumer test project `feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj`, targeting `net10.0`. Its model-free regression command is:
+Repeat for Core, Desktop and Analysis. Analysis is exercised by **both** Core consumer tests and migrated historical Harness tests. Select every handwritten owner source and combine the suites by line-union coverage:
 
 ```powershell
-dotnet test .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj --filter "type!=IntegrationTests"
+$analysisSources = Get-ChildItem .\src\SoundRecorder.Analysis -Filter *.cs |
+    Select-Object -ExpandProperty FullName
+$analysisFilter = "(type!=IntegrationTests&Category!=type:IntegrationTests)|purpose=NativeAdapterSmoke|purpose=PhiMiniNative"
+crap4csharp @analysisSources `
+    --test-project .\tests\SoundRecorder.Core.Tests\SoundRecorder.Core.Tests.csproj `
+    --test-project .\feasibility\Models\Harness.Tests\Models.Harness.Tests.csproj `
+    --test-filter $analysisFilter --crap-threshold 7.999999999999999 --dry-run
 ```
+
+After previewing, remove `--dry-run` to execute. Omit `--framework`: each suite has one TFM, respectively `net10.0-windows` and `net10.0`, and both reports are required. Reqnroll's existing integration tags appear as `Category=type:IntegrationTests`; xUnit uses `type=IntegrationTests`. The filter honors both declarations, then includes only the five bounded native adapter cases already authorized for foundation verification. Configure `SR_APPROVED_MODEL_DIRECTORY` to the existing approved cache. These checks never download models and are not semantic model comparisons. A Harness-only model-free run is development feedback, not the full-owner gate.
 
 Core's domain gate can use the default unit selection by omitting `--all-tests`; native adapter evidence uses the integration-inclusive selection shown above. Every executable member must have a numeric result: `N/A` is incomplete evidence even if the tool exits zero. The threshold is the largest representable value below 8, so a member scoring exactly 8 fails rather than passing the tool's inclusive boundary. CRAP does not score constructors.
 
 Run Stryker separately for each production project using `--project SoundRecorder.Core.csproj`, `SoundRecorder.Infrastructure.csproj`, or `SoundRecorder.Desktop.csproj` from the test directory. Inspect the JSON report's unrounded detected/eligible mutant ratio: each project must exceed 98%; exit status or a rounded display alone is not proof.
 
-Run full-owner Analysis mutation from `feasibility\Models\Harness.Tests` with `dotnet stryker --config-file ..\stryker-config.json`. A model-free-only run must explicitly override `--test-case-filter "type!=IntegrationTests"`; the configuration otherwise includes cached-model native cases, which need separate execution permission. Moving the engine does not reset earlier Infrastructure/analysis quality failures or waive native coverage. See the design's foundation checkpoint for the current incomplete gates.
+Run full-owner Analysis mutation from `src\SoundRecorder.Analysis` with `dotnet stryker`. Its owner-local configuration selects both test projects, the same declared-integration filter and the five authorized cached-model native cases. The installed runner also supports repeated `--test-project` arguments from the production owner. Native checks run in one test session to avoid competing native loads and shared diagnostic-file writers. Do not build or run another validation command against those outputs while mutation is active. The historical Harness configuration remains a narrower diagnostic, not the production gate. Moving the engine does not reset earlier Infrastructure/analysis quality failures or waive native coverage. See the design's foundation checkpoints for actual scope and results.
 
 The Desktop project keeps ordinary XAML compilation unchanged. Its WPF temporary type-inspection project disables implicit XAML re-inclusion and compiles local types even during a design-time analysis, avoiding duplicate generated sources without disabling handwritten compilation or source generators.
 
